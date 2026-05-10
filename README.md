@@ -4,6 +4,30 @@ A local AI reading companion for academic papers. Open a PDF, select any text or
 
 ---
 
+## Table of contents
+
+- [What it does](#what-it-does)
+- [Prerequisites](#prerequisites)
+- [Installation](#installation)
+- [Getting started](#getting-started)
+- [Features](#features)
+  - [Text explanations](#text-explanations)
+  - [Figure / image capture](#figure--image-capture)
+  - [Follow-up questions](#follow-up-questions)
+  - [Model selector](#model-selector)
+  - [Concept sidebar](#concept-sidebar)
+  - [Session save / load](#session-save--load)
+  - [Zoom controls](#zoom-controls)
+  - [Delete annotations](#delete-annotations)
+- [Keyboard shortcuts](#keyboard-shortcuts)
+- [How it works](#how-it-works)
+- [Project structure](#project-structure)
+- [Running tests](#running-tests)
+- [TypeScript check](#typescript-check)
+- [Limitations](#limitations)
+
+---
+
 ## What it does
 
 When you're reading a dense paper and hit something you don't understand, Paper Reader gives you two ways to get help:
