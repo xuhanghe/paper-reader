@@ -1,277 +1,247 @@
 # Paper Reader
 
-A local AI reading companion for academic papers. Open a PDF, select any text or drag over any figure, and get a plain-English explanation with relevant background, context within the paper, and learning resources — all powered by your existing Claude subscription with no extra API keys.
+A local reading companion for papers, built around your Zotero library. Open a
+PDF or a saved web snapshot, highlight as you read, and ask questions about the
+passage in front of you — answered by a model that has the whole paper, your
+highlights, and the rest of the conversation already in hand.
+
+Everything runs on your machine. Papers are read from Zotero, highlights are
+written back to Zotero, and the conversation lives in a plain-text file next to
+the paper.
+
+> A fork of [aditya-adiga/paper-reader](https://github.com/aditya-adiga/paper-reader),
+> substantially rewritten: Zotero as the store, one fused conversation per paper,
+> a paper map, HTML snapshot reading, and four interchangeable model providers.
+> MIT, same as upstream.
 
 ---
 
-## Table of contents
+## Contents
 
-- [What it does](#what-it-does)
-- [Prerequisites](#prerequisites)
-- [Installation](#installation)
-- [Getting started](#getting-started)
-- [Features](#features)
-  - [Text explanations](#text-explanations)
-  - [Figure / image capture](#figure--image-capture)
-  - [Follow-up questions](#follow-up-questions)
-  - [Model selector](#model-selector)
-  - [Concept sidebar](#concept-sidebar)
-  - [Session save / load](#session-save--load)
-  - [Zoom controls](#zoom-controls)
-  - [Delete annotations](#delete-annotations)
-- [Keyboard shortcuts](#keyboard-shortcuts)
-- [How it works](#how-it-works)
-- [Project structure](#project-structure)
-- [Running tests](#running-tests)
-- [TypeScript check](#typescript-check)
-- [Limitations](#limitations)
+- [What you get](#what-you-get)
+- [Requirements](#requirements)
+- [Setup](#setup)
+- [Providers](#providers)
+- [Configuration](#configuration)
+- [How it fits together](#how-it-fits-together)
+- [Project layout](#project-layout)
+- [Development](#development)
+- [Known gaps](#known-gaps)
+- [License](#license)
 
 ---
 
-## What it does
+## What you get
 
-When you're reading a dense paper and hit something you don't understand, Paper Reader gives you two ways to get help:
+**Read from your library.** Browse Zotero collections in the left sidebar and
+open any attachment — PDFs and HTML snapshots both. Papers open zero-copy: the
+document is fetched from Zotero rather than duplicated into the session, and the
+reload button re-reads it so you always see the current file.
 
-**Text selection** — highlight any term, equation, or passage and click "Explain this ↗". You get a structured breakdown:
-1. What it means (from scratch, no assumed knowledge)
-2. Why it's here (its role in the paper's method or findings)
-3. Background you need (prerequisite topics)
-4. Learning resources (specific textbook chapters, Wikipedia articles, courses)
+**Highlight, and mean it.** Select a passage and pick one of Zotero's eight
+annotation colours, with or without a note. For PDFs there is exactly one copy
+of that highlight and it lives in Zotero — recolour it, edit its note or delete
+it here and Zotero changes; do the same in Zotero and the reader follows. Delete
+one in Zotero and it disappears here rather than lingering.
 
-**Figure capture** — hold `Alt` and drag a rectangle over any graph, diagram, table, or equation image. You get:
-1. How to read it (axes, variables, visual encoding)
-2. What it's showing (the actual result or pattern)
-3. Why it matters (how it connects to the paper's broader argument)
-4. Background and resources
+Highlights are drawn as smooth per-line bands snapped to the actual ink on the
+page, not to the PDF text layer — which sits several pixels below the glyphs and
+made the native selection look ragged and misaligned. Selections use Zotero's own
+`#71ADFD` at the alpha its reader uses, so the two look identical.
 
-Every explanation is a live conversation — you can ask follow-up questions, and the AI remembers the full context of that annotation thread.
+**One conversation per paper.** Every question — explaining a selection, asking
+about a figure, a follow-up, a question from the map — goes into a single thread
+for that paper, resumed by session id on each ask. Ask about section 3 an hour
+later and the model still knows what you asked about section 2.
+
+**A map of the paper.** A generated outline grounded in verbatim quotes, each of
+which jumps to its passage. Alongside it, a notes column listing every highlight
+and Zotero note: click one to land on the passage itself — not the top of its
+page — and to open a box for writing a note straight back into Zotero. Click a
+highlight in the paper and the matching entry reveals itself.
+
+**Figures.** Click the capture button — or hold `Alt` — and drag a box over any
+chart, table or diagram to ask about it directly.
+
+**Web pages.** Paste a URL to read a page in the reader, with the same highlight
+layer, and save it to Zotero as a snapshot if you want to keep it.
 
 ---
 
-## Prerequisites
+## Requirements
 
-| Requirement | Minimum version | Notes |
+| | | |
 |---|---|---|
-| **Node.js** | 18.18+ | v20 or v22 recommended |
-| **npm** | 9+ | Comes with Node.js |
-| **Claude Code CLI** | latest | Must be installed and authenticated |
+| **Node.js** | 20+ | Required by Next.js 16; 22 recommended |
+| **Zotero** | 7 | With the local API enabled — see below |
+| **A provider** | one of | `claude` CLI, `codex` CLI, `opencode`, or any OpenAI/Anthropic-compatible endpoint |
 
-### Install Claude Code
-
-If you don't have the Claude Code CLI yet, follow the [official installation guide](https://code.claude.com/docs/en/getting-started).
-
-The short version:
-
-```bash
-npm install -g @anthropic-ai/claude-code
-```
-
-Then authenticate:
-
-```bash
-claude
-```
-
-Follow the login prompt. Paper Reader uses your existing Claude subscription — no API key needed. AI calls draw from the same credits as your normal Claude Code usage.
-
-To verify your Claude Code installation is working before running the app:
-
-```bash
-claude --version
-# Expected output: <version number> (Claude Code)
-
-claude -p "say hi"
-# Expected: a short response streamed to your terminal
-```
-
-If `claude` is not found, make sure your npm global bin directory is on your PATH:
-
-```bash
-# Find where npm installs global binaries
-npm bin -g
-
-# Add it to your shell profile if needed (e.g. ~/.bashrc or ~/.zshrc)
-export PATH="$(npm bin -g):$PATH"
-```
+Zotero is optional in the sense that you can still open a local PDF or a URL
+without it, but the library, highlight sync and notes all need it.
 
 ---
 
-## Installation
+## Setup
 
 ```bash
-# Clone or download the project
-cd paper_reader
-
-# Install dependencies
 npm install
-
-# Start the development server
-npm run dev
+npm run dev          # http://localhost:3000
 ```
 
-Open **http://localhost:3000** in your browser.
+**Enable Zotero's local API.** In Zotero: *Settings → Advanced → Allow other
+applications on this computer to communicate with Zotero*. This is what lets the
+reader list your collections and fetch attachments. It is read-only.
 
----
-
-## Getting started
-
-1. Click **Open PDF** in the top-left and choose any PDF file.
-2. The paper loads in the left pane. Select some text you want explained.
-3. Click **Explain this ↗** in the popover that appears.
-4. The explanation streams into the right panel.
-5. Ask follow-up questions in the input at the bottom of each explanation card.
-
----
-
-## Features
-
-### Text explanations
-- Select any text in the PDF with your mouse.
-- A small popover appears — click **Explain this ↗** or press `Escape` to dismiss.
-- The explanation appears as an annotation card on the right, streaming word by word.
-- Each card shows the selected text in full (with a "show more / show less" toggle for long passages).
-- Click **view in PDF ↩** inside the card to jump back to where the text appears in the document and highlight it.
-
-### Figure / image capture
-- Hold `Alt` and drag a rectangle over any figure, graph, diagram, table, or equation.
-- Release to capture — the region is sent to Claude Vision for analysis.
-- Click the thumbnail in the annotation card header to open the full-size image in a lightbox.
-- From the lightbox, click **✦ Explain with AI** to create a new explanation for the same image.
-
-### Follow-up questions
-- Each annotation card has its own conversation thread.
-- Type a question in the input at the bottom of any card and press `Enter` or click **Ask**.
-- Follow-ups reuse the same Claude session — no re-sending of previous content, just the new question.
-- Speaker labels: **you** for your messages, **explainer** for Claude's responses.
-
-### Model selector
-Choose the Claude model in the top-right of the header:
-
-| Model | Best for |
-|---|---|
-| **Haiku — fast** | Quick lookups, simple terms |
-| **Sonnet — balanced** | Default; good for most explanations |
-| **Opus — thorough** | Complex math, dense theory, multi-step figures |
-
-The selected model applies to all new explanations. Changing it mid-session doesn't affect ongoing conversations.
-
-### Concept sidebar
-- The collapsible panel on the far right lists every concept explained this session.
-- Each entry shows a type badge — amber **Txt** for text selections, purple **Fig** for figures.
-- Click any entry to scroll the explanation panel to that annotation.
-- Click the header to collapse the sidebar if you need more reading space.
-
-### Session save / load
-- Click **Save session** to download a `.json` file containing the PDF and all your annotations and conversations.
-- Click **Load session** to restore a previous session — everything comes back exactly as you left it, including the full conversation history.
-- Sessions embed the PDF as base64, so the JSON file is self-contained. No need to re-upload the PDF.
-
-### Zoom controls
-
-**PDF pane** — zoom the document itself:
-- `Ctrl` + scroll up/down
-- `−` / `%` / `+` buttons in the toolbar above the PDF
-- The `%` button resets to 100%
-
-**Explanation pane** — adjust the reading font size:
-- `Ctrl` + scroll up/down while hovering over the explanation panel
-- `−` / `px` / `+` buttons in the toolbar above the explanations
-- The `px` button resets to the default size
-
-### Delete annotations
-Click the `✕` button in the top-right of any annotation card to remove it. This also removes it from the concept sidebar.
-
----
-
-## Keyboard shortcuts
-
-| Shortcut | Action |
-|---|---|
-| `Alt` + drag | Capture a figure region |
-| `Escape` | Dismiss the text selection popover |
-| `Enter` (in follow-up box) | Send a follow-up question |
-| `Ctrl` + scroll (PDF pane) | Zoom PDF in / out |
-| `Ctrl` + scroll (explain pane) | Increase / decrease explanation font size |
-| `Escape` (lightbox open) | Close the image lightbox |
-
----
-
-## How it works
-
-Paper Reader is a local Next.js app. All AI calls go through Next.js Route Handlers on the server side, which spawn the `claude` CLI as a subprocess. The browser never calls Claude directly.
-
-```
-Browser (localhost:3000)
-    │
-    ├── POST /api/explain          → claude -p "..." --output-format stream-json
-    ├── POST /api/explain-image    → claude -p "..." --input-format stream-json (base64 image via stdin)
-    └── POST /api/followup         → claude -p "..." --resume <session_id>
-```
-
-**Streaming** — responses stream token by token. The UI updates in real time as Claude generates.
-
-**Session memory** — the first response for each annotation captures Claude's internal `session_id` from the stream. Follow-up questions use `--resume <session_id>`, so only the new question is sent — not the full history — making follow-ups fast and token-efficient.
-
-**PDF rendering** — `react-pdf` (PDF.js) renders each page with both a canvas layer (for region capture) and a text layer (for native browser text selection).
-
----
-
-## Project structure
-
-```
-paper_reader/
-├── app/
-│   ├── page.tsx                   # Root layout and orchestration
-│   ├── layout.tsx                 # Fonts (Geist + Lora), metadata
-│   ├── globals.css                # CSS variables, dark theme, utility classes
-│   └── api/
-│       ├── explain/route.ts       # Text explanation endpoint
-│       ├── explain-image/route.ts # Image explanation endpoint (stdin stream-json)
-│       └── followup/route.ts      # Follow-up via --resume
-├── components/
-│   ├── PdfViewer.tsx              # PDF rendering, text selection, region drag, zoom
-│   ├── ExplainPanel.tsx           # Annotation cards, follow-up chat, lightbox
-│   ├── ConceptSidebar.tsx         # Collapsible concept list
-│   └── SelectionPopover.tsx       # "Explain this ↗" floating button
-├── hooks/
-│   ├── useSession.ts              # All session state (annotations, PDF, model)
-│   ├── useTextSelection.ts        # Captures window.getSelection() inside PDF pane
-│   └── useRegionDrag.ts           # Alt+drag → canvas crop → base64 PNG
-├── lib/
-│   ├── prompts.ts                 # System prompts and prompt builders
-│   └── session-utils.ts           # makeLabel() helper
-├── types/
-│   └── session.ts                 # TypeScript types (Annotation, SessionState, etc.)
-└── __tests__/
-    ├── prompts.test.ts
-    ├── session-utils.test.ts
-    └── stream-parser.test.ts
-```
-
----
-
-## Running tests
+**Add an API key for writing highlights.** The local API cannot write, so
+annotations go through zotero.org and sync back down. Create a key at
+[zotero.org/settings/keys](https://www.zotero.org/settings/keys) with library
+read/write access, then:
 
 ```bash
-npm test
+echo 'ZOTERO_API_KEY=your-key-here' >> .env.local
 ```
 
-Uses Node.js's built-in `node:test` runner with `tsx` for TypeScript. No Jest or additional test framework needed.
+Without the key everything still works, but highlights stay local to the session
+instead of becoming real Zotero annotations.
+
+**Optional — give the model your library.** If the `zotero-mcp` server is
+installed, the three CLI providers get it automatically and can search your
+library while answering. It is configured per invocation from `.env.local`, so
+your global `claude`/`codex`/`opencode` configs are left alone. If the binary
+isn't there, nothing changes.
 
 ---
 
-## TypeScript check
+## Providers
+
+Pick one per paper from the model dropdown; each keeps its own conversation.
+
+| Provider | How it runs | Notes |
+|---|---|---|
+| **Claude** (Haiku / Sonnet / Opus / Fable) | `claude` CLI | Reads the paper text from disk as a file, so long papers cost nothing extra per turn |
+| **Codex** | `codex` CLI | Same agentic file access |
+| **OpenCode** | headless HTTP server | Started on first use, adopted if already running, shut down when idle and on exit |
+| **Custom API** | direct HTTP | Speaks OpenAI *or* Anthropic — pick the format in the dialog |
+
+The 🌐 toggle turns on web search where the provider supports it. Reasoning
+effort is selectable for everything except Custom API.
+
+OpenCode gets a full lifecycle rather than a spawn per question: `opencode run`
+hung indefinitely on one of two trivial probes during testing, which would have
+left the panel spinning forever behind a stuck child process. The server form
+makes hangs recoverable — there is a timeout and an explicit abort endpoint.
+
+---
+
+## Configuration
+
+All optional, in `.env.local`:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `ZOTERO_API_KEY` | — | Required to write highlights back to Zotero |
+| `ZOTERO_API_URL` | `http://127.0.0.1:23119/api/users/0` | Local Zotero API |
+| `ZOTERO_CONNECTOR_URL` | `http://127.0.0.1:23119` | Used when saving pages to Zotero |
+| `ZOTERO_USER_ID` | auto-detected | Your zotero.org user id |
+| `ZOTERO_MCP_BIN` | `~/.local/bin/zotero-mcp` | Where `zotero-mcp` lives |
+| `OPENCODE_PORT` | `4599` | Port for the headless server |
+| `OPENCODE_MODEL` | server default | `provider/model` override |
+| `OPENCODE_IDLE_MS` | `900000` | Shut the server down after this long idle |
+| `OPENCODE_TIMEOUT_MS` | `180000` | Give up on a single answer after this long |
+
+---
+
+## How it fits together
+
+Each paper gets a directory under `.paper-reader-sessions/`, keyed by its Zotero
+item key so it survives renames:
+
+```
+.paper-reader-sessions/<zotero-key>/
+  state.json      UI state — highlights, annotation cards, preferences
+  paper.md        extracted text, written once; agentic providers read it from disk
+  pages/          per-page JPEGs, for questions about figures
+  figures/        regions you captured, stored once rather than re-sent
+  mindmap.json    the paper map
+  thread.jsonl    the conversation, append-only
+```
+
+Keeping the paper text out of `state.json` is what makes the agentic providers
+work: they read `paper.md` as a file instead of having the whole document
+re-injected into every prompt.
+
+Highlights are matched to the page by text, ignoring whitespace entirely on both
+sides — necessary because a browser selection and a PDF text layer rarely agree
+about it. CJK text gives every character its own span and Chrome inserts line
+breaks where the DOM has none, so `暮易\nIntro` has to match `暮易Intro`. The same
+matcher paints highlights into HTML snapshots inside their iframe.
+
+---
+
+## Project layout
+
+```
+app/
+  page.tsx              the reader — panels, session, highlight and Zotero wiring
+  api/ask/              the one endpoint every question goes through
+  api/zotero/           library, attachments, notes, annotations
+  api/sessions/         per-paper state
+  api/paper/            text extraction and page snapshots
+  api/mindmap/          paper map generation
+  api/fetch-page/       reading a URL
+components/
+  PdfViewer.tsx         pdf.js viewer, ink-snapped bands, region capture
+  HtmlViewer.tsx        sandboxed snapshot reader with the same highlight layer
+  MindmapSidebar.tsx    paper map and notes column
+  ZoteroLibrary.tsx     collection browser
+  ExplainPanel.tsx      the conversation
+lib/
+  highlight-dom.ts      whitespace-insensitive passage matching and painting
+  providers.ts          claude / codex / opencode / custom
+  opencode-server.ts    headless server lifecycle
+  mcp-config.ts         Zotero MCP, rendered per provider
+  session-store.ts      the per-paper directory layout
+  zotero-server.ts      local + web Zotero APIs
+```
+
+---
+
+## Development
 
 ```bash
-npx tsc --noEmit
+npm test             # node:test, no watch mode
+npx tsc --noEmit     # types
+npm run lint
+npm run build
 ```
+
+Tests cover the parts worth protecting: passage matching and painting (against a
+real DOM via jsdom, including snapshots with inline `<script>` blocks), both
+custom wire formats against a stand-in server, provider dispatch, and MCP config
+rendering. There is also `scripts/opencode-lifecycle-check.ts`, which asserts the
+headless server starts once, is reused, restarts after an external kill, and
+leaves no orphan.
 
 ---
 
-## Limitations
+## Known gaps
 
-- **Browser only** — this is a local web app, not a standalone desktop application. The dev server must be running while you use it.
-- **`window.find()` for PDF highlighting** — the "view in PDF ↩" feature uses the non-standard `window.find()` API. Works in Chrome and Firefox; not supported in Safari.
-- **No OCR** — text selection only works on PDFs with a real embedded text layer. Scanned PDFs won't support text selection, though you can still capture regions as images using Alt+drag.
-- **Session file size** — saved sessions embed the full PDF as base64. A 10 MB PDF becomes roughly a 14 MB JSON file.
-- **Requires Claude Code CLI** — the `claude` binary must be in your system PATH and authenticated. The app does not use the Anthropic API directly.
+Worth knowing before you rely on them:
+
+- **Highlights on HTML snapshots stay local.** They persist per paper and repaint
+  on reload, but they are not written to Zotero. Zotero stores snapshot
+  annotations with a different position format, and guessing it would put
+  malformed items in your library.
+- **The Anthropic custom-endpoint format has only been tested against a local
+  mock**, not a live Anthropic-compatible service.
+- **Custom API endpoints get no tools** — no Zotero MCP, no web search. That
+  needs a server-side tool-calling loop the CLI providers get for free.
+- **`/api/explain`, `/api/explain-image` and `/api/followup` are dead.** Nothing
+  calls them since everything moved to `/api/ask`; they are still in the build.
+
+---
+
+## License
+
+MIT — see [LICENSE](LICENSE). Copyright remains with the original author of the
+project this is forked from.
