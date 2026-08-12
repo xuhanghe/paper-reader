@@ -15,13 +15,19 @@
 
   /* Accent — Claude warm orange */
   --accent:       #E8784C;
+  --accent-bright:#F08D63;
   --accent-dim:   rgba(232, 120, 76, 0.18);
+  --accent-faint: rgba(232, 120, 76, 0.09);
 
   /* Type badge colours */
   --badge-text-bg:   rgba(227, 179, 65, 0.15);
   --badge-text-fg:   #E3B341;
   --badge-fig-bg:    rgba(188, 140, 255, 0.15);
   --badge-fig-fg:    #BC8CFF;
+
+  /* Depth */
+  --shadow-card:  0 1px 2px rgba(1, 4, 9, 0.5), 0 4px 14px rgba(1, 4, 9, 0.25);
+  --shadow-modal: 0 20px 60px rgba(1, 4, 9, 0.7), 0 4px 16px rgba(1, 4, 9, 0.5);
 }
 
 @theme inline {
@@ -42,12 +48,157 @@ html, body, #__next {
   height: 100%;
 }
 
-/* react-pdf text layer */
-.react-pdf__Page__textContent {
-  user-select: text;
+/* ── Global finish ──────────────────────────────────────────── */
+
+::selection {
+  background: rgba(232, 120, 76, 0.32);
+  color: var(--ink);
 }
-.react-pdf__Page {
-  position: relative;
+
+/* The PDF text layer sits invisibly on top of the rendered page, one absolutely
+   positioned span per glyph run. The native selection paints each of those
+   separately, which reads as a row of ragged boxes with gaps, so it is hidden
+   here and PdfViewer draws one smooth band per line instead (.pr-selection).
+   Glyphs must stay transparent too — otherwise the app-wide selection colour
+   paints them over the real text as a doubled ghost.
+   Two details:
+   - `span` raises specificity above pdf.js's own `.textLayer ::selection`,
+     whose stylesheet loads after this one and would otherwise win.
+   - Vendor-prefixed selectors stay in their own rule; grouping them with a
+     standard selector makes browsers drop the entire rule. */
+.textLayer span::selection {
+  background: transparent;
+  color: transparent;
+}
+.textLayer span::-moz-selection {
+  background: transparent;
+  color: transparent;
+}
+.textLayer mark::selection {
+  background: transparent;
+  color: transparent;
+}
+.textLayer mark::-moz-selection {
+  background: transparent;
+  color: transparent;
+}
+
+/* Every tint the reader draws over a page — highlights, the selection, and the
+   pulse after jumping to a passage — is one of these bands: one box per line of
+   text, snapped onto the glyphs. There is deliberately no second highlight
+   style; the <mark> elements in the text layer are invisible and exist only to
+   carry ids and receive clicks.
+   Compositing follows Zotero's reader, which paints onto the page canvas with
+   "multiply" blending — that is what keeps the glyphs black under a band drawn
+   on top of them. */
+.pr-band {
+  position: absolute;
+  pointer-events: none;
+  z-index: 3;
+  border-radius: 3px;
+  mix-blend-mode: multiply;
+}
+/* Zotero's SELECTION_COLOR (#71ADFD) at the globalAlpha 0.4 it uses on light pages */
+.pr-selection {
+  background: rgba(113, 173, 253, 0.4);
+}
+
+/* Thin, theme-matched scrollbars */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 8px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--ink-faint);
+  background-clip: content-box;
+}
+
+/* Keyboard focus ring, without flashing on mouse clicks */
+button:focus-visible,
+input:focus-visible,
+select:focus-visible {
+  outline: 2px solid var(--accent-dim);
+  outline-offset: 1px;
+}
+
+/* Entry animations */
+@keyframes pr-fade-up {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes pr-modal-pop {
+  from { opacity: 0; transform: translateY(-8px) scale(0.985); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes pr-backdrop-fade {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+@keyframes pr-spin {
+  to { transform: rotate(360deg); }
+}
+.pr-spin      { animation: pr-spin 0.8s linear infinite; }
+.pr-fade-up   { animation: pr-fade-up 0.22s ease-out both; }
+.pr-modal-pop { animation: pr-modal-pop 0.18s ease-out both; }
+.pr-backdrop  { animation: pr-backdrop-fade 0.15s ease-out both; }
+
+/* Highlights are drawn as .pr-band boxes over the canvas; the marks themselves
+   only carry the highlight id and take the click that opens its menu */
+.textLayer mark.pr-highlight {
+  background: transparent;
+  color: transparent;
+  cursor: help;
+}
+/* A note entry revealed by clicking its highlight in the paper */
+@keyframes pr-entry-flash {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(232, 120, 76, 0); }
+  40%      { box-shadow: 0 0 0 2px rgba(232, 120, 76, 0.6); }
+}
+.pr-entry-flash {
+  animation: pr-entry-flash 0.8s ease-in-out 2;
+}
+
+/* Jumping to a passage pulses the very same band the selection uses, so the
+   reader never shows a second style of highlight */
+@keyframes pr-flash {
+  0%, 100% { opacity: 0.25; }
+  50%      { opacity: 1; }
+}
+.pr-flash {
+  animation: pr-flash 0.55s ease-in-out 3;
+}
+
+/* Quotes inside Zotero notes link back to the PDF — make them look clickable */
+.zotero-note-html span.highlight {
+  color: var(--accent);
+  cursor: pointer;
+  text-decoration: underline dotted;
+  text-underline-offset: 2px;
+}
+
+/* Zotero note HTML rendered in the Notes tab */
+.zotero-note-html p { margin: 0 0 0.4em; }
+.zotero-note-html ul, .zotero-note-html ol { padding-left: 1.2em; margin: 0 0 0.4em; }
+.zotero-note-html img { max-width: 100%; height: auto; }
+.zotero-note-html a { color: var(--accent); text-decoration: underline; }
+.zotero-note-html h1, .zotero-note-html h2, .zotero-note-html h3 {
+  font-size: 1em;
+  font-weight: 600;
+  margin: 0.4em 0 0.2em;
+  color: var(--ink);
 }
 
 /* ── Interactive button classes ─────────────────────────────── */
@@ -57,14 +208,17 @@ html, body, #__next {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border-radius: 4px;
+  border-radius: 6px;
   color: var(--ink-muted);
-  transition: background 0.12s, color 0.12s;
+  transition: background 0.13s, color 0.13s, transform 0.1s;
   cursor: pointer;
 }
 .btn-icon:hover:not(:disabled) {
   background: rgba(230, 237, 243, 0.08);
   color: var(--ink);
+}
+.btn-icon:active:not(:disabled) {
+  transform: scale(0.94);
 }
 .btn-icon:disabled {
   opacity: 0.25;
@@ -76,31 +230,64 @@ html, body, #__next {
   display: inline-flex;
   align-items: center;
   border: 1px solid var(--border);
-  border-radius: 4px;
+  border-radius: 6px;
   color: var(--ink-muted);
   background: transparent;
   cursor: pointer;
-  transition: border-color 0.12s, color 0.12s, background 0.12s;
+  transition: border-color 0.13s, color 0.13s, background 0.13s, transform 0.1s;
 }
-.btn-ghost:hover {
-  border-color: var(--ink-muted);
+.btn-ghost:hover:not(:disabled) {
+  border-color: rgba(232, 120, 76, 0.45);
   color: var(--ink);
-  background: rgba(230, 237, 243, 0.06);
+  background: var(--accent-faint);
+}
+.btn-ghost:active:not(:disabled) {
+  transform: translateY(0.5px);
 }
 
 /* Primary / filled button */
 .btn-primary {
   display: inline-flex;
   align-items: center;
-  background: var(--accent);
+  justify-content: center;
+  background: linear-gradient(180deg, var(--accent-bright), var(--accent));
   color: #fff;
-  border-radius: 4px;
+  border-radius: 6px;
   cursor: pointer;
-  transition: opacity 0.12s;
+  transition: filter 0.13s, transform 0.1s, box-shadow 0.13s;
   font-weight: 500;
+  box-shadow: 0 1px 2px rgba(1, 4, 9, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.12);
 }
-.btn-primary:hover {
-  opacity: 0.85;
+.btn-primary:hover:not(:disabled) {
+  filter: brightness(1.07);
+  box-shadow: 0 2px 6px rgba(232, 120, 76, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.12);
+}
+.btn-primary:active:not(:disabled) {
+  transform: translateY(0.5px);
+  filter: brightness(0.96);
+}
+.btn-primary:disabled {
+  cursor: not-allowed;
+}
+
+/* Toolbar pill cluster (zoom controls, page count) */
+.pill-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  border: 1px solid var(--border-light);
+  border-radius: 999px;
+  padding: 2px 6px;
+  background: rgba(230, 237, 243, 0.02);
+}
+
+/* Sidebar list rows (library items, collections) */
+.row-hover {
+  transition: background 0.12s;
+  border-radius: 6px;
+}
+.row-hover:hover {
+  background: rgba(230, 237, 243, 0.05);
 }
 
 /* ── Prose (serif reading area) ─────────────────────────────── */

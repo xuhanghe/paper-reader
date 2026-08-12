@@ -1,203 +1,934 @@
 "use client";
 import { useRef, useState, useCallback, useEffect, forwardRef, useImperativeHandle } from "react";
-import { Document, Page, pdfjs } from "react-pdf";
-import "react-pdf/dist/Page/TextLayer.css";
-import "react-pdf/dist/Page/AnnotationLayer.css";
+import { getDocument, GlobalWorkerOptions } from "pdfjs-dist";
+import type { PDFDocumentProxy } from "pdfjs-dist";
+import { EventBus, PDFViewer as PdfJsViewer, PDFLinkService, PDFFindController } from "pdfjs-dist/web/pdf_viewer.mjs";
+import "pdfjs-dist/web/pdf_viewer.css";
 import { SelectionPopover } from "./SelectionPopover";
 import { useTextSelection } from "@/hooks/useTextSelection";
 import { useRegionDrag } from "@/hooks/useRegionDrag";
 import { RegionResult } from "@/hooks/useRegionDrag";
+import { markTextInContainer, clearMarks, rangeForText } from "@/lib/highlight-dom";
+import { highlightTint, DEFAULT_HIGHLIGHT_COLOR } from "@/lib/highlight-colors";
+import { HighlightPopover } from "./HighlightPopover";
+import type { Highlight } from "@/types/session";
 
-pdfjs.GlobalWorkerOptions.workerSrc = `//unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
+GlobalWorkerOptions.workerSrc = new URL("pdfjs-dist/build/pdf.worker.min.mjs", import.meta.url).toString();
 
-const BASE_WIDTH = 700;
-const ZOOM_STEP = 0.15;
-const ZOOM_MIN = 0.4;
-const ZOOM_MAX = 2.5;
+// A selection band grows this many pixels beyond the glyph boxes, so lines of
+// mixed font sizes still read as one even ribbon
+const SELECTION_PAD = 1.5;
+
+type SelectionRect = { left: number; top: number; width: number; height: number };
+
+// The browser paints ::selection once per element, and pdf.js gives every glyph
+// run its own absolutely positioned span — so a native selection comes out as a
+// row of mismatched boxes with gaps between them. Merging the range's client
+// rects into one box per line gives the smooth ribbon Zotero's reader draws.
+//
+// Two things have to be handled or the merge runs away: pdf.js keeps a
+// page-sized `.endOfContent` div inside the text layer, which lands in the
+// range as one enormous rect, and a band's tolerance has to stay pinned to the
+// line it started on rather than growing as the band does.
+function mergeIntoLines(rects: SelectionRect[]): SelectionRect[] {
+  if (rects.length === 0) return [];
+
+  // Drop structural rects (endOfContent, whole-page boxes) by height
+  const heights = rects.map((r) => r.height).sort((a, b) => a - b);
+  const median = heights[Math.floor(heights.length / 2)];
+  const lines = rects
+    .filter((r) => r.height <= median * 2.5)
+    .sort((a, b) => a.top - b.top || a.left - b.left);
+
+  const bands: (SelectionRect & { centre: number; lineHeight: number })[] = [];
+  for (const r of lines) {
+    const centre = r.top + r.height / 2;
+    const band = bands[bands.length - 1];
+    // Compare against the band's founding line, not its grown bounds
+    if (!band || Math.abs(centre - band.centre) > Math.min(r.height, band.lineHeight) * 0.5) {
+      bands.push({ ...r, centre, lineHeight: r.height });
+      continue;
+    }
+    const left = Math.min(band.left, r.left);
+    const top = Math.min(band.top, r.top);
+    band.left = left;
+    band.top = top;
+    band.width = Math.max(band.left + band.width, r.left + r.width) - left;
+    band.height = Math.max(band.top + band.height, r.top + r.height) - top;
+  }
+  return bands.map(({ left, top, width, height }) => ({ left, top, width, height }));
+}
+
+// A pixel counts as ink below this luminance
+const INK_LUMA = 150;
+// A row is part of a glyph line once this share of it is ink
+const INK_ROW_SHARE = 0.015;
+// How far above/below a text-layer box to look for the glyphs it stands for
+const INK_SEARCH_ABOVE = 1.0;
+const INK_SEARCH_BELOW = 0.5;
+// Floor on band height, as a share of the text-layer box (i.e. the font size)
+const MIN_BAND_RATIO = 0.82;
+// How long a jumped-to passage stays lit
+const FLASH_MS = 1600;
+// Zotero draws its annotations with globalAlpha 0.5 and multiply blending
+const HIGHLIGHT_ALPHA = 0.5;
+
+type HighlightBand = SelectionRect & { id: string; color: string };
+
+// Snaps a selection band to the glyphs it covers.
+//
+// pdf.js positions its text layer with the browser's fallback fonts
+// (font-family: sans-serif/monospace on every span), while the page canvas is
+// drawn with the PDF's embedded fonts. When their metrics disagree — routinely,
+// for CJK documents — the invisible boxes sit a half-line off the visible text,
+// and anything drawn from them looks detached. Reading the rendered pixels is
+// the only source of truth for where the text actually is.
+function snapBandToInk(band: SelectionRect, canvas: HTMLCanvasElement, canvasRect: DOMRect): SelectionRect {
+  const scaleX = canvas.width / canvasRect.width;
+  const scaleY = canvas.height / canvasRect.height;
+  const x0 = Math.max(0, Math.floor((band.left - canvasRect.left) * scaleX));
+  const x1 = Math.min(canvas.width, Math.ceil((band.left + band.width - canvasRect.left) * scaleX));
+  const y0 = Math.max(0, Math.floor((band.top - canvasRect.top - band.height * INK_SEARCH_ABOVE) * scaleY));
+  const y1 = Math.min(
+    canvas.height,
+    Math.ceil((band.top + band.height * (1 + INK_SEARCH_BELOW) - canvasRect.top) * scaleY)
+  );
+  if (x1 - x0 < 1 || y1 - y0 < 1) return band;
+
+  let image: ImageData;
+  try {
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    if (!ctx) return band;
+    image = ctx.getImageData(x0, y0, x1 - x0, y1 - y0);
+  } catch {
+    return band; // tainted or zero-sized canvas
+  }
+
+  // Group inked rows into runs — one run per line of text in the window
+  const runs: { first: number; last: number }[] = [];
+  for (let row = 0; row < image.height; row++) {
+    let ink = 0;
+    for (let col = 0; col < image.width; col++) {
+      const i = (row * image.width + col) * 4;
+      const luma = 0.299 * image.data[i] + 0.587 * image.data[i + 1] + 0.114 * image.data[i + 2];
+      if (luma < INK_LUMA) ink++;
+    }
+    const inked = ink > image.width * INK_ROW_SHARE;
+    const open = runs[runs.length - 1];
+    if (inked && open && open.last === row - 1) open.last = row;
+    else if (inked) runs.push({ first: row, last: row });
+  }
+  // No ink (blank area, or light text on dark) — keep the text-layer geometry
+  if (runs.length === 0) return band;
+
+  // The window can reach into neighbouring lines, so take the run this band
+  // actually belongs to: the one whose centre is nearest the band's
+  const bandCentre = (band.top + band.height / 2 - canvasRect.top) * scaleY - y0;
+  const run = runs.reduce((best, r) =>
+    Math.abs((r.first + r.last) / 2 - bandCentre) < Math.abs((best.first + best.last) / 2 - bandCentre) ? r : best
+  );
+
+  const inkTop = canvasRect.top + (y0 + run.first) / scaleY;
+  const inkHeight = (run.last + 1 - run.first) / scaleY;
+  // Ignore implausible reads, e.g. a figure bleeding into the search window
+  if (inkHeight > band.height * 1.8 || inkHeight < band.height * 0.25) return band;
+
+  // Ink alone would make a line of lowercase latin a much thinner ribbon than
+  // one of CJK, so keep a floor tied to the font's em box and centre it on the
+  // glyphs — even bands, still aligned with what's on the page.
+  const height = Math.max(inkHeight, band.height * MIN_BAND_RATIO);
+  return { ...band, top: inkTop + inkHeight / 2 - height / 2, height };
+}
+
+const WHEEL_SENSITIVITY = 0.008;
+// Zoom gestures CSS-scale instantly; pages redraw at full resolution after this pause
+const DRAWING_DELAY_MS = 250;
+const BUTTON_ZOOM_FACTOR = 1.35;
 
 type Props = {
   pdfDataUrl: string;
   onTextSelected: (text: string, pageNumber?: number) => void;
+  onAskAboutSelection: (text: string, question: string, pageNumber?: number) => void;
   onRegionCaptured: (result: RegionResult) => void;
+  onHighlight?: (text: string, pageNumber?: number, position?: AnnotationPosition, color?: string) => void;
+  onNote?: (text: string, note: string, pageNumber?: number, position?: AnnotationPosition, color?: string) => void;
+  onRemoveHighlight?: (id: string) => void;
+  onRecolorHighlight?: (id: string, color: string) => void;
+  onEditHighlightNote?: (id: string, note: string) => void;
+  // Fires alongside the popover, so the Notes panel can reveal the same entry
+  onHighlightClick?: (id: string) => void;
+  highlights?: Highlight[];
+  // Re-reads the document from Zotero; absent for materials not stored there
+  onReload?: () => void;
+  reloading?: boolean;
 };
+
+// Zotero-compatible annotation position: PDF-space rects on a zero-based page
+export type AnnotationPosition = { pageIndex: number; rects: number[][] };
 
 export type PdfViewerHandle = {
   highlightText: (pageNumber: number, text: string) => void;
+  // Scrolls a painted highlight into view by id. Resolves false when the mark
+  // can't be found, so the caller can fall back to a text search.
+  scrollToHighlight?: (id: string, pageNumber?: number) => Promise<boolean>;
+  getDocumentText: (maxChars?: number) => Promise<string | null>;
+  // Renders pages to JPEG snapshots (for multimodal paper context).
+  // Returns [] for page numbers out of range or when no document is loaded.
+  renderPageImages?: (pageNumbers: number[], scale?: number) => Promise<{ n: number; dataUrl: string }[]>;
 };
 
+// Built on the official PDF.js viewer component (the same one Overleaf uses):
+// virtualized page rendering, cursor-anchored CSS-first zoom with delayed
+// redraw, and a find controller for jump-and-highlight.
 export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
-  { pdfDataUrl, onTextSelected, onRegionCaptured },
+  { pdfDataUrl, onTextSelected, onAskAboutSelection, onRegionCaptured, onHighlight, onNote, onRemoveHighlight, onRecolorHighlight, onEditHighlightNote, onHighlightClick, highlights = [], onReload, reloading },
   ref
 ) {
-  const [numPages, setNumPages] = useState(0);
-  const [zoom, setZoom] = useState(1);
   const containerRef = useRef<HTMLDivElement>(null);
-  const pageCanvases = useRef<Record<number, HTMLCanvasElement>>({});
-  const pageContainers = useRef<Record<number, HTMLDivElement>>({});
+  const viewerRef = useRef<PdfJsViewer | null>(null);
+  const eventBusRef = useRef<EventBus | null>(null);
+  const pdfDocRef = useRef<PDFDocumentProxy | null>(null);
 
-  const pageWidth = Math.round(BASE_WIDTH * zoom);
+  const [numPages, setNumPages] = useState(0);
+  const [displayScale, setDisplayScale] = useState(1);
+  const [captureMode, setCaptureMode] = useState(false);
+  const [loadError, setLoadError] = useState(false);
+  const [highlightMenu, setHighlightMenu] = useState<{ id: string; rect: DOMRect } | null>(null);
 
   const { selection, handleMouseUp, clearSelection } = useTextSelection(containerRef);
   const { isDragging, dragRegion, onMouseDown, onMouseMove, onMouseUp } = useRegionDrag(
     useRef<HTMLCanvasElement>(null)
   );
+  const dragPageRef = useRef<HTMLDivElement | null>(null);
 
-  const zoomIn    = useCallback(() => setZoom((z) => Math.min(ZOOM_MAX, +(z + ZOOM_STEP).toFixed(2))), []);
-  const zoomOut   = useCallback(() => setZoom((z) => Math.max(ZOOM_MIN, +(z - ZOOM_STEP).toFixed(2))), []);
-  const zoomReset = useCallback(() => setZoom(1), []);
+  // ── Persistent highlights on the text layer ─────────────────────
+  const highlightsRef = useRef<Highlight[]>(highlights);
+  highlightsRef.current = highlights;
+
+  // Highlights are painted inside the text layer, so they inherit its
+  // misalignment with the rendered glyphs (see snapBandToInk). Nudging each
+  // mark onto its line's ink moves both the tint and its click target.
+  const alignMarksToInk = useCallback((layer: HTMLElement, pageEl: Element) => {
+    const canvas = pageEl.querySelector("canvas") as HTMLCanvasElement | null;
+    const marks = Array.from(layer.querySelectorAll("mark.pr-highlight")) as HTMLElement[];
+    if (!canvas || marks.length === 0) return;
+    const canvasRect = canvas.getBoundingClientRect();
+    if (canvasRect.width === 0) return;
+
+    // One measurement per line, shared by every mark sitting on it
+    const lines: { rect: SelectionRect; marks: HTMLElement[] }[] = [];
+    for (const mark of marks) {
+      const r = mark.getBoundingClientRect();
+      if (r.width < 1 || r.height < 1) continue;
+      const line = lines.find(
+        (l) =>
+          Math.abs(r.top + r.height / 2 - (l.rect.top + l.rect.height / 2)) <
+          Math.min(r.height, l.rect.height) * 0.5
+      );
+      if (!line) {
+        lines.push({ rect: { left: r.left, top: r.top, width: r.width, height: r.height }, marks: [mark] });
+        continue;
+      }
+      const left = Math.min(line.rect.left, r.left);
+      const top = Math.min(line.rect.top, r.top);
+      line.rect = {
+        left,
+        top,
+        width: Math.max(line.rect.left + line.rect.width, r.right) - left,
+        height: Math.max(line.rect.top + line.rect.height, r.bottom) - top,
+      };
+      line.marks.push(mark);
+    }
+
+    for (const line of lines) {
+      const snapped = snapBandToInk(line.rect, canvas, canvasRect);
+      const shift = snapped.top + snapped.height / 2 - (line.rect.top + line.rect.height / 2);
+      if (Math.abs(shift) < 0.5) continue;
+      for (const mark of line.marks) {
+        mark.style.position = "relative";
+        mark.style.top = `${shift.toFixed(1)}px`;
+      }
+    }
+  }, []);
+
+  // Highlights are drawn as bands, exactly like the selection — the <mark>
+  // elements stay in the text layer only to carry ids and take clicks.
+  const [highlightBands, setHighlightBands] = useState<Record<number, HighlightBand[]>>({});
+
+  const paintPageHighlights = useCallback((pageNumber: number) => {
+    const container = containerRef.current;
+    const pageEl = container?.querySelector(`.page[data-page-number="${pageNumber}"]`);
+    const layer = pageEl?.querySelector(".textLayer") as HTMLElement | null;
+    if (!container || !pageEl || !layer) return;
+    clearMarks(layer, "pr-highlight");
+    for (const h of highlightsRef.current) {
+      if (h.pageNumber && h.pageNumber !== pageNumber) continue;
+      const cls = ["pr-highlight", h.note ? "pr-has-note" : ""].filter(Boolean).join(" ");
+      markTextInContainer(
+        layer,
+        h.text,
+        cls,
+        h.note ? `Note: ${h.note} — click to edit` : "Click to recolour or remove",
+        { id: h.id }
+      );
+    }
+    alignMarksToInk(layer, pageEl);
+
+    // One band per line of each highlight, measured from the aligned marks
+    const canvas = pageEl.querySelector("canvas") as HTMLCanvasElement | null;
+    const canvasRect = canvas?.getBoundingClientRect();
+    const box = container.getBoundingClientRect();
+    const bands: HighlightBand[] = [];
+    for (const h of highlightsRef.current) {
+      const marks = Array.from(
+        layer.querySelectorAll(`mark.pr-highlight[data-highlight-id="${CSS.escape(h.id)}"]`)
+      ) as HTMLElement[];
+      if (marks.length === 0) continue;
+      const merged = mergeIntoLines(
+        marks
+          .map((m) => m.getBoundingClientRect())
+          .filter((r) => r.width > 0.5 && r.height > 0.5)
+          .map((r) => ({ left: r.left, top: r.top, width: r.width, height: r.height }))
+      );
+      for (const band of merged) {
+        const snapped = canvas && canvasRect ? snapBandToInk(band, canvas, canvasRect) : band;
+        bands.push({
+          id: h.id,
+          color: highlightTint(h.color || DEFAULT_HIGHLIGHT_COLOR, HIGHLIGHT_ALPHA),
+          left: snapped.left - box.left + container.scrollLeft,
+          top: snapped.top - box.top + container.scrollTop,
+          width: snapped.width,
+          height: snapped.height,
+        });
+      }
+    }
+    setHighlightBands((prev) => ({ ...prev, [pageNumber]: bands }));
+  }, [alignMarksToInk]);
+
+  // Clicking an existing highlight opens its recolour / remove menu and points
+  // the Notes panel at the same entry
+  const clickRef = useRef(onHighlightClick);
+  useEffect(() => {
+    clickRef.current = onHighlightClick;
+  }, [onHighlightClick]);
+
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    // mouseup rather than click: once pdf.js parks `.endOfContent` over the
+    // text layer, the browser stops firing click there entirely — the second
+    // click on a highlight never reached us.
+    const onMouseUp = (e: MouseEvent) => {
+      const selection = window.getSelection();
+      if (selection && !selection.isCollapsed) return; // finishing a drag-select
+      let mark = (e.target as HTMLElement)?.closest?.("mark.pr-highlight") as HTMLElement | null;
+      if (!mark) {
+        // pdf.js parks a page-sized `.endOfContent` div over the text layer
+        // once a selection has been made, and it swallows the hit — so look
+        // through everything under the pointer, not just the top element.
+        mark =
+          (document
+            .elementsFromPoint(e.clientX, e.clientY)
+            .map((el) => (el as HTMLElement).closest?.("mark.pr-highlight"))
+            .find(Boolean) as HTMLElement | undefined) ?? null;
+      }
+      const id = mark?.dataset.highlightId;
+      if (!mark || !id) {
+        setHighlightMenu(null);
+        return;
+      }
+      setHighlightMenu({ id, rect: mark.getBoundingClientRect() });
+      clickRef.current?.(id);
+    };
+    el.addEventListener("mouseup", onMouseUp);
+    return () => el.removeEventListener("mouseup", onMouseUp);
+  }, []);
+
+  // Re-paint all currently rendered pages when highlights change
+  useEffect(() => {
+    containerRef.current?.querySelectorAll(".page[data-page-number]").forEach((page) => {
+      paintPageHighlights(parseInt(page.getAttribute("data-page-number")!));
+    });
+  }, [highlights, paintPageHighlights]);
+
+  // ── Selection ribbon ────────────────────────────────────────────
+  // Drawn by us instead of ::selection (see mergeIntoLines). Coordinates are
+  // relative to the scroll container's content, so the bands scroll with the
+  // pages; they're recomputed on zoom, which moves everything.
+  const [selectionRects, setSelectionRects] = useState<SelectionRect[]>([]);
+
+  // Bands pulsed briefly after jumping to a passage — the same visual language
+  // as the selection, so the reader only ever shows one kind of highlight
+  const [flashRects, setFlashRects] = useState<SelectionRect[]>([]);
+  const flashTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+
+  // Snap viewport-space bands onto the glyphs of whichever page they fall on
+  const snapBands = useCallback((bands: SelectionRect[]): SelectionRect[] => {
+    const container = containerRef.current;
+    if (!container) return bands;
+    const canvases = Array.from(container.querySelectorAll(".page canvas")).map((c) => ({
+      canvas: c as HTMLCanvasElement,
+      rect: c.getBoundingClientRect(),
+    }));
+    return bands.map((band) => {
+      const cy = band.top + band.height / 2;
+      const cx = band.left + band.width / 2;
+      const page = canvases.find(
+        ({ rect }) => cy >= rect.top && cy <= rect.bottom && cx >= rect.left && cx <= rect.right
+      );
+      return page ? snapBandToInk(band, page.canvas, page.rect) : band;
+    });
+  }, []);
+
+  // Viewport coordinates → the scroll container's content space
+  const toContentSpace = useCallback((bands: SelectionRect[]): SelectionRect[] => {
+    const container = containerRef.current;
+    if (!container) return bands;
+    const box = container.getBoundingClientRect();
+    return bands.map((b) => ({
+      ...b,
+      left: b.left - box.left + container.scrollLeft,
+      top: b.top - box.top + container.scrollTop,
+    }));
+  }, []);
+
+  const flashBands = useCallback(
+    (clientRects: DOMRect[] | SelectionRect[]) => {
+      const bands = mergeIntoLines(
+        Array.from(clientRects)
+          .filter((r) => r.width > 0.5 && r.height > 0.5)
+          .map((r) => ({ left: r.left, top: r.top, width: r.width, height: r.height }))
+      );
+      if (bands.length === 0) return;
+      setFlashRects(toContentSpace(snapBands(bands)));
+      clearTimeout(flashTimer.current);
+      flashTimer.current = setTimeout(() => setFlashRects([]), FLASH_MS);
+    },
+    [snapBands, toContentSpace]
+  );
+
+  useEffect(() => () => clearTimeout(flashTimer.current), []);
+
+  const paintSelection = useCallback(() => {
+    const container = containerRef.current;
+    const sel = window.getSelection();
+    if (!container || !sel || sel.isCollapsed || sel.rangeCount === 0) {
+      setSelectionRects([]);
+      return;
+    }
+    const anchor = sel.anchorNode;
+    const node = anchor instanceof Element ? anchor : anchor?.parentElement;
+    if (!node || !container.contains(node)) {
+      setSelectionRects([]);
+      return;
+    }
+
+    // Merge in viewport coordinates, where the page canvases can be consulted,
+    // then translate into the scroll container's content space to render
+    const bands = mergeIntoLines(
+      Array.from(sel.getRangeAt(0).getClientRects())
+        .filter((r) => r.width > 0.5 && r.height > 0.5)
+        .map((r) => ({ left: r.left, top: r.top, width: r.width, height: r.height }))
+    );
+    setSelectionRects(toContentSpace(snapBands(bands)));
+  }, [snapBands, toContentSpace]);
+
+  // selectionchange fires on every mousemove of a drag; one paint per frame
+  useEffect(() => {
+    let frame = 0;
+    const schedule = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(paintSelection);
+    };
+    document.addEventListener("selectionchange", schedule);
+    return () => {
+      cancelAnimationFrame(frame);
+      document.removeEventListener("selectionchange", schedule);
+    };
+  }, [paintSelection]);
+
+  // ── Viewer lifecycle ────────────────────────────────────────────
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    let cancelled = false;
+    setHighlightBands({}); // bands belong to the outgoing document
+
+    const eventBus = new EventBus();
+    const linkService = new PDFLinkService({ eventBus });
+    const findController = new PDFFindController({ eventBus, linkService });
+    const viewer = new PdfJsViewer({ container, eventBus, linkService, findController });
+    linkService.setViewer(viewer);
+    eventBusRef.current = eventBus;
+    viewerRef.current = viewer;
+
+    eventBus.on("pagesinit", () => {
+      // Skip if the container has been unmounted/detached (fast paper switch,
+      // dev remount) — pdf.js would try to scroll a detached element.
+      if (cancelled || !container.isConnected) return;
+      viewer.currentScaleValue = "page-width";
+    });
+    eventBus.on("scalechanging", (e: { scale: number }) => {
+      if (cancelled) return;
+      setDisplayScale(e.scale);
+      // Pages just moved under the bands. The selection can be redrawn at once;
+      // highlight bands are cleared and come back with the next text layer,
+      // rather than sitting at stale positions through the zoom animation.
+      requestAnimationFrame(paintSelection);
+      setHighlightBands({});
+    });
+    // Text layers rebuild on zoom/virtualization — re-paint highlights each time
+    eventBus.on("textlayerrendered", (e: { pageNumber: number }) => {
+      if (!cancelled) paintPageHighlights(e.pageNumber);
+    });
+
+    const loadingTask = getDocument(pdfDataUrl);
+    loadingTask.promise.then(
+      (pdf) => {
+        if (cancelled) return;
+        pdfDocRef.current = pdf;
+        viewer.setDocument(pdf);
+        linkService.setDocument(pdf);
+        setNumPages(pdf.numPages);
+        setLoadError(false);
+      },
+      () => { if (!cancelled) setLoadError(true); }
+    );
+
+    return () => {
+      cancelled = true;
+      // Tear the viewer down so no in-flight page setup fires against a
+      // detached DOM ("offsetParent is not set" console errors)
+      try {
+        // pdf.js supports null for teardown; its TS types don't declare it
+        viewer.setDocument(null as unknown as PDFDocumentProxy);
+        linkService.setDocument(null);
+      } catch {
+        // viewer may not have received a document yet
+      }
+      loadingTask.destroy().catch(() => {});
+      pdfDocRef.current = null;
+      viewerRef.current = null;
+      eventBusRef.current = null;
+    };
+  }, [pdfDataUrl, paintPageHighlights, paintSelection]);
+
+  // ── Zoom ────────────────────────────────────────────────────────
+  // pdf.js re-anchors the scroll to the current page on every scale change,
+  // which cancels any panning done mid-gesture. We suppress that by doing the
+  // cursor-anchored scroll maths ourselves right after the scale is applied,
+  // so pinch-zooming and two-finger panning work at the same time.
+  const zoomBy = useCallback((factor: number, origin?: [number, number]) => {
+    const viewer = viewerRef.current;
+    const el = containerRef.current;
+    if (!viewer || !el) return;
+
+    const rect = el.getBoundingClientRect();
+    const ox = origin ? origin[0] - rect.left : rect.width / 2;
+    const oy = origin ? origin[1] - rect.top : rect.height / 2;
+    const beforeLeft = el.scrollLeft;
+    const beforeTop = el.scrollTop;
+    const prevScale = viewer.currentScale;
+
+    viewer.updateScale({ scaleFactor: factor, drawingDelay: DRAWING_DELAY_MS });
+
+    const ratio = viewer.currentScale / prevScale;
+    if (Number.isFinite(ratio) && ratio > 0) {
+      el.scrollLeft = (beforeLeft + ox) * ratio - ox;
+      el.scrollTop = (beforeTop + oy) * ratio - oy;
+    }
+  }, []);
 
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
     const onWheel = (e: WheelEvent) => {
-      if (!e.ctrlKey) return;
+      if (!e.ctrlKey && !e.metaKey) return;
       e.preventDefault();
-      setZoom((z) => {
-        const delta = e.deltaY < 0 ? ZOOM_STEP : -ZOOM_STEP;
-        return Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, +(z + delta).toFixed(2)));
-      });
+      zoomBy(Math.exp(-e.deltaY * WHEEL_SENSITIVITY), [e.clientX, e.clientY]);
     };
     el.addEventListener("wheel", onWheel, { passive: false });
     return () => el.removeEventListener("wheel", onWheel);
+  }, [zoomBy]);
+
+  const zoomReset = useCallback(() => {
+    const viewer = viewerRef.current;
+    if (viewer) viewer.currentScaleValue = "page-width";
   }, []);
 
-  // Detect which page number the current selection lives in
+  // ── Selection → explain / ask ───────────────────────────────────
   const getSelectionPageNumber = useCallback((): number | undefined => {
     const sel = window.getSelection();
     if (!sel || sel.isCollapsed) return undefined;
-    const anchor = sel.anchorNode;
-    for (const [num, container] of Object.entries(pageContainers.current)) {
-      if (container.contains(anchor)) return parseInt(num);
-    }
-    return undefined;
+    const node = sel.anchorNode;
+    const el = node instanceof Element ? node : node?.parentElement;
+    const page = el?.closest(".page");
+    const num = page?.getAttribute("data-page-number");
+    return num ? parseInt(num) : undefined;
   }, []);
+
+  const selectionPageRef = useRef<number | undefined>(undefined);
+  const selectionPositionRef = useRef<AnnotationPosition | undefined>(undefined);
+
+  // Convert the browser selection's client rects to PDF-space coordinates so
+  // highlights can be written back to Zotero as real annotations
+  const computeSelectionPosition = useCallback((): AnnotationPosition | undefined => {
+    const sel = window.getSelection();
+    const pageNum = selectionPageRef.current;
+    const viewer = viewerRef.current;
+    if (!sel || sel.isCollapsed || !pageNum || !viewer) return undefined;
+    const pageView = viewer.getPageView(pageNum - 1) as
+      | { viewport?: { convertToPdfPoint: (x: number, y: number) => number[] }; div?: HTMLElement }
+      | undefined;
+    const wrapper = pageView?.div?.querySelector(".canvasWrapper");
+    if (!pageView?.viewport || !wrapper) return undefined;
+    const pageRect = wrapper.getBoundingClientRect();
+    const rects: number[][] = [];
+    for (const r of Array.from(sel.getRangeAt(0).getClientRects())) {
+      if (r.width < 1 || r.height < 1) continue;
+      const [ax, ay] = pageView.viewport.convertToPdfPoint(r.left - pageRect.left, r.bottom - pageRect.top);
+      const [bx, by] = pageView.viewport.convertToPdfPoint(r.right - pageRect.left, r.top - pageRect.top);
+      rects.push([Math.min(ax, bx), Math.min(ay, by), Math.max(ax, bx), Math.max(ay, by)]);
+    }
+    return rects.length ? { pageIndex: pageNum - 1, rects } : undefined;
+  }, []);
+
+  useEffect(() => {
+    if (selection) {
+      selectionPageRef.current = getSelectionPageNumber();
+      selectionPositionRef.current = computeSelectionPosition();
+    }
+  }, [selection, getSelectionPageNumber, computeSelectionPosition]);
 
   const handleExplain = useCallback(() => {
     if (selection) {
-      const pageNumber = getSelectionPageNumber();
-      onTextSelected(selection.text, pageNumber);
+      onTextSelected(selection.text, selectionPageRef.current);
       clearSelection();
     }
-  }, [selection, onTextSelected, clearSelection, getSelectionPageNumber]);
+  }, [selection, onTextSelected, clearSelection]);
 
-  // Imperative handle: scroll to page then use window.find() to highlight the text
+  const handleAsk = useCallback(
+    (question: string) => {
+      if (selection) {
+        onAskAboutSelection(selection.text, question, selectionPageRef.current);
+        clearSelection();
+      }
+    },
+    [selection, onAskAboutSelection, clearSelection]
+  );
+
+  const handleHighlight = useCallback(
+    (color: string) => {
+      if (selection && onHighlight) {
+        onHighlight(selection.text, selectionPageRef.current, selectionPositionRef.current, color);
+        clearSelection();
+      }
+    },
+    [selection, onHighlight, clearSelection]
+  );
+
+  const handleNote = useCallback(
+    (note: string, color: string) => {
+      if (selection && onNote) {
+        onNote(selection.text, note, selectionPageRef.current, selectionPositionRef.current, color);
+        clearSelection();
+      }
+    },
+    [selection, onNote, clearSelection]
+  );
+
+  // ── Figure region capture ───────────────────────────────────────
+  const findPageParts = useCallback((target: EventTarget | null) => {
+    const el = target instanceof Element ? target : null;
+    const page = el?.closest(".page") as HTMLDivElement | null;
+    // canvasWrapper exactly matches the canvas, so coordinate math is exact
+    const wrapper = page?.querySelector(".canvasWrapper") as HTMLDivElement | null;
+    const canvas = wrapper?.querySelector("canvas") as HTMLCanvasElement | null;
+    return canvas && wrapper ? { canvas, wrapper } : null;
+  }, []);
+
+  const handleContainerMouseDown = useCallback((e: React.MouseEvent) => {
+    const parts = findPageParts(e.target);
+    if (!parts) return;
+    if (captureMode) e.preventDefault();
+    onMouseDown(e, parts.canvas, parts.wrapper, captureMode);
+    dragPageRef.current = parts.wrapper;
+  }, [findPageParts, onMouseDown, captureMode]);
+
+  const handleContainerMouseMove = useCallback((e: React.MouseEvent) => {
+    if (isDragging && dragPageRef.current) onMouseMove(e, dragPageRef.current);
+  }, [isDragging, onMouseMove]);
+
+  const handleContainerMouseUp = useCallback((e: React.MouseEvent) => {
+    if (isDragging && dragPageRef.current) {
+      const wrapper = dragPageRef.current;
+      const canvas = wrapper.querySelector("canvas") as HTMLCanvasElement | null;
+      if (canvas) {
+        onMouseUp(e, canvas, wrapper, (result) => {
+          setCaptureMode(false);
+          onRegionCaptured(result);
+        });
+      }
+      dragPageRef.current = null;
+      return;
+    }
+    handleMouseUp();
+  }, [isDragging, onMouseUp, onRegionCaptured, handleMouseUp]);
+
+  // Viewport position of the drag rectangle (dragRegion is page-relative)
+  const dragRect = (() => {
+    if (!isDragging || !dragRegion || !dragPageRef.current) return null;
+    const pageRect = dragPageRef.current.getBoundingClientRect();
+    return {
+      left: pageRect.left + dragRegion.x,
+      top: pageRect.top + dragRegion.y,
+      width: dragRegion.width,
+      height: dragRegion.height,
+    };
+  })();
+
+  // ── Imperative handle ───────────────────────────────────────────
   useImperativeHandle(ref, () => ({
-    highlightText(pageNumber: number, text: string) {
-      const container = pageContainers.current[pageNumber];
-      if (!container) return;
-
-      container.scrollIntoView({ behavior: "smooth", block: "center" });
-
-      // After scroll settles, place cursor in the page's text layer then search
-      setTimeout(() => {
-        const textLayer = container.querySelector(".react-pdf__Page__textContent");
-        const firstNode = textLayer?.firstChild;
-        if (firstNode) {
-          const range = document.createRange();
-          range.setStart(firstNode, 0);
-          range.collapse(true);
-          const sel = window.getSelection();
-          sel?.removeAllRanges();
-          sel?.addRange(range);
+    // Jumps to a passage by searching the page's text layer ourselves. pdf.js's
+    // find controller used to do this, but it paints its own per-span highlight
+    // — a second, ragged highlight style on top of ours — and its matching
+    // fails on CJK for the same whitespace reasons ours once did.
+    async highlightText(pageNumber: number, text: string) {
+      const viewer = viewerRef.current;
+      const container = containerRef.current;
+      if (!viewer || !container || !text.trim()) return;
+      if (pageNumber >= 1 && pageNumber <= viewer.pagesCount) {
+        viewer.currentPageNumber = pageNumber;
+      }
+      for (let attempt = 0; attempt < 25; attempt++) {
+        const layer = container.querySelector(
+          `.page[data-page-number="${pageNumber}"] .textLayer`
+        ) as HTMLElement | null;
+        const range = layer ? rangeForText(layer, text) : null;
+        if (range) {
+          const rects: DOMRect[] = Array.from(range.getClientRects());
+          const first = rects.find((r) => r.width > 0.5 && r.height > 0.5);
+          if (first) {
+            const target = container.querySelector(
+              `.page[data-page-number="${pageNumber}"]`
+            ) as HTMLElement | null;
+            const box = container.getBoundingClientRect();
+            container.scrollTo({
+              top: container.scrollTop + (first.top - box.top) - container.clientHeight / 2,
+              behavior: target ? "smooth" : "auto",
+            });
+            flashBands(rects);
+          }
+          return;
         }
-        // window.find(text, caseSensitive, backwards, wrapAround, wholeWord, searchInFrames, showDialog)
-        (window as any).find(text, false, false, false, false, false, false);
-      }, 350);
+        await new Promise((resolve) => setTimeout(resolve, 80));
+      }
+    },
+
+    // Jumps to the exact passage rather than the top of its page: the painted
+    // <mark> already sits at the right spot, so scroll to that. The page has to
+    // be brought into view first for its text layer to exist at all.
+    async scrollToHighlight(id: string, pageNumber?: number) {
+      const viewer = viewerRef.current;
+      const container = containerRef.current;
+      if (!viewer || !container) return false;
+      const selector = `mark.pr-highlight[data-highlight-id="${CSS.escape(id)}"]`;
+
+      if (!container.querySelector(selector) && pageNumber && pageNumber >= 1 && pageNumber <= viewer.pagesCount) {
+        viewer.currentPageNumber = pageNumber;
+      }
+      // Text layers render asynchronously after a page change
+      for (let attempt = 0; attempt < 25; attempt++) {
+        const marks = Array.from(container.querySelectorAll(selector)) as HTMLElement[];
+        if (marks.length > 0) {
+          marks[0].scrollIntoView({ block: "center", behavior: "smooth" });
+          flashBands(marks.map((m) => m.getBoundingClientRect()));
+          return true;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 80));
+      }
+      return false;
+    },
+
+    async getDocumentText(maxChars = 60000) {
+      const doc = pdfDocRef.current;
+      if (!doc) return null;
+      let text = "";
+      for (let p = 1; p <= doc.numPages; p++) {
+        const page = await doc.getPage(p);
+        const content = await page.getTextContent();
+        const pageText = content.items
+          .map((item) => ("str" in item ? item.str : ""))
+          .join(" ")
+          .replace(/\u0000/g, " ")
+          .replace(/\s+/g, " ");
+        text += `\n\n[page ${p}]\n${pageText}`;
+        if (text.length >= maxChars) break;
+      }
+      return text.slice(0, maxChars);
+    },
+
+    async renderPageImages(pageNumbers: number[], scale = 1.35) {
+      const doc = pdfDocRef.current;
+      if (!doc) return [];
+      const out: { n: number; dataUrl: string }[] = [];
+      for (const n of pageNumbers) {
+        if (n < 1 || n > doc.numPages) continue;
+        try {
+          const page = await doc.getPage(n);
+          const viewport = page.getViewport({ scale });
+          const canvas = document.createElement("canvas");
+          canvas.width = Math.floor(viewport.width);
+          canvas.height = Math.floor(viewport.height);
+          const ctx = canvas.getContext("2d");
+          if (!ctx) continue;
+          await page.render({ canvasContext: ctx, viewport, canvas }).promise;
+          out.push({ n, dataUrl: canvas.toDataURL("image/jpeg", 0.75) });
+        } catch {
+          // page render failed — skip it
+        }
+      }
+      return out;
     },
   }));
 
-  const handlePageMouseDown = useCallback((e: React.MouseEvent, pageNum: number) => {
-    const canvas = pageCanvases.current[pageNum];
-    const container = pageContainers.current[pageNum];
-    if (canvas && container) onMouseDown(e, canvas, container);
-  }, [onMouseDown]);
-
-  const handlePageMouseMove = useCallback((e: React.MouseEvent, pageNum: number) => {
-    const container = pageContainers.current[pageNum];
-    if (container) onMouseMove(e, container);
-  }, [onMouseMove]);
-
-  const handlePageMouseUp = useCallback((e: React.MouseEvent, pageNum: number) => {
-    const canvas = pageCanvases.current[pageNum];
-    const container = pageContainers.current[pageNum];
-    if (canvas && container) onMouseUp(e, canvas, container, onRegionCaptured);
-  }, [onMouseUp, onRegionCaptured]);
-
   return (
     <div className="h-full flex flex-col overflow-hidden">
-      {/* Zoom toolbar */}
-      <div className="shrink-0 flex items-center gap-1 px-3 py-1.5" style={{ background: "var(--paper)", borderBottom: "1px solid var(--border)" }}>
-        <span className="text-[10px] uppercase tracking-widest mr-1" style={{ color: "var(--ink-faint)" }}>Zoom</span>
-        <button onClick={zoomOut} disabled={zoom <= ZOOM_MIN} className="btn-icon w-7 h-7 text-base leading-none" title="Zoom out (Ctrl+scroll)">−</button>
-        <button onClick={zoomReset} className="btn-icon px-2 py-0.5 text-xs min-w-[44px] text-center tabular-nums" title="Reset zoom">
-          {Math.round(zoom * 100)}%
+      {/* Toolbar */}
+      <div className="shrink-0 flex items-center gap-2 px-3 py-1.5" style={{ background: "var(--paper)", borderBottom: "1px solid var(--border)" }}>
+        <span className="pill-group">
+        <button onClick={() => zoomBy(1 / BUTTON_ZOOM_FACTOR)} className="btn-icon w-6 h-6 text-base leading-none" title="Zoom out (⌘/Ctrl+scroll or pinch)">−</button>
+        <button onClick={zoomReset} className="btn-icon px-2 py-0.5 text-xs min-w-[44px] text-center tabular-nums" title="Fit page width">
+          {Math.round(displayScale * 100)}%
         </button>
-        <button onClick={zoomIn} disabled={zoom >= ZOOM_MAX} className="btn-icon w-7 h-7 text-base leading-none" title="Zoom in (Ctrl+scroll)">+</button>
+        <button onClick={() => zoomBy(BUTTON_ZOOM_FACTOR)} className="btn-icon w-6 h-6 text-base leading-none" title="Zoom in (⌘/Ctrl+scroll or pinch)">+</button>
+        </span>
+
+        <button
+          onClick={() => setCaptureMode((v) => !v)}
+          className="text-xs px-2.5 py-1 rounded-full transition-all"
+          style={captureMode
+            ? { background: "linear-gradient(180deg, var(--accent-bright), var(--accent))", color: "#fff", boxShadow: "0 1px 6px rgba(232,120,76,0.4)" }
+            : { border: "1px solid var(--border)", color: "var(--ink-muted)" }}
+          title="Capture a figure or graph: click, then drag over the region (or ⌥ Option + drag anytime)"
+        >
+          ✂ Capture figure
+        </button>
+        {captureMode && (
+          <span className="text-[11px] pr-fade-up" style={{ color: "var(--accent)" }}>drag over a region…</span>
+        )}
+
+        {onReload && (
+          <button
+            onClick={onReload}
+            disabled={reloading}
+            className="btn-icon w-7 h-7 text-sm leading-none"
+            style={reloading ? { opacity: 0.5 } : undefined}
+            title="Reload this document and its annotations from Zotero"
+          >
+            <span className={reloading ? "pr-spin inline-block" : "inline-block"}>↻</span>
+          </button>
+        )}
+
         {numPages > 0 && (
-          <span className="ml-auto text-xs tabular-nums" style={{ color: "var(--ink-faint)" }}>{numPages}p</span>
+          <span
+            className="ml-auto text-[11px] tabular-nums px-2 py-0.5 rounded-full"
+            style={{ color: "var(--ink-faint)", border: "1px solid var(--border-light)" }}
+          >
+            {numPages} pages
+          </span>
         )}
       </div>
 
-      {/* Scrollable PDF area */}
-      <div
-        ref={containerRef}
-        className="flex-1 overflow-y-auto overflow-x-auto p-6"
-        onMouseUp={handleMouseUp}
-        style={{ background: "var(--parchment)", cursor: isDragging ? "crosshair" : "default" }}
-      >
+      {/* Viewer */}
+      <div className="flex-1 relative" style={{ background: "var(--parchment)" }}>
+        {highlightMenu && (() => {
+          const h = highlights.find((x) => x.id === highlightMenu.id);
+          return (
+            <HighlightPopover
+              rect={highlightMenu.rect}
+              color={h?.color}
+              note={h?.note}
+              onRecolor={(c) => { onRecolorHighlight?.(highlightMenu.id, c); setHighlightMenu(null); }}
+              onEditNote={(n) => { onEditHighlightNote?.(highlightMenu.id, n); setHighlightMenu(null); }}
+              onRemove={() => { onRemoveHighlight?.(highlightMenu.id); setHighlightMenu(null); }}
+              onDismiss={() => setHighlightMenu(null)}
+            />
+          );
+        })()}
+
         {selection && !isDragging && (
-          <SelectionPopover rect={selection.rect} onExplain={handleExplain} onDismiss={clearSelection} />
+          <SelectionPopover
+            rect={selection.rect}
+            selectedText={selection.text}
+            onExplain={handleExplain}
+            onAsk={handleAsk}
+            onHighlight={handleHighlight}
+            onNote={handleNote}
+            onDismiss={clearSelection}
+          />
         )}
 
-        <Document
-          file={pdfDataUrl}
-          onLoadSuccess={({ numPages }) => setNumPages(numPages)}
-          loading={<div className="flex items-center justify-center h-48 text-sm" style={{ color: "var(--ink-faint)" }}>Loading PDF…</div>}
-          error={<div className="flex items-center justify-center h-48 text-sm" style={{ color: "#F87171" }}>Failed to load PDF</div>}
+        {dragRect && (
+          <div
+            style={{
+              position: "fixed",
+              ...dragRect,
+              border: "2px dashed var(--accent)",
+              background: "rgba(232,120,76,0.08)",
+              pointerEvents: "none",
+              zIndex: 40,
+            }}
+          />
+        )}
+
+        {loadError && (
+          <div className="absolute inset-0 flex items-center justify-center text-sm" style={{ color: "#F87171" }}>
+            Failed to load PDF
+          </div>
+        )}
+
+        <div
+          ref={containerRef}
+          className="absolute inset-0 overflow-auto"
+          style={{ cursor: captureMode || isDragging ? "crosshair" : "default" }}
+          onMouseDown={handleContainerMouseDown}
+          onMouseMove={handleContainerMouseMove}
+          onMouseUp={handleContainerMouseUp}
         >
-          {Array.from({ length: numPages }, (_, i) => i + 1).map((pageNum) => (
+          <div className="pdfViewer" />
+          {Object.values(highlightBands).flat().map((b, i) => (
             <div
-              key={pageNum}
-              ref={(el) => { if (el) pageContainers.current[pageNum] = el; }}
-              className="relative bg-white select-text inline-block mb-5"
-              style={{ boxShadow: "0 2px 16px rgba(0,0,0,0.5), 0 1px 4px rgba(0,0,0,0.4)" }}
-              onMouseDown={(e) => handlePageMouseDown(e, pageNum)}
-              onMouseMove={(e) => handlePageMouseMove(e, pageNum)}
-              onMouseUp={(e) => handlePageMouseUp(e, pageNum)}
-            >
-              <Page
-                pageNumber={pageNum}
-                width={pageWidth}
-                renderTextLayer={true}
-                renderAnnotationLayer={false}
-                canvasRef={(canvas) => { if (canvas) pageCanvases.current[pageNum] = canvas; }}
-              />
-
-              {isDragging && dragRegion && (
-                <div
-                  style={{
-                    position: "absolute",
-                    left: dragRegion.x, top: dragRegion.y,
-                    width: dragRegion.width, height: dragRegion.height,
-                    border: "2px dashed var(--accent)",
-                    background: "rgba(232,120,76,0.08)",
-                    pointerEvents: "none",
-                  }}
-                />
-              )}
-
-              <div className="absolute bottom-1 right-2 text-[10px] select-none tabular-nums" style={{ color: "var(--ink-faint)" }}>
-                {pageNum}/{numPages}
-              </div>
-            </div>
+              key={`hl-${b.id}-${i}`}
+              className="pr-band"
+              style={{ left: b.left, top: b.top - SELECTION_PAD, width: b.width, height: b.height + SELECTION_PAD * 2, background: b.color }}
+            />
           ))}
-        </Document>
-
-        {numPages > 0 && (
-          <p className="text-center text-xs pb-4" style={{ color: "var(--ink-faint)" }}>
-            Hold <kbd className="px-1 rounded text-[11px]" style={{ background: "var(--border)", color: "var(--ink-muted)" }}>Alt</kbd> + drag to capture a figure or graph
-          </p>
-        )}
+          {selectionRects.map((r, i) => (
+            <div
+              key={i}
+              className="pr-band pr-selection"
+              style={{
+                left: r.left,
+                top: r.top - SELECTION_PAD,
+                width: r.width,
+                height: r.height + SELECTION_PAD * 2,
+              }}
+            />
+          ))}
+          {flashRects.map((r, i) => (
+            <div
+              key={`flash-${i}`}
+              className="pr-band pr-selection pr-flash"
+              style={{
+                left: r.left,
+                top: r.top - SELECTION_PAD,
+                width: r.width,
+                height: r.height + SELECTION_PAD * 2,
+              }}
+            />
+          ))}
+        </div>
       </div>
     </div>
   );
