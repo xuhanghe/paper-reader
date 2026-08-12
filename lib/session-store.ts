@@ -28,9 +28,18 @@ export type ThreadEntry = {
   annotationId?: string;
   hasImage?: boolean;
   // Captured figures are stored as files and referenced here — history stays
-  // complete without re-injecting image bytes on replay
+  // complete without re-injecting image bytes on replay. Relative to the
+  // session directory; see resolveSessionFile.
   imageFile?: string;
 };
+
+// The session-relative form of a stored reference. References are written
+// relative so a saved thread survives the project being moved or renamed; this
+// also normalises entries written before that was true, so an absolute path —
+// carrying the user's home directory — never reaches a provider on replay.
+export function sessionRelativeFile(id: string, ref: string): string {
+  return path.isAbsolute(ref) ? path.relative(dirFor(id), ref) : ref;
+}
 
 // ── state.json (with migration from the old flat <slug>.json layout) ──
 
@@ -140,13 +149,17 @@ export async function readPageImageDataUrl(id: string, n: number): Promise<strin
 
 export const figuresDirFor = (id: string) => path.join(dirFor(id), "figures");
 
+// Returns the reference to record in the thread — relative to the session
+// directory, never an absolute path: the thread outlives any one checkout, and
+// an absolute path would also carry the user's home directory into replayed
+// prompts sent to third-party endpoints.
 export async function writeFigureImage(id: string, dataUrl: string): Promise<string | null> {
   try {
     await mkdir(figuresDirFor(id), { recursive: true });
     const base64 = dataUrl.replace(/^data:image\/\w+;base64,/, "");
     const name = `fig-${Date.now()}.png`;
     await writeFile(path.join(figuresDirFor(id), name), Buffer.from(base64, "base64"));
-    return path.join(figuresDirFor(id), name);
+    return path.posix.join("figures", name);
   } catch {
     return null;
   }

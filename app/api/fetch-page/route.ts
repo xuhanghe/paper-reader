@@ -28,16 +28,28 @@ async function fetchPlain(url: URL): Promise<FetchedPage | null> {
 
 import { readFile } from "node:fs/promises";
 import path from "node:path";
+import { createRequire } from "node:module";
 import { RENDER_MATH_JS, STRIP_CHROME_JS } from "@/lib/render-math";
 
 // KaTeX assets, read once from node_modules (no CDN at render time).
 // Its CSS references fonts by relative URL, which would 404 against the
 // article's own domain and render every formula invisible — so the woff2
 // files are inlined as data URIs.
+// Ask the module resolver where katex actually is rather than assuming a flat
+// node_modules under the cwd — that assumption breaks under pnpm/Yarn and
+// whenever the server is started from anywhere but the project root.
+function katexDir(): string {
+  try {
+    return path.dirname(createRequire(import.meta.url).resolve("katex/dist/katex.min.js"));
+  } catch {
+    return path.join(process.cwd(), "node_modules", "katex", "dist");
+  }
+}
+
 let katexAssets: { js: string; css: string } | null = null;
 async function loadKatex() {
   if (katexAssets) return katexAssets;
-  const dir = path.join(process.cwd(), "node_modules", "katex", "dist");
+  const dir = katexDir();
   const [js, rawCss] = await Promise.all([
     readFile(path.join(dir, "katex.min.js"), "utf8"),
     readFile(path.join(dir, "katex.min.css"), "utf8"),

@@ -18,7 +18,9 @@ import {
   readPageImageDataUrl,
   figuresDirFor,
   writeFigureImage,
+  sessionRelativeFile,
 } from "@/lib/session-store";
+import { claudeBin } from "@/lib/bin";
 
 export const runtime = "nodejs";
 
@@ -185,7 +187,8 @@ export async function POST(req: Request) {
     const messages: { role: string; content: unknown }[] = [{ role: "system", content: header }];
     // Replay carries only a text marker for past figures — never image bytes
     for (const e of priorThread) {
-      messages.push({ role: e.role, content: e.imageFile ? `[figure attached: ${e.imageFile}]\n${e.text}` : e.text });
+      const ref = e.imageFile ? sessionRelativeFile(paper_id, e.imageFile) : null;
+      messages.push({ role: e.role, content: ref ? `[figure attached: ${ref}]\n${e.text}` : e.text });
     }
 
     if (!cfg.vision) {
@@ -228,7 +231,7 @@ export async function POST(req: Request) {
   ];
   const stream = new ReadableStream({
     start(controller) {
-      const proc = spawn("claude", args);
+      const proc = spawn(claudeBin(), args);
       if (useStdin) {
         proc.stdin.write(
           JSON.stringify({

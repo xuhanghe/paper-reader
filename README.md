@@ -144,6 +144,7 @@ All optional, in `.env.local`:
 | `ZOTERO_CONNECTOR_URL` | `http://127.0.0.1:23119` | Used when saving pages to Zotero |
 | `ZOTERO_USER_ID` | auto-detected | Your zotero.org user id |
 | `ZOTERO_MCP_BIN` | `~/.local/bin/zotero-mcp` | Where `zotero-mcp` lives |
+| `CLAUDE_BIN` / `CODEX_BIN` / `OPENCODE_BIN` | looked up on `PATH` | Point at a CLI explicitly when the server's `PATH` can't find it |
 | `OPENCODE_PORT` | `4599` | Port for the headless server |
 | `OPENCODE_MODEL` | server default | `provider/model` override |
 | `OPENCODE_IDLE_MS` | `900000` | Shut the server down after this long idle |
@@ -169,6 +170,12 @@ item key so it survives renames:
 Keeping the paper text out of `state.json` is what makes the agentic providers
 work: they read `paper.md` as a file instead of having the whole document
 re-injected into every prompt.
+
+Nothing inside a session directory records where the project lives — figure
+references in `thread.jsonl` are stored relative to the session — so the folder
+can be moved, renamed or copied to another machine and the threads keep
+working. Absolute paths exist only transiently, in the prompt handed to a CLI
+that has to open the file.
 
 Highlights are matched to the page by text, ignoring whitespace entirely on both
 sides — necessary because a browser selection and a PDF text layer rarely agree

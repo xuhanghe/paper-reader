@@ -3,6 +3,7 @@ import { sanitizeSpawnArg } from "./model-flags";
 import { codexMcpArgs } from "./mcp-config";
 import { ensureServer } from "./opencode-server";
 import { providerIdFor } from "./provider-id";
+import { codexBin } from "./bin";
 
 // Multi-provider backend. Every provider emits newline-delimited JSON with
 // {type:"content_block_delta", delta:{type:"text_delta", text}} events — the
@@ -81,7 +82,7 @@ export function codexStream(
 ): ReadableStream {
   return new ReadableStream({
     start(controller) {
-      const proc = spawn("codex", codexArgs(prompt, opts));
+      const proc = spawn(codexBin(), codexArgs(prompt, opts));
       proc.stdin.end();
       let buf = "";
       proc.stdout.on("data", (chunk: Buffer) => {
@@ -118,7 +119,7 @@ export function codexStream(
 
 export async function codexComplete(prompt: string, effort?: unknown): Promise<string> {
   return new Promise((resolve, reject) => {
-    const proc = spawn("codex", codexArgs(prompt, { effort }));
+    const proc = spawn(codexBin(), codexArgs(prompt, { effort }));
     proc.stdin.end();
     let out = "";
     const texts: string[] = [];

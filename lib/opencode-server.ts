@@ -4,6 +4,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { opencodeMcpConfig } from "./mcp-config";
+import { opencodeBin } from "./bin";
 
 // Lifecycle for the headless `opencode serve` process.
 //
@@ -181,7 +182,7 @@ async function start(): Promise<string> {
     return baseUrl;
   }
 
-  const proc = spawn("opencode", ["serve", "--port", String(port), "--hostname", "127.0.0.1"], {
+  const proc = spawn(opencodeBin(), ["serve", "--port", String(port), "--hostname", "127.0.0.1"], {
     cwd: prepareWorkdir(),
     stdio: ["ignore", "pipe", "pipe"],
   });

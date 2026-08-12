@@ -4,6 +4,7 @@ import { extractMindmapJson } from "@/lib/mindmap-utils";
 import { effortArgs, sanitizeSpawnArg } from "@/lib/model-flags";
 import { resolveProvider, parseCustomConfig, codexComplete, customComplete, opencodeComplete } from "@/lib/providers";
 import { writeMindmapFile } from "@/lib/session-store";
+import { claudeBin } from "@/lib/bin";
 
 export const runtime = "nodejs";
 
@@ -41,7 +42,7 @@ export async function POST(req: Request) {
   }
 
   const stdout = await new Promise<string>((resolve, reject) => {
-    const proc = spawn("claude", [
+    const proc = spawn(claudeBin(), [
       "-p", prompt,
       "--model", modelFlag,
       ...effortArgs(effort),
