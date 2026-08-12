@@ -3,17 +3,23 @@ import { useRef, useEffect, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Annotation, Model } from "@/types/session";
+import { isSubmitKey } from "@/lib/keys";
 
 type Props = {
   annotations: Annotation[];
   activeId: string | null;
   model: Model;
   streamingIds: Set<string>;
-  onFollowUp: (annotationId: string, question: string) => void;
+  onFollowUp: (annotationId: string, question: string, imageDataUrl?: string) => void;
+  onAskGeneral: (question: string, imageDataUrl?: string, reference?: { key: string; title: string }, webSearch?: boolean) => void;
   onDelete: (annotationId: string) => void;
   onReExplainImage: (annotationId: string) => void;
   onViewInPdf: (annotationId: string) => void;
   annotationRefs: React.MutableRefObject<Record<string, HTMLDivElement | null>>;
+  isOpen: boolean;
+  onToggle: () => void;
+  width?: number;
+  modelControls?: React.ReactNode;
 };
 
 function ImageLightbox({
@@ -33,11 +39,11 @@ function ImageLightbox({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center backdrop-blur-sm"
-      style={{ background: "rgba(28,25,23,0.75)" }}
+      className="fixed inset-0 z-50 flex items-center justify-center backdrop-blur-sm pr-backdrop"
+      style={{ background: "rgba(1,4,9,0.75)" }}
       onClick={onClose}
     >
-      <div className="relative max-w-[90vw] max-h-[90vh] flex flex-col items-center gap-3" onClick={(e) => e.stopPropagation()}>
+      <div className="relative max-w-[90vw] max-h-[90vh] flex flex-col items-center gap-3 pr-modal-pop" onClick={(e) => e.stopPropagation()}>
         <img
           src={src}
           alt="captured figure"
@@ -77,8 +83,47 @@ const FONT_SIZES = [12, 13, 14, 15, 16, 17, 18, 20];
 const DEFAULT_FONT_IDX = 2; // 14px
 const COLLAPSE_CHARS = 300;
 
-export function ExplainPanel({ annotations, activeId, model, streamingIds, onFollowUp, onDelete, onReExplainImage, onViewInPdf, annotationRefs }: Props) {
+export function ExplainPanel({ annotations, activeId, model, streamingIds, onFollowUp, onAskGeneral, onDelete, onReExplainImage, onViewInPdf, annotationRefs, isOpen, onToggle, width = 460, modelControls }: Props) {
   const [followUpText, setFollowUpText] = useState<Record<string, string>>({});
+  const [generalQuestion, setGeneralQuestion] = useState("");
+  const [composerImage, setComposerImage] = useState<string | null>(null);
+  const [composerRef, setComposerRef] = useState<{ key: string; title: string } | null>(null);
+  const [refPickerOpen, setRefPickerOpen] = useState(false);
+  const [refQuery, setRefQuery] = useState("");
+  const [refResults, setRefResults] = useState<{ key: string; title: string }[]>([]);
+  const [webSearch, setWebSearch] = useState(false);
+  const refSearchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const searchLibrary = (q: string) => {
+    setRefQuery(q);
+    if (refSearchTimer.current) clearTimeout(refSearchTimer.current);
+    refSearchTimer.current = setTimeout(async () => {
+      try {
+        const res = await fetch(`/api/zotero/items?q=${encodeURIComponent(q)}`);
+        const data = await res.json();
+        if (res.ok) setRefResults(data.items.slice(0, 12));
+      } catch {
+        setRefResults([]);
+      }
+    }, 300);
+  };
+
+  const readImageFile = (file: File) => {
+    const reader = new FileReader();
+    reader.onload = () => setComposerImage(reader.result as string);
+    reader.readAsDataURL(file);
+  };
+
+  const submitGeneral = () => {
+    if (!generalQuestion.trim()) return;
+    onAskGeneral(generalQuestion.trim(), composerImage || undefined, composerRef || undefined, webSearch);
+    setGeneralQuestion("");
+    setComposerImage(null);
+    setComposerRef(null);
+    setRefPickerOpen(false);
+    // webSearch stays toggled — it's a sticky mode, not a per-message flag
+  };
+  const [followUpImage, setFollowUpImage] = useState<Record<string, string>>({});
   const [lightboxState, setLightboxState] = useState<{ src: string; annotationId: string } | null>(null);
   const [expandedText, setExpandedText] = useState<Set<string>>(new Set());
   const [fontIdx, setFontIdx] = useState(DEFAULT_FONT_IDX);
@@ -111,6 +156,154 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
     }
   }, [activeId, annotationRefs]);
 
+  if (!isOpen) {
+    return (
+      <button
+        onClick={onToggle}
+        className="flex flex-col items-center shrink-0 cursor-pointer transition-colors hover:bg-[rgba(230,237,243,0.05)]"
+        style={{ width: "2.25rem", borderLeft: "1px solid var(--border)", background: "var(--surface)" }}
+        title="Show explanations"
+      >
+        <span className="flex items-center justify-center h-9 w-full shrink-0" style={{ borderBottom: "1px solid var(--border)" }}>
+          <span className="rotate-90 text-xs" style={{ color: "var(--ink-faint)" }}>≡</span>
+        </span>
+        <span
+          className="mt-3 text-[10px] uppercase tracking-widest select-none"
+          style={{ color: "var(--ink-faint)", writingMode: "vertical-rl" }}
+        >
+          Explain
+        </span>
+        {annotations.length > 0 && (
+          <span
+            className="mt-2 text-[10px] font-medium rounded px-1 py-0.5 tabular-nums"
+            style={{ background: "var(--accent-dim)", color: "var(--accent)" }}
+          >
+            {annotations.length}
+          </span>
+        )}
+      </button>
+    );
+  }
+
+  // Bottom composer — ask about the paper without selecting anything first;
+  // supports a pasted/attached image and referencing another library paper
+  const composer = (
+    <div className="shrink-0 px-3 py-2.5 space-y-1.5" style={{ borderTop: "1px solid var(--border)", background: "var(--paper)" }}>
+      {(composerImage || composerRef) && (
+        <div className="flex items-center gap-2 flex-wrap">
+          {composerImage && (
+            <span className="inline-flex items-center gap-1.5">
+              <img src={composerImage} alt="attached" className="max-h-12 object-contain" style={{ border: "1px solid var(--accent)", borderRadius: "3px" }} />
+              <button onClick={() => setComposerImage(null)} className="btn-icon w-5 h-5 text-[10px]" title="Remove image">✕</button>
+            </span>
+          )}
+          {composerRef && (
+            <span className="inline-flex items-center gap-1 text-[11px] px-2 py-1 rounded max-w-[260px]" style={{ background: "var(--badge-fig-bg)", color: "var(--badge-fig-fg)" }}>
+              <span className="truncate">@ {composerRef.title}</span>
+              <button onClick={() => setComposerRef(null)} className="shrink-0 hover:opacity-70" title="Remove reference">✕</button>
+            </span>
+          )}
+        </div>
+      )}
+
+      {refPickerOpen && (
+        <div className="rounded p-2 space-y-1.5" style={{ border: "1px solid var(--border)", background: "var(--surface)" }}>
+          <input
+            type="text"
+            autoFocus
+            value={refQuery}
+            placeholder="Search your Zotero library…"
+            onChange={(e) => searchLibrary(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Escape") setRefPickerOpen(false); }}
+            className="w-full text-xs px-2 py-1.5 rounded focus:outline-none"
+            style={{ border: "1px solid var(--accent)", background: "var(--paper)", color: "var(--ink)" }}
+          />
+          <div className="max-h-36 overflow-y-auto">
+            {refResults.map((item) => (
+              <button
+                key={item.key}
+                onClick={() => { setComposerRef(item); setRefPickerOpen(false); }}
+                className="w-full text-left text-[11px] leading-snug px-1.5 py-1 rounded transition-colors"
+                style={{ color: "var(--ink-muted)" }}
+                onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.background = "rgba(230,237,243,0.07)"; }}
+                onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.background = "transparent"; }}
+              >
+                {item.title}
+              </button>
+            ))}
+            {refResults.length === 0 && (
+              <p className="text-[10px] px-1.5 py-1" style={{ color: "var(--ink-faint)" }}>Type to search your library</p>
+            )}
+          </div>
+        </div>
+      )}
+
+      <div className="flex gap-1.5 items-center">
+        <button
+          onClick={() => setRefPickerOpen((v) => !v)}
+          className="btn-icon w-7 h-7 text-sm shrink-0"
+          style={refPickerOpen || composerRef ? { color: "var(--badge-fig-fg)" } : {}}
+          title="Reference another paper from your Zotero library"
+        >
+          @
+        </button>
+        <button
+          onClick={() => setWebSearch((v) => !v)}
+          className="btn-icon w-7 h-7 text-sm shrink-0 transition-all"
+          style={
+            webSearch
+              ? { background: "rgba(232,120,76,0.2)", boxShadow: "0 0 0 1.5px var(--accent) inset" }
+              : { filter: "grayscale(1)", opacity: 0.5 }
+          }
+          title={webSearch ? "Web search ON — the model may search online (Claude & Codex). Click to turn off." : "Enable web search (Claude & Codex)"}
+        >
+          🌐
+        </button>
+        <label className="btn-icon w-7 h-7 text-sm shrink-0 cursor-pointer flex items-center justify-center" title="Attach an image">
+          📎
+          <input
+            type="file"
+            accept="image/*"
+            className="hidden"
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (file) readImageFile(file);
+              e.target.value = "";
+            }}
+          />
+        </label>
+        <input
+          type="text"
+          value={generalQuestion}
+          placeholder={webSearch ? "Ask anything — web search ON 🌐…" : "Ask anything about the paper…"}
+          onChange={(e) => setGeneralQuestion(e.target.value)}
+          data-composer="general"
+          onPaste={(e) => {
+            const file = Array.from(e.clipboardData.items)
+              .find((item) => item.type.startsWith("image/"))
+              ?.getAsFile();
+            if (file) {
+              e.preventDefault();
+              readImageFile(file);
+            }
+          }}
+          onKeyDown={(e) => { if (isSubmitKey(e)) submitGeneral(); }}
+          className="flex-1 min-w-0 text-sm px-3 py-2 rounded-md focus:outline-none transition-all"
+          style={{ border: "1px solid var(--border)", background: "var(--surface)", color: "var(--ink)" }}
+          onFocus={(e) => (e.currentTarget.style.borderColor = "var(--accent)")}
+          onBlur={(e) => (e.currentTarget.style.borderColor = "var(--border)")}
+        />
+        <button
+          onClick={submitGeneral}
+          disabled={!generalQuestion.trim()}
+          className="btn-primary text-sm px-3 py-1.5 disabled:opacity-40"
+        >
+          Ask
+        </button>
+      </div>
+    </div>
+  );
+
   const toolbar = (
     <div className="shrink-0 flex items-center gap-1 px-3 py-1.5" style={{ background: "var(--paper)", borderBottom: "1px solid var(--border)" }}>
       <span className="text-[10px] uppercase tracking-widest mr-1" style={{ color: "var(--ink-faint)" }}>Text</span>
@@ -133,12 +326,18 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
         className="btn-icon w-7 h-7 text-base leading-none"
         title="Larger text (Ctrl+scroll)"
       >+</button>
+      <span className="ml-auto inline-flex items-center gap-1">
+        {modelControls}
+        <button onClick={onToggle} className="btn-icon w-6 h-6 text-xs" title="Collapse panel">
+          ›
+        </button>
+      </span>
     </div>
   );
 
   if (annotations.length === 0) {
     return (
-      <div className="flex-1 flex flex-col overflow-hidden" style={{ background: "var(--paper)" }}>
+      <div className="flex flex-col overflow-hidden" style={{ background: "var(--paper)", width: `${width}px`, minWidth: 250 }}>
         {toolbar}
         <div className="flex-1 flex flex-col items-center justify-center gap-3 p-8">
           <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" style={{ color: "var(--ink-faint)" }}>
@@ -148,15 +347,19 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
             Select text in the PDF and click <span style={{ color: "var(--ink)" }}>Explain this ↗</span>
           </p>
           <p className="text-xs text-center" style={{ color: "var(--ink-faint)" }}>
-            Hold <kbd className="px-1 rounded text-[11px]" style={{ background: "var(--border)", color: "var(--ink-muted)" }}>Alt</kbd> and drag to capture a figure or graph
+            Use <span style={{ color: "var(--ink-muted)" }}>✂ Capture figure</span> in the PDF toolbar (or <kbd className="px-1 rounded text-[11px]" style={{ background: "var(--border)", color: "var(--ink-muted)" }}>⌥ Option</kbd> + drag) to grab a figure or graph
+          </p>
+          <p className="text-xs text-center" style={{ color: "var(--ink-faint)" }}>
+            …or just type a question below
           </p>
         </div>
+        {composer}
       </div>
     );
   }
 
   return (
-    <div className="flex-1 flex flex-col overflow-hidden" style={{ background: "var(--paper)" }}>
+    <div className="flex flex-col overflow-hidden" style={{ background: "var(--paper)", width: `${width}px`, minWidth: 250 }}>
       {toolbar}
 
       {lightboxState && (
@@ -174,15 +377,15 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
             <div
               key={annotation.id}
               ref={(el) => { annotationRefs.current[annotation.id] = el; }}
-              className="rounded overflow-hidden transition-all"
+              className="rounded-lg overflow-hidden transition-all pr-fade-up"
               style={{
                 background: "var(--surface)",
                 border: isActive ? "1px solid var(--accent)" : "1px solid var(--border)",
-                boxShadow: isActive ? "0 0 0 1px var(--accent), 0 4px 20px rgba(232,120,76,0.15)" : "none",
+                boxShadow: isActive ? "0 0 0 1px var(--accent), 0 4px 20px rgba(232,120,76,0.15)" : "var(--shadow-card)",
               }}
             >
               {/* Card header */}
-              <div className="flex items-center gap-2 px-3 py-2" style={{ background: "var(--surface)", borderBottom: "1px solid var(--border-light)" }}>
+              <div className="flex items-center gap-2 px-3 py-2" style={{ background: "rgba(230,237,243,0.025)", borderBottom: "1px solid var(--border-light)" }}>
                 <span
                   className="shrink-0 text-[11px] font-medium px-1.5 py-0.5 rounded"
                   style={
@@ -284,12 +487,27 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
                   const isFollowUp = isUser && i > 0;
                   return (
                     <div key={i} className={isFollowUp ? "pt-3" : ""} style={isFollowUp ? { borderTop: "1px solid var(--border-light)" } : {}}>
-                      <p className="text-[10px] font-semibold mb-1 tracking-wide uppercase" style={{ color: isUser ? "var(--ink-faint)" : "var(--accent)" }}>
+                      <p className="text-[10px] font-semibold mb-1 tracking-wide uppercase flex items-center gap-1.5" style={{ color: isUser ? "var(--ink-faint)" : "var(--accent)" }}>
+                        <span
+                          className="w-1.5 h-1.5 rounded-full inline-block"
+                          style={{ background: isUser ? "var(--ink-faint)" : "linear-gradient(135deg, var(--accent-bright), var(--accent))" }}
+                        />
                         {isUser ? "you" : "explainer"}
                       </p>
 
                       {isUser ? (
-                        <p style={{ color: "var(--ink-muted)", fontFamily: "var(--font-geist-sans), system-ui, sans-serif" }}>{msg.content}</p>
+                        <>
+                          {msg.imageDataUrl && (
+                            <img
+                              src={msg.imageDataUrl}
+                              alt="attached figure"
+                              className="max-h-28 object-contain mb-1.5 cursor-zoom-in"
+                              style={{ border: "1px solid var(--border)", borderRadius: "3px" }}
+                              onClick={() => setLightboxState({ src: msg.imageDataUrl!, annotationId: annotation.id })}
+                            />
+                          )}
+                          <p style={{ color: "var(--ink-muted)", fontFamily: "var(--font-geist-sans), system-ui, sans-serif" }}>{msg.content}</p>
+                        </>
                       ) : (
                         <div className="prose-paper">
                           <ReactMarkdown remarkPlugins={[remarkGfm]}>
@@ -304,21 +522,51 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
 
               {/* Follow-up */}
               <div className="px-4 pb-4">
+                {followUpImage[annotation.id] && (
+                  <div className="flex items-center gap-2 mb-2">
+                    <img
+                      src={followUpImage[annotation.id]}
+                      alt="figure to attach"
+                      className="max-h-14 object-contain"
+                      style={{ border: "1px solid var(--accent)", borderRadius: "3px" }}
+                    />
+                    <span className="text-[10px]" style={{ color: "var(--ink-faint)" }}>figure attached</span>
+                    <button
+                      onClick={() => setFollowUpImage((prev) => { const next = { ...prev }; delete next[annotation.id]; return next; })}
+                      className="btn-icon w-5 h-5 text-[10px]"
+                      title="Remove figure"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                )}
                 <div className="flex gap-2">
                   <input
                     type="text"
-                    placeholder="Ask a follow-up…"
+                    placeholder="Ask a follow-up… (paste a figure to attach it)"
                     value={followUpText[annotation.id] || ""}
                     onChange={(e) =>
                       setFollowUpText((prev) => ({ ...prev, [annotation.id]: e.target.value }))
                     }
+                    onPaste={(e) => {
+                      const file = Array.from(e.clipboardData.items)
+                        .find((item) => item.type.startsWith("image/"))
+                        ?.getAsFile();
+                      if (!file) return;
+                      e.preventDefault();
+                      const reader = new FileReader();
+                      reader.onload = () =>
+                        setFollowUpImage((prev) => ({ ...prev, [annotation.id]: reader.result as string }));
+                      reader.readAsDataURL(file);
+                    }}
                     onKeyDown={(e) => {
-                      if (e.key === "Enter" && followUpText[annotation.id]?.trim()) {
-                        onFollowUp(annotation.id, followUpText[annotation.id].trim());
+                      if (isSubmitKey(e) && followUpText[annotation.id]?.trim()) {
+                        onFollowUp(annotation.id, followUpText[annotation.id].trim(), followUpImage[annotation.id]);
                         setFollowUpText((prev) => ({ ...prev, [annotation.id]: "" }));
+                        setFollowUpImage((prev) => { const next = { ...prev }; delete next[annotation.id]; return next; });
                       }
                     }}
-                    className="flex-1 text-sm px-3 py-1.5 rounded focus:outline-none transition-colors"
+                    className="flex-1 text-sm px-3 py-1.5 rounded-md focus:outline-none transition-colors"
                     style={{
                       border: "1px solid var(--border)",
                       background: "var(--paper)",
@@ -329,11 +577,32 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
                     onFocus={(e) => (e.currentTarget.style.borderColor = "var(--accent)")}
                     onBlur={(e) => (e.currentTarget.style.borderColor = "var(--border)")}
                   />
+                  <label
+                    className="btn-icon w-8 self-stretch flex items-center justify-center cursor-pointer text-sm"
+                    title="Attach a figure image"
+                  >
+                    📎
+                    <input
+                      type="file"
+                      accept="image/*"
+                      className="hidden"
+                      onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        if (!file) return;
+                        const reader = new FileReader();
+                        reader.onload = () =>
+                          setFollowUpImage((prev) => ({ ...prev, [annotation.id]: reader.result as string }));
+                        reader.readAsDataURL(file);
+                        e.target.value = "";
+                      }}
+                    />
+                  </label>
                   <button
                     onClick={() => {
                       if (followUpText[annotation.id]?.trim()) {
-                        onFollowUp(annotation.id, followUpText[annotation.id].trim());
+                        onFollowUp(annotation.id, followUpText[annotation.id].trim(), followUpImage[annotation.id]);
                         setFollowUpText((prev) => ({ ...prev, [annotation.id]: "" }));
+                        setFollowUpImage((prev) => { const next = { ...prev }; delete next[annotation.id]; return next; });
                       }
                     }}
                     className="btn-primary text-sm px-3 py-1.5"
@@ -347,6 +616,7 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
         })}
         <div ref={bottomRef} />
       </div>
+      {composer}
     </div>
   );
 }
