@@ -1,20 +1,45 @@
 import { spawn } from "child_process";
-import { SYSTEM_PROMPT_TEXT, buildTextPrompt, buildTextFollowUpPrompt } from "@/lib/prompts";
+import { SYSTEM_PROMPT_TEXT, buildTextPrompt, buildTextFollowUpPrompt, buildTextQuestionPrompt, buildPaperQuestionPrompt } from "@/lib/prompts";
+import { effortArgs, sanitizeSpawnArg } from "@/lib/model-flags";
+import { resolveProvider, parseCustomConfig, codexStream, customStream, streamResponse } from "@/lib/providers";
 
 export const runtime = "nodejs";
 
 export async function POST(req: Request) {
-  const { selected_text, model, history, question } = await req.json();
+  const { selected_text, paper_text, model, effort, history, question, reference_title, reference_text, custom } = await req.json();
 
-  if (!selected_text?.trim()) {
-    return new Response("selected_text is required", { status: 400 });
+  // Whole-paper question: no selection, paper text as context
+  const isPaperQuestion = !selected_text?.trim() && question?.trim();
+  if (!selected_text?.trim() && !isPaperQuestion) {
+    return new Response("selected_text or question is required", { status: 400 });
   }
 
-  const isFollowUp = Array.isArray(history) && history.length > 0 && question?.trim();
+  const isFollowUp = !isPaperQuestion && Array.isArray(history) && history.length > 0 && question?.trim();
+  const isDirectQuestion = !isPaperQuestion && !isFollowUp && question?.trim();
 
-  const fullPrompt = isFollowUp
-    ? buildTextFollowUpPrompt(selected_text, history, question)
-    : `${SYSTEM_PROMPT_TEXT}\n\n${buildTextPrompt(selected_text)}`;
+  const rawPrompt = isPaperQuestion
+    ? buildPaperQuestionPrompt(
+        typeof paper_text === "string" ? paper_text : "",
+        question,
+        typeof reference_title === "string" ? reference_title : undefined,
+        typeof reference_text === "string" ? reference_text : undefined
+      )
+    : isFollowUp
+      ? buildTextFollowUpPrompt(selected_text, history, question)
+      : isDirectQuestion
+        ? `${SYSTEM_PROMPT_TEXT}\n\n${buildTextQuestionPrompt(selected_text, question)}`
+        : `${SYSTEM_PROMPT_TEXT}\n\n${buildTextPrompt(selected_text)}`;
+  const fullPrompt = sanitizeSpawnArg(rawPrompt);
+
+  const provider = resolveProvider(model);
+  if (provider === "codex") {
+    return streamResponse(codexStream(fullPrompt, { effort }));
+  }
+  if (provider === "custom") {
+    const cfg = parseCustomConfig(custom);
+    if (!cfg) return new Response("custom API is not configured", { status: 400 });
+    return streamResponse(customStream(cfg, [{ role: "user", content: fullPrompt }]));
+  }
 
   const modelFlag = model || "claude-sonnet-4-6";
 
@@ -23,6 +48,7 @@ export async function POST(req: Request) {
       const proc = spawn("claude", [
         "-p", fullPrompt,
         "--model", modelFlag,
+        ...effortArgs(effort),
         "--output-format", "stream-json",
         "--verbose",
         "--dangerously-skip-permissions",

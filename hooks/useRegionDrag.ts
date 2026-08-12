@@ -20,8 +20,8 @@ export function useRegionDrag(canvasRef: React.RefObject<HTMLCanvasElement | nul
   const containerRef = useRef<HTMLDivElement | null>(null);
 
   const onMouseDown = useCallback(
-    (e: React.MouseEvent, pageCanvas: HTMLCanvasElement, pageContainer: HTMLDivElement) => {
-      if (!e.altKey) return;
+    (e: React.MouseEvent, pageCanvas: HTMLCanvasElement, pageContainer: HTMLDivElement, armed = false) => {
+      if (!e.altKey && !armed) return;
       e.preventDefault();
       const rect = pageContainer.getBoundingClientRect();
       startPos.current = { x: e.clientX - rect.left, y: e.clientY - rect.top };

@@ -4,11 +4,13 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { randomUUID } from "crypto";
 import { SYSTEM_PROMPT_IMAGE, buildImagePrompt, buildImageFollowUpPrompt } from "@/lib/prompts";
+import { effortArgs } from "@/lib/model-flags";
+import { resolveProvider, parseCustomConfig, codexStream, customStream, streamResponse } from "@/lib/providers";
 
 export const runtime = "nodejs";
 
 export async function POST(req: Request) {
-  const { image_base64, model, history, question } = await req.json();
+  const { image_base64, model, effort, history, question, reference_title, reference_text, custom } = await req.json();
 
   if (!image_base64?.trim()) {
     return new Response("image_base64 is required", { status: 400 });
@@ -22,12 +24,49 @@ export async function POST(req: Request) {
   writeFileSync(tmpPath, Buffer.from(base64Data, "base64"));
 
   const isFollowUp = Array.isArray(history) && history.length > 0 && question?.trim();
+  const isDirectQuestion = !isFollowUp && question?.trim();
+
+  const refBlock =
+    typeof reference_text === "string" && reference_text.trim()
+      ? `\n\nFor reference, another paper from my library ("${reference_title}"), extracted text possibly truncated:\n\n${reference_text}`
+      : "";
 
   // For follow-ups: include the image for visual context + the conversation history in the text block
+  // For a direct question: the image + the user's question
   // For first-time: original image + explain prompt
   const textContent = isFollowUp
     ? buildImageFollowUpPrompt(history, question)
-    : `${SYSTEM_PROMPT_IMAGE}\n\n${buildImagePrompt()}`;
+    : isDirectQuestion
+      ? `I am reading an academic paper and attached this image. My question: ${question}${refBlock}\n\nAnswer the question directly, grounded in the image${refBlock ? " and the referenced paper" : ""}.`
+      : `${SYSTEM_PROMPT_IMAGE}\n\n${buildImagePrompt()}`;
+
+  const provider = resolveProvider(model);
+  if (provider === "codex") {
+    // Codex takes images as file paths — the temp PNG is already written
+    return streamResponse(
+      codexStream(`${SYSTEM_PROMPT_IMAGE}\n\n${textContent}`, {
+        images: [tmpPath],
+        effort,
+        onClose: () => { try { unlinkSync(tmpPath); } catch {} },
+      })
+    );
+  }
+  if (provider === "custom") {
+    try { unlinkSync(tmpPath); } catch {}
+    const cfg = parseCustomConfig(custom);
+    if (!cfg) return new Response("custom API is not configured", { status: 400 });
+    return streamResponse(
+      customStream(cfg, [
+        {
+          role: "user",
+          content: [
+            { type: "image_url", image_url: { url: `data:image/png;base64,${base64Data}` } },
+            { type: "text", text: `${SYSTEM_PROMPT_IMAGE}\n\n${textContent}` },
+          ],
+        },
+      ])
+    );
+  }
 
   const inputMessage = JSON.stringify({
     type: "user",
@@ -46,6 +85,7 @@ export async function POST(req: Request) {
         "-p",
         "--system-prompt", SYSTEM_PROMPT_IMAGE,
         "--model", modelFlag,
+        ...effortArgs(effort),
         "--input-format", "stream-json",
         "--output-format", "stream-json",
         "--verbose",
