@@ -1,3 +1,5 @@
+import { dominantLanguage, inputLanguage } from "./language";
+
 export const SYSTEM_PROMPT_TEXT = `You are a reading companion helping the user make sense of text they selected from an academic paper.
 
 Your job has three parts:
@@ -81,6 +83,11 @@ export function buildSessionBootstrap(opts: {
     `You are a reading companion for one academic paper. This conversation covers ALL of my questions about it — selected passages, figures, and general questions. Build on earlier answers; never repeat yourself.
 
 Ground rules:
+- LANGUAGE — decide this before anything else, on every single reply:
+  1. If I asked a question, answer in the language of my question. This wins over everything else. When I quote a passage in one language and ask about it in another, follow my question, not the passage — an English question about a Chinese passage gets an English answer, and the reverse gets a Chinese one.
+  2. Only when I send a passage or figure with no question of my own, answer in the language of that passage.
+  3. Ignore the language of the paper and the language of these instructions. They are in English because the app writes them, which tells you nothing about what I want.
+  Re-decide this each turn; I may switch languages mid-conversation and you should switch with me.
 - Explain plainly with no assumed knowledge; be direct and factual; do not judge the paper's claims.
 - When I give you a selected passage, explain what it means AND what role it plays in the paper.
 - When I give you a figure, explain how to read it and what it shows.
@@ -111,6 +118,28 @@ The paper: "${opts.title}"`,
   return parts.join("\n\n");
 }
 
+// Which language to answer in, restated on the message itself.
+//
+// The bootstrap already carries the rule, but it loses: a quoted passage is
+// longer than the question and sits immediately before the model starts
+// writing, so a Chinese passage pulls an English question's answer into
+// Chinese. On a resumed session the rule is also thousands of tokens back.
+// Naming the language outright, right here, is what actually holds.
+function languageDirective(question?: string, passage?: string): string {
+  const asked = question?.trim();
+  if (asked) {
+    // With no passage there is nothing to be pulled towards, so say nothing
+    if (!passage?.trim()) return "";
+    const named = inputLanguage(asked);
+    return named
+      ? `\n\nAnswer in ${named}, matching my question — not the language of the passage.`
+      : `\n\nAnswer in the same language as my question above, not the language of the passage.`;
+  }
+  // No question of my own: the passage is all there is to go on
+  const named = passage ? dominantLanguage(passage) ?? inputLanguage(passage) : null;
+  return named ? `\n\nAnswer in ${named}, matching the passage.` : "";
+}
+
 export function buildAskMessage(opts: {
   kind: "explain" | "question" | "figure" | "followup";
   selectedText?: string;
@@ -118,12 +147,13 @@ export function buildAskMessage(opts: {
   pageNumber?: number;
 }): string {
   const page = opts.pageNumber ? ` (page ${opts.pageNumber})` : "";
+  const language = languageDirective(opts.question, opts.selectedText);
   switch (opts.kind) {
     case "explain":
-      return `I selected this passage${page}:\n\n"${opts.selectedText}"\n\nExplain it.`;
+      return `I selected this passage${page}:\n\n"${opts.selectedText}"\n\nExplain it.${language}`;
     case "question":
       return opts.selectedText
-        ? `About this passage${page}:\n\n"${opts.selectedText}"\n\nMy question: ${opts.question}`
+        ? `About this passage${page}:\n\n"${opts.selectedText}"\n\nMy question: ${opts.question}${language}`
         : `${opts.question}`;
     case "figure":
       return opts.question
@@ -146,12 +176,20 @@ Rules:
 - "title" is the paper's title (or a short descriptive one if not stated).
 - "label" is at most 8 words. "note" is one short plain-language sentence explaining the node.
 - "quote" + "page": where a node is grounded in specific text, include a SHORT excerpt (5-12 words) copied VERBATIM from the paper text — exact characters, no paraphrasing, no ellipses — and the page number from the [page N] markers. Omit both fields when there is no clear source passage.
+- Write "title", "label" and "note" in the paper's own main language: a Chinese paper gets a Chinese map, an English paper an English one. Judge by the prose, not by code, identifiers or cited English terms. "quote" is the exception — it is copied from the paper exactly as written and is never translated.
 - Maximum depth 3 (root title → stages → concepts → optional sub-concepts).
 - 4 to 8 top-level stage nodes.`;
 
 export function buildMindmapPrompt(paperText: string): string {
+  // Where the script settles which language the paper is in, say so rather than
+  // leaving it to be inferred from text that may be mostly code — see
+  // lib/language.ts
+  const language = dominantLanguage(paperText);
+  const languageNote = language
+    ? `\nThis paper is written in ${language}. Write "title", "label" and "note" in ${language}.\n`
+    : "";
   return `${MINDMAP_PROMPT_HEADER}
-
+${languageNote}
 Paper text (extracted from PDF, may be noisy):
 
 ${paperText}`;
