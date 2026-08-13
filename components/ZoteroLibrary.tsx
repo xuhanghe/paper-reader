@@ -54,6 +54,9 @@ export function ZoteroLibrary({ onDocumentLoaded, activeDocName, isOpen, onToggl
   const [searching, setSearching] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [openingKey, setOpeningKey] = useState<string | null>(null);
+  const [confirmKey, setConfirmKey] = useState<string | null>(null);
+  const [removingKey, setRemovingKey] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [orderPrefs, setOrderPrefs] = useState<OrderPrefs>(loadOrderPrefs);
   const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -228,31 +231,127 @@ export function ZoteroLibrary({ onDocumentLoaded, activeDocName, isOpen, onToggl
     }
   };
 
+  // Drop a trashed item from every list it appears in, rather than reloading
+  // the whole library — a reload would collapse the tree the user is working in.
+  const forgetItem = useCallback((key: string) => {
+    // Which collections were showing it, so their counts stay honest. "__all__"
+    // is the flat recent list, not a collection, so it has no count to adjust.
+    const affected = new Set(
+      Object.entries(itemsByCollection)
+        .filter(([k, list]) => k !== "__all__" && list.some((i) => i.key === key))
+        .map(([k]) => k)
+    );
+    setItemsByCollection((prev) =>
+      Object.fromEntries(Object.entries(prev).map(([k, list]) => [k, list.filter((i) => i.key !== key)]))
+    );
+    setSearchResults((prev) => prev?.filter((i) => i.key !== key) ?? prev);
+    if (affected.size > 0) {
+      setCollections((prev) =>
+        prev.map((c) => (affected.has(c.key) ? { ...c, numItems: Math.max(0, c.numItems - 1) } : c))
+      );
+    }
+  }, [itemsByCollection]);
+
+  const handleRemove = useCallback(async (item: ZoteroListItem) => {
+    setRemovingKey(item.key);
+    setError(null);
+    try {
+      const res = await fetch(`/api/zotero/items?key=${encodeURIComponent(item.key)}`, { method: "DELETE" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "Could not move this item to the trash");
+      forgetItem(item.key);
+      setConfirmKey(null);
+      // The list is read from the local Zotero API, but the trashing went
+      // through zotero.org. Until that syncs back down, ↻ will show the item
+      // again — say so, rather than let it look like the removal failed.
+      setNotice(`“${item.title}” is in the Zotero trash. It may reappear here until Zotero syncs.`);
+    } catch (e) {
+      // The row stays put on failure — nothing was removed in Zotero either
+      setError(e instanceof Error ? e.message : "Could not move this item to the trash");
+      setConfirmKey(null);
+    } finally {
+      setRemovingKey(null);
+    }
+  }, [forgetItem]);
+
   const renderItem = (item: ZoteroListItem, indent: number) => {
     const opening = openingKey === item.key;
     const isActive = activeDocName === item.title || activeDocName === `${item.title}.pdf`;
+    const confirming = confirmKey === item.key;
+    const removing = removingKey === item.key;
+
+    // Asking before removing, in the row itself. The trash is recoverable, but
+    // a stray click on a paper you are reading still shouldn't take it away.
+    if (confirming) {
+      return (
+        <div
+          key={item.key}
+          className="w-full py-1.5 pr-2"
+          style={{ paddingLeft: `${indent}rem`, borderLeft: "2px solid #F87171", background: "rgba(248,113,113,0.08)" }}
+        >
+          <p className="text-[11px] leading-snug truncate" style={{ color: "var(--ink)" }}>{item.title}</p>
+          <div className="flex items-center gap-2 mt-1">
+            <span className="text-[10px]" style={{ color: "var(--ink-muted)" }}>
+              {removing ? "Moving to trash…" : "Move to Zotero trash?"}
+            </span>
+            {!removing && (
+              <>
+                <button
+                  onClick={() => handleRemove(item)}
+                  className="text-[10px] px-1.5 py-0.5 rounded"
+                  style={{ color: "#F87171", border: "1px solid rgba(248,113,113,0.4)" }}
+                >
+                  Move
+                </button>
+                <button
+                  onClick={() => setConfirmKey(null)}
+                  className="text-[10px] px-1.5 py-0.5 rounded"
+                  style={{ color: "var(--ink-faint)" }}
+                >
+                  Cancel
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+      );
+    }
+
     return (
-      <button
+      <div
         key={item.key}
-        onClick={() => handleOpen(item)}
-        disabled={openingKey !== null}
-        className="w-full text-left py-1.5 pr-2 transition-colors disabled:opacity-50"
+        className="group/item w-full flex items-center transition-colors"
         style={{
-          paddingLeft: `${indent}rem`,
           borderLeft: isActive ? "2px solid var(--accent)" : "2px solid transparent",
           background: isActive ? "var(--accent-dim)" : "transparent",
         }}
-        onMouseEnter={(e) => { if (!isActive) (e.currentTarget as HTMLButtonElement).style.background = "rgba(230,237,243,0.05)"; }}
-        onMouseLeave={(e) => { if (!isActive) (e.currentTarget as HTMLButtonElement).style.background = "transparent"; }}
+        onMouseEnter={(e) => { if (!isActive) (e.currentTarget as HTMLElement).style.background = "rgba(230,237,243,0.05)"; }}
+        onMouseLeave={(e) => { if (!isActive) (e.currentTarget as HTMLElement).style.background = "transparent"; }}
       >
-        <p className="text-[11px] leading-snug" style={{ color: "var(--ink)" }}>
-          {item.title}
-          {opening && <span className="ml-1.5 text-[10px]" style={{ color: "var(--accent)" }}>opening…</span>}
-        </p>
-        <p className="text-[10px] mt-0.5" style={{ color: "var(--ink-faint)" }}>
-          {[item.creators, item.year].filter(Boolean).join(" · ") || item.itemType}
-        </p>
-      </button>
+        <button
+          onClick={() => handleOpen(item)}
+          disabled={openingKey !== null}
+          className="min-w-0 flex-1 text-left py-1.5 pr-1 disabled:opacity-50"
+          style={{ paddingLeft: `${indent}rem` }}
+        >
+          <p className="text-[11px] leading-snug" style={{ color: "var(--ink)" }}>
+            {item.title}
+            {opening && <span className="ml-1.5 text-[10px]" style={{ color: "var(--accent)" }}>opening…</span>}
+          </p>
+          <p className="text-[10px] mt-0.5" style={{ color: "var(--ink-faint)" }}>
+            {[item.creators, item.year].filter(Boolean).join(" · ") || item.itemType}
+          </p>
+        </button>
+        <button
+          onClick={() => setConfirmKey(item.key)}
+          className="btn-icon w-5 h-5 mr-1.5 text-[10px] shrink-0 opacity-0 group-hover/item:opacity-100 focus:opacity-100 transition-opacity"
+          style={{ color: "#F87171" }}
+          title="Move this item to the Zotero trash"
+          aria-label={`Move “${item.title}” to the Zotero trash`}
+        >
+          🗑
+        </button>
+      </div>
     );
   };
 
@@ -383,6 +482,14 @@ export function ZoteroLibrary({ onDocumentLoaded, activeDocName, isOpen, onToggl
           />
         </div>
       </div>
+
+      {notice && (
+        <div className="mx-2.5 mt-2 px-2.5 py-1.5 rounded text-[10px] leading-relaxed flex items-start gap-1.5"
+             style={{ background: "var(--accent-dim)", color: "var(--ink-muted)" }}>
+          <span className="flex-1">{notice}</span>
+          <button onClick={() => setNotice(null)} className="shrink-0" style={{ color: "var(--ink-faint)" }} title="Dismiss">✕</button>
+        </div>
+      )}
 
       {/* Tree / search results */}
       <div className="flex-1 overflow-y-auto py-1">

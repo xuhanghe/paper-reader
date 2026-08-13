@@ -1,4 +1,5 @@
 import type { NextRequest } from "next/server";
+import { ZOTERO_WEB_API, getWebUserId, webApiKey } from "@/lib/zotero-server";
 
 export const runtime = "nodejs";
 
@@ -81,5 +82,59 @@ export async function GET(req: NextRequest) {
       },
       { status: 502 }
     );
+  }
+}
+
+// Move an item to Zotero's trash.
+//
+// Deliberately not the web API's DELETE, which erases an item outright with no
+// way back. Setting deleted=1 puts it in the trash, where Zotero's own UI can
+// restore it — removing somebody's paper from a sidebar should not be the
+// irreversible kind of removal. Child attachments and annotations follow the
+// parent into the trash, as they do in Zotero itself.
+export async function DELETE(req: NextRequest) {
+  const key = req.nextUrl.searchParams.get("key")?.trim();
+  if (!key) return Response.json({ error: "key is required" }, { status: 400 });
+
+  const apiKey = webApiKey();
+  if (!apiKey) {
+    return Response.json(
+      { error: "Removing items needs ZOTERO_API_KEY in .env.local — the local Zotero API is read-only." },
+      { status: 400 }
+    );
+  }
+  const userId = await getWebUserId();
+  if (!userId) return Response.json({ error: "Could not determine your Zotero user ID." }, { status: 502 });
+
+  try {
+    const itemUrl = `${ZOTERO_WEB_API}/users/${userId}/items/${encodeURIComponent(key)}`;
+    const itemRes = await fetch(itemUrl, {
+      headers: { "Zotero-API-Key": apiKey },
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!itemRes.ok) {
+      return Response.json(
+        { error: `That item isn't on zotero.org yet (${itemRes.status}) — it may still be syncing.` },
+        { status: 404 }
+      );
+    }
+    const item = await itemRes.json();
+
+    const patchRes = await fetch(itemUrl, {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+        "Zotero-API-Key": apiKey,
+        "If-Unmodified-Since-Version": String(item.version),
+      },
+      body: JSON.stringify({ deleted: 1 }),
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!patchRes.ok && patchRes.status !== 204) {
+      return Response.json({ error: `Zotero refused the change (${patchRes.status}).` }, { status: 502 });
+    }
+    return Response.json({ ok: true, trashed: key });
+  } catch {
+    return Response.json({ error: "Could not reach the Zotero web API." }, { status: 502 });
   }
 }

@@ -38,6 +38,10 @@ open any attachment — PDFs and HTML snapshots both. Papers open zero-copy: the
 document is fetched from Zotero rather than duplicated into the session, and the
 reload button re-reads it so you always see the current file.
 
+Items can also be removed from the sidebar, after a confirmation step. They go
+to Zotero's **trash**, not into thin air — the API's outright delete has no way
+back, and neither would a stray click. Restore anything from Zotero's own trash.
+
 **Highlight, and mean it.** Select a passage and pick one of Zotero's eight
 annotation colours, with or without a note. For PDFs there is exactly one copy
 of that highlight and it lives in Zotero — recolour it, edit its note or delete
@@ -243,6 +247,9 @@ Worth knowing before you rely on them:
   mock**, not a live Anthropic-compatible service.
 - **Custom API endpoints get no tools** — no Zotero MCP, no web search. That
   needs a server-side tool-calling loop the CLI providers get for free.
+- **A trashed item can reappear in the sidebar until Zotero syncs.** The list is
+  read from the local Zotero API but the trashing goes through zotero.org, so ↻
+  before the sync lands will show it again. The sidebar says so when it happens.
 - **`/api/explain`, `/api/explain-image` and `/api/followup` are dead.** Nothing
   calls them since everything moved to `/api/ask`; they are still in the build.
 
