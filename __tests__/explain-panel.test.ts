@@ -273,3 +273,110 @@ describe("folding hides the conversation", () => {
     assert.ok(host.textContent?.includes("answer A") && host.textContent?.includes("answer B"));
   });
 });
+
+// ── Stop / edit / resend ──────────────────────────────────────────────
+describe("stopping and rewriting", () => {
+  let dom: JSDOM;
+  let host: HTMLElement;
+  let stopped: string[];
+  let edited: [string, number, string][];
+
+  const mount = (annotations: Annotation[], streamingId?: string) => {
+    dom = new JSDOM("<!doctype html><body><div id='root'></div></body>", { pretendToBeVisual: true });
+    const g = globalThis as Record<string, unknown>;
+    g.IS_REACT_ACT_ENVIRONMENT = true;
+    g.window = dom.window;
+    g.document = dom.window.document;
+    Object.defineProperty(globalThis, "navigator", { value: dom.window.navigator, configurable: true, writable: true });
+    g.requestAnimationFrame = dom.window.requestAnimationFrame.bind(dom.window);
+    g.cancelAnimationFrame = dom.window.cancelAnimationFrame.bind(dom.window);
+    stopped = [];
+    edited = [];
+    host = dom.window.document.getElementById("root") as unknown as HTMLElement;
+    act(() => {
+      createRoot(host).render(
+        createElement(ExplainPanel, {
+          annotations,
+          activeId: null,
+          model: "claude-sonnet-4-6",
+          streamingIds: streamingId ? new Set([streamingId]) : new Set<string>(),
+          onFollowUp: () => {},
+          onStop: (id: string) => stopped.push(id),
+          onEditMessage: (id: string, i: number, t: string) => edited.push([id, i, t]),
+          onAskGeneral: () => {},
+          onDelete: () => {},
+          onReExplainImage: () => {},
+          onViewInPdf: () => {},
+          annotationRefs: { current: {} },
+          isOpen: true,
+          onToggle: () => {},
+        })
+      );
+    });
+  };
+
+  const click = (el: Element) => act(() => { el.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })); });
+  const button = (text: string) => Array.from(host.querySelectorAll("button")).find((b) => b.textContent?.includes(text));
+
+  const LIVE = thread(
+    [{ role: "user", content: "why two stages" }, { role: "assistant", content: "partial answer so far" }],
+    "a1",
+    "live"
+  );
+
+  test("Stop replaces Ask while an answer is arriving, and reports the conversation", () => {
+    mount([LIVE], LIVE.id);
+    const stop = button("Stop");
+    assert.ok(stop, "expected a Stop control while streaming");
+    assert.equal(button("Ask a follow-up") ?? undefined, undefined);
+    click(stop!);
+    assert.deepEqual(stopped, [LIVE.id]);
+  });
+
+  test("Ask comes back once the answer is done", () => {
+    mount([LIVE]);
+    assert.equal(button("Stop"), undefined);
+    assert.ok(button("Ask"));
+  });
+
+  test("editing opens a box prefilled with what was asked", () => {
+    mount([LIVE]);
+    const edit = Array.from(host.querySelectorAll("button")).find(
+      (b) => b.getAttribute("aria-label") === "Edit question"
+    );
+    assert.ok(edit, "expected an edit control on the question");
+    click(edit!);
+
+    const box = host.querySelector("textarea") as HTMLTextAreaElement;
+    assert.ok(box, "editing opens a box");
+    assert.equal(box.value, "why two stages", "prefilled, so a typo can be fixed rather than retyped");
+  });
+
+  test("sending posts the draft back with the conversation and the position in it", () => {
+    // React 19 does not deliver a synthetic input event to onChange under
+    // jsdom, so the keystrokes themselves cannot be simulated here — this
+    // covers the wiring either side of them: which conversation, which message.
+    mount([LIVE]);
+    click(Array.from(host.querySelectorAll("button")).find((b) => b.getAttribute("aria-label") === "Edit question")!);
+    click(button("Send again")!);
+    assert.deepEqual(edited, [[LIVE.id, 0, "why two stages"]]);
+    assert.equal(host.querySelector("textarea"), null, "the editor closes on send");
+  });
+
+  test("cancelling leaves the question as it was", () => {
+    mount([LIVE]);
+    click(Array.from(host.querySelectorAll("button")).find((b) => b.getAttribute("aria-label") === "Edit question")!);
+    click(button("Cancel")!);
+    assert.equal(host.querySelector("textarea"), null);
+    assert.deepEqual(edited, []);
+    assert.ok(host.textContent?.includes("why two stages"));
+  });
+
+  test("answers are not editable — only what you asked", () => {
+    mount([LIVE]);
+    const edits = Array.from(host.querySelectorAll("button")).filter(
+      (b) => b.getAttribute("aria-label") === "Edit question"
+    );
+    assert.equal(edits.length, 1, "one control, on the one user message");
+  });
+});

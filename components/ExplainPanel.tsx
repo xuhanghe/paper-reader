@@ -11,6 +11,10 @@ type Props = {
   model: Model;
   streamingIds: Set<string>;
   onFollowUp: (annotationId: string, question: string, imageDataUrl?: string) => void;
+  // Cancel the answer being streamed into a conversation
+  onStop?: (annotationId: string) => void;
+  // Rewrite a question already asked and send it again
+  onEditMessage?: (annotationId: string, index: number, text: string) => void;
   onAskGeneral: (question: string, imageDataUrl?: string, reference?: { key: string; title: string }, webSearch?: boolean) => void;
   onDelete: (annotationId: string) => void;
   onReExplainImage: (annotationId: string) => void;
@@ -83,7 +87,7 @@ const FONT_SIZES = [12, 13, 14, 15, 16, 17, 18, 20];
 const DEFAULT_FONT_IDX = 2; // 14px
 const COLLAPSE_CHARS = 300;
 
-export function ExplainPanel({ annotations, activeId, model, streamingIds, onFollowUp, onAskGeneral, onDelete, onReExplainImage, onViewInPdf, annotationRefs, isOpen, onToggle, width = 460, modelControls }: Props) {
+export function ExplainPanel({ annotations, activeId, model, streamingIds, onFollowUp, onStop, onEditMessage, onAskGeneral, onDelete, onReExplainImage, onViewInPdf, annotationRefs, isOpen, onToggle, width = 460, modelControls }: Props) {
   const [followUpText, setFollowUpText] = useState<Record<string, string>>({});
   const [generalQuestion, setGeneralQuestion] = useState("");
   const [composerImage, setComposerImage] = useState<string | null>(null);
@@ -127,6 +131,9 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
   const [lightboxState, setLightboxState] = useState<{ src: string; annotationId: string } | null>(null);
   const [expandedText, setExpandedText] = useState<Set<string>>(new Set());
   const [collapsedIds, setCollapsedIds] = useState<Set<string>>(new Set());
+  // Which question is being rewritten, and its working text
+  const [editing, setEditing] = useState<{ id: string; index: number } | null>(null);
+  const [editDraft, setEditDraft] = useState("");
   const [fontIdx, setFontIdx] = useState(DEFAULT_FONT_IDX);
   const bottomRef = useRef<HTMLDivElement | null>(null);
 
@@ -136,6 +143,14 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
       if (!next.delete(id)) next.add(id);
       return next;
     });
+
+  // Sending an edit closes the editor; the panel then shows the rewritten
+  // question with a fresh answer streaming under it
+  const resendEdit = (annotationId: string) => {
+    if (!editing || !editDraft.trim()) return;
+    onEditMessage?.(annotationId, editing.index, editDraft.trim());
+    setEditing(null);
+  };
 
   const allCollapsed = annotations.length > 0 && annotations.every((a) => collapsedIds.has(a.id));
   const toggleAll = () =>
@@ -351,18 +366,31 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
           }}
         />
       </label>
-      <button
-        onClick={() => {
-          if (followUpText[annotation.id]?.trim()) {
-            onFollowUp(annotation.id, followUpText[annotation.id].trim(), followUpImage[annotation.id]);
-            setFollowUpText((prev) => ({ ...prev, [annotation.id]: "" }));
-            setFollowUpImage((prev) => { const next = { ...prev }; delete next[annotation.id]; return next; });
-          }
-        }}
-        className="btn-primary text-sm px-3 py-1.5"
-      >
-        Ask
-      </button>
+      {streamingIds.has(annotation.id) && onStop ? (
+        // While an answer is arriving, the same slot stops it — the chat-box
+        // gesture, and the only control that has to be reachable mid-answer
+        <button
+          onClick={() => onStop(annotation.id)}
+          className="text-sm px-3 py-1.5 rounded-md transition-colors shrink-0"
+          style={{ border: "1px solid #F87171", color: "#F87171" }}
+          title="Stop this answer and keep what has arrived"
+        >
+          ■ Stop
+        </button>
+      ) : (
+        <button
+          onClick={() => {
+            if (followUpText[annotation.id]?.trim()) {
+              onFollowUp(annotation.id, followUpText[annotation.id].trim(), followUpImage[annotation.id]);
+              setFollowUpText((prev) => ({ ...prev, [annotation.id]: "" }));
+              setFollowUpImage((prev) => { const next = { ...prev }; delete next[annotation.id]; return next; });
+            }
+          }}
+          className="btn-primary text-sm px-3 py-1.5"
+        >
+          Ask
+        </button>
+      )}
     </div>
   </div>
   );
@@ -704,6 +732,7 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
                   const isFollowUp = isUser && i > 0;
                   // Every ask seeds an empty assistant message before streaming,
                   // so the newest one is where the reply is about to land
+                  const isEditing = editing?.id === annotation.id && editing.index === i;
                   const waitingHere =
                     !isUser &&
                     !msg.content &&
@@ -730,7 +759,56 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
                               onClick={() => setLightboxState({ src: msg.imageDataUrl!, annotationId: annotation.id })}
                             />
                           )}
-                          <p style={{ color: "var(--ink-muted)", fontFamily: "var(--font-geist-sans), system-ui, sans-serif" }}>{msg.content}</p>
+                          {isEditing ? (
+                            <div className="flex flex-col gap-1.5">
+                              <textarea
+                                autoFocus
+                                rows={Math.min(6, Math.max(2, editDraft.split("\n").length))}
+                                value={editDraft}
+                                onChange={(e) => setEditDraft(e.target.value)}
+                                onKeyDown={(e) => {
+                                  if (isSubmitKey(e)) { e.preventDefault(); resendEdit(annotation.id); }
+                                  if (e.key === "Escape") setEditing(null);
+                                }}
+                                className="w-full text-sm px-2 py-1.5 rounded resize-y focus:outline-none"
+                                style={{
+                                  border: "1px solid var(--accent)",
+                                  background: "var(--paper)",
+                                  color: "var(--ink)",
+                                  fontFamily: "var(--font-geist-sans), system-ui, sans-serif",
+                                }}
+                              />
+                              <div className="flex items-center gap-2">
+                                <button
+                                  onClick={() => resendEdit(annotation.id)}
+                                  disabled={!editDraft.trim()}
+                                  className="btn-primary text-xs px-2.5 py-1 disabled:opacity-50"
+                                >
+                                  Send again
+                                </button>
+                                <button onClick={() => setEditing(null)} className="text-[11px]" style={{ color: "var(--ink-faint)" }}>
+                                  Cancel
+                                </button>
+                                <span className="text-[10px] ml-auto" style={{ color: "var(--ink-faint)" }}>
+                                  replaces everything after it
+                                </span>
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="group/msg flex items-start gap-1.5">
+                              <p className="flex-1 min-w-0" style={{ color: "var(--ink-muted)", fontFamily: "var(--font-geist-sans), system-ui, sans-serif" }}>{msg.content}</p>
+                              {onEditMessage && (
+                                <button
+                                  onClick={() => { setEditing({ id: annotation.id, index: i }); setEditDraft(msg.content); }}
+                                  className="btn-icon shrink-0 w-5 h-5 text-[10px] opacity-0 group-hover/msg:opacity-100 focus:opacity-100 transition-opacity"
+                                  title="Edit this question and ask it again"
+                                  aria-label="Edit question"
+                                >
+                                  ✎
+                                </button>
+                              )}
+                            </div>
+                          )}
                         </>
                       ) : waitingHere ? (
                         // The answer hasn't started yet: wait in the bubble it

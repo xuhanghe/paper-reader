@@ -216,6 +216,7 @@ export default function Home() {
     setAnnotationSessionId,
     appendMessage,
     updateLastAssistantMessage,
+    replaceMessageFrom,
     saveSession,
     loadSession,
   } = useSession();
@@ -556,6 +557,13 @@ export default function Home() {
     delete annotationRefs.current[id];
   }, [removeAnnotation, activeAnnotationId]);
 
+  // In-flight answers, so each can be stopped independently
+  const abortControllers = useRef<Map<string, AbortController>>(new Map());
+
+  const stopAsk = useCallback((annotationId: string) => {
+    abortControllers.current.get(annotationId)?.abort();
+  }, []);
+
   // Every question — selection explain, figure, general, follow-up — goes
   // through the fused per-paper conversation on /api/ask. The provider's
   // session id is captured once and resumed for all later asks.
@@ -573,10 +581,16 @@ export default function Home() {
     ) => {
       setExplainOpen(true);
       setStreamingIds((s) => new Set(s).add(annotationId));
+      // One controller per conversation, so Stop cancels this answer and not
+      // whatever else is streaming in another card
+      abortControllers.current.get(annotationId)?.abort();
+      const controller = new AbortController();
+      abortControllers.current.set(annotationId, controller);
       try {
         const provider = providerIdFor(session.model);
         const res = await fetch("/api/ask", {
           method: "POST",
+          signal: controller.signal,
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             paper_id: paperId,
@@ -631,9 +645,13 @@ export default function Home() {
           }
         }
       } catch (err) {
-        console.error(err);
-        updateLastAssistantMessage(annotationId, "Error: failed to connect to the model.");
+        // Stopping is a choice, not a failure — keep whatever arrived
+        if (!(err instanceof DOMException && err.name === "AbortError")) {
+          console.error(err);
+          updateLastAssistantMessage(annotationId, "Error: failed to connect to the model.");
+        }
       } finally {
+        abortControllers.current.delete(annotationId);
         setStreamingIds((s) => { const next = new Set(s); next.delete(annotationId); return next; });
       }
     },
@@ -790,6 +808,37 @@ export default function Home() {
       if (position) syncHighlightToZotero(id, text, note, pageNumber, position, color);
     },
     [addHighlight, syncHighlightToZotero]
+  );
+
+  // Edit a question already asked and send it again, dropping the answer it
+  // got and anything after it — the chat-box gesture.
+  //
+  // What this cannot do is un-ask it: the CLI providers hold their own
+  // conversation history server-side and are resumed by session id, so the
+  // model still remembers the original wording and reads the edit as a
+  // correction. The panel shows only the edited version.
+  const handleEditMessage = useCallback(
+    (annotationId: string, index: number, text: string) => {
+      const annotation = session.annotations.find((a) => a.id === annotationId);
+      const previous = annotation?.messages[index];
+      if (!annotation || previous?.role !== "user" || !text.trim()) return;
+
+      stopAsk(annotationId);
+      replaceMessageFrom(annotationId, index, { role: "user", content: text, imageDataUrl: previous.imageDataUrl });
+      setActiveAnnotationId(annotationId);
+
+      // Re-editing the opening question keeps it grounded in its passage; later
+      // turns are follow-ups, the passage having been established already
+      const opening = index === 0 && !!annotation.selectedText;
+      streamAsk(annotationId, {
+        kind: opening ? "question" : "followup",
+        question: text,
+        selected_text: opening ? annotation.selectedText : undefined,
+        page_number: opening ? annotation.pageNumber : undefined,
+        image_base64: previous.imageDataUrl,
+      });
+    },
+    [session.annotations, replaceMessageFrom, stopAsk, streamAsk]
   );
 
   const handleRemoveZoteroAnnotation = useCallback(
@@ -1309,6 +1358,8 @@ export default function Home() {
           model={session.model}
           streamingIds={streamingIds}
           onFollowUp={handleFollowUp}
+          onStop={stopAsk}
+          onEditMessage={handleEditMessage}
           onAskGeneral={handleAskGeneral}
           onDelete={handleDelete}
           onReExplainImage={handleReExplainImage}

@@ -1,6 +1,6 @@
 "use client";
 import { useState, useCallback, useEffect, useRef } from "react";
-import { SessionState, Annotation, ConceptEntry, Model, Effort, Mindmap, DocType, Highlight } from "@/types/session";
+import { SessionState, Annotation, ConceptEntry, Model, Effort, Mindmap, DocType, Highlight, Message } from "@/types/session";
 import { makeLabel } from "@/lib/session-utils";
 
 const DEFAULT_STATE: SessionState = {
@@ -209,6 +209,20 @@ export function useSession() {
     }));
   }, []);
 
+  // Rewrite a message and drop everything after it, the way a chat box does
+  // when you edit and resend. The empty assistant message that follows is where
+  // the new answer lands.
+  const replaceMessageFrom = useCallback((annotationId: string, index: number, message: Message) => {
+    setSession((s) => ({
+      ...s,
+      annotations: s.annotations.map((a) =>
+        a.id === annotationId
+          ? { ...a, messages: [...a.messages.slice(0, index), message, { role: "assistant" as const, content: "" }] }
+          : a
+      ),
+    }));
+  }, []);
+
   // forName pins the map to the paper it was generated for — if the user
   // switched papers while generation ran, the result is discarded instead of
   // landing on (and autosaving into) the wrong paper's session
@@ -344,6 +358,7 @@ export function useSession() {
     setAnnotationSessionId,
     appendMessage,
     updateLastAssistantMessage,
+    replaceMessageFrom,
     saveSession,
     loadSession,
   };
