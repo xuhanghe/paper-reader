@@ -468,23 +468,18 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
                 );
               })()}
 
-              {/* Streaming indicator */}
-              {streamingIds.has(annotation.id) && (
-                <div className="px-4 pt-3 flex items-center gap-2 text-xs" style={{ color: "var(--ink-faint)" }}>
-                  <span className="inline-flex gap-0.5">
-                    <span className="w-1 h-1 rounded-full animate-bounce [animation-delay:0ms]" style={{ background: "var(--accent)" }} />
-                    <span className="w-1 h-1 rounded-full animate-bounce [animation-delay:150ms]" style={{ background: "var(--accent)" }} />
-                    <span className="w-1 h-1 rounded-full animate-bounce [animation-delay:300ms]" style={{ background: "var(--accent)" }} />
-                  </span>
-                  Thinking…
-                </div>
-              )}
-
               {/* Messages */}
               <div className="px-4 pt-3 pb-2 space-y-3">
                 {annotation.messages.map((msg, i) => {
                   const isUser = msg.role === "user";
                   const isFollowUp = isUser && i > 0;
+                  // Every ask seeds an empty assistant message before streaming,
+                  // so the newest one is where the reply is about to land
+                  const waitingHere =
+                    !isUser &&
+                    !msg.content &&
+                    i === annotation.messages.length - 1 &&
+                    streamingIds.has(annotation.id);
                   return (
                     <div key={i} className={isFollowUp ? "pt-3" : ""} style={isFollowUp ? { borderTop: "1px solid var(--border-light)" } : {}}>
                       <p className="text-[10px] font-semibold mb-1 tracking-wide uppercase flex items-center gap-1.5" style={{ color: isUser ? "var(--ink-faint)" : "var(--accent)" }}>
@@ -508,6 +503,19 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
                           )}
                           <p style={{ color: "var(--ink-muted)", fontFamily: "var(--font-geist-sans), system-ui, sans-serif" }}>{msg.content}</p>
                         </>
+                      ) : waitingHere ? (
+                        // The answer hasn't started yet: wait in the bubble it
+                        // will fill, directly under the question just asked.
+                        // Anywhere else — above the thread, as this used to be —
+                        // and a follow-up looks like it went unanswered.
+                        <div className="flex items-center gap-2 text-xs" style={{ color: "var(--ink-faint)" }}>
+                          <span className="inline-flex gap-0.5">
+                            <span className="w-1 h-1 rounded-full animate-bounce [animation-delay:0ms]" style={{ background: "var(--accent)" }} />
+                            <span className="w-1 h-1 rounded-full animate-bounce [animation-delay:150ms]" style={{ background: "var(--accent)" }} />
+                            <span className="w-1 h-1 rounded-full animate-bounce [animation-delay:300ms]" style={{ background: "var(--accent)" }} />
+                          </span>
+                          Thinking…
+                        </div>
                       ) : (
                         <div className="prose-paper">
                           <ReactMarkdown remarkPlugins={[remarkGfm]}>
