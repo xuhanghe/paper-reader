@@ -126,8 +126,20 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
   const [followUpImage, setFollowUpImage] = useState<Record<string, string>>({});
   const [lightboxState, setLightboxState] = useState<{ src: string; annotationId: string } | null>(null);
   const [expandedText, setExpandedText] = useState<Set<string>>(new Set());
+  const [collapsedIds, setCollapsedIds] = useState<Set<string>>(new Set());
   const [fontIdx, setFontIdx] = useState(DEFAULT_FONT_IDX);
   const bottomRef = useRef<HTMLDivElement | null>(null);
+
+  const toggleCollapsed = (id: string) =>
+    setCollapsedIds((prev) => {
+      const next = new Set(prev);
+      if (!next.delete(id)) next.add(id);
+      return next;
+    });
+
+  const allCollapsed = annotations.length > 0 && annotations.every((a) => collapsedIds.has(a.id));
+  const toggleAll = () =>
+    setCollapsedIds(allCollapsed ? new Set() : new Set(annotations.map((a) => a.id)));
 
   const fontSize = FONT_SIZES[fontIdx];
   const canIncrease = fontIdx < FONT_SIZES.length - 1;
@@ -149,6 +161,22 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
     el.addEventListener("wheel", onWheel, { passive: false });
     return () => el.removeEventListener("wheel", onWheel);
   }, []);
+
+  // Whatever becomes active is about to be answered or jumped to, so a folded
+  // card opens itself rather than leaving the reply hidden behind a chevron.
+  // Adjusted as the selection changes rather than in an effect: an effect would
+  // paint the card folded first, then cascade a second render to unfold it.
+  const [lastActive, setLastActive] = useState<string | null>(activeId);
+  if (activeId !== lastActive) {
+    setLastActive(activeId);
+    if (activeId && collapsedIds.has(activeId)) {
+      setCollapsedIds((prev) => {
+        const next = new Set(prev);
+        next.delete(activeId);
+        return next;
+      });
+    }
+  }
 
   useEffect(() => {
     if (activeId && annotationRefs.current[activeId]) {
@@ -326,6 +354,15 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
         className="btn-icon w-7 h-7 text-base leading-none"
         title="Larger text (Ctrl+scroll)"
       >+</button>
+      {annotations.length > 1 && (
+        <button
+          onClick={toggleAll}
+          className="btn-icon px-2 py-0.5 text-[11px] ml-1"
+          title={allCollapsed ? "Expand every conversation" : "Collapse every conversation"}
+        >
+          {allCollapsed ? "⇕ expand all" : "⇕ collapse all"}
+        </button>
+      )}
       <span className="ml-auto inline-flex items-center gap-1">
         {modelControls}
         <button onClick={onToggle} className="btn-icon w-6 h-6 text-xs" title="Collapse panel">
@@ -373,19 +410,40 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
       <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 space-y-4" style={{ fontSize }}>
         {annotations.map((annotation) => {
           const isActive = annotation.id === activeId;
+          const collapsed = collapsedIds.has(annotation.id);
+          const replies = annotation.messages.filter((m) => m.role === "assistant" && m.content).length;
           return (
             <div
               key={annotation.id}
               ref={(el) => { annotationRefs.current[annotation.id] = el; }}
-              className="rounded-lg overflow-hidden transition-all pr-fade-up"
+              // No overflow-hidden: it would make this card the containing
+              // block for the sticky follow-up box below, pinning it to the
+              // card instead of the panel. Corners are rounded per-child.
+              className={`rounded-lg transition-all pr-fade-up ${collapsed ? "overflow-hidden" : ""}`}
               style={{
                 background: "var(--surface)",
                 border: isActive ? "1px solid var(--accent)" : "1px solid var(--border)",
                 boxShadow: isActive ? "0 0 0 1px var(--accent), 0 4px 20px rgba(232,120,76,0.15)" : "var(--shadow-card)",
               }}
             >
-              {/* Card header */}
-              <div className="flex items-center gap-2 px-3 py-2" style={{ background: "rgba(230,237,243,0.025)", borderBottom: "1px solid var(--border-light)" }}>
+              {/* Card header — doubles as the collapse toggle */}
+              <div
+                onClick={() => toggleCollapsed(annotation.id)}
+                role="button"
+                tabIndex={0}
+                aria-expanded={!collapsed}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggleCollapsed(annotation.id); }
+                }}
+                className="flex items-center gap-2 px-3 py-2 cursor-pointer select-none rounded-t-lg"
+                style={{
+                  background: "rgba(230,237,243,0.025)",
+                  borderBottom: collapsed ? "none" : "1px solid var(--border-light)",
+                  borderRadius: collapsed ? "0.5rem" : undefined,
+                }}
+                title={collapsed ? "Expand this conversation" : "Collapse this conversation"}
+              >
+                <span className="text-[9px] shrink-0" style={{ color: "var(--accent)" }}>{collapsed ? "▸" : "▾"}</span>
                 <span
                   className="shrink-0 text-[11px] font-medium px-1.5 py-0.5 rounded"
                   style={
@@ -399,7 +457,7 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
 
                 {annotation.type === "image" && annotation.imageDataUrl ? (
                   <button
-                    onClick={() => setLightboxState({ src: annotation.imageDataUrl!, annotationId: annotation.id })}
+                    onClick={(e) => { e.stopPropagation(); setLightboxState({ src: annotation.imageDataUrl!, annotationId: annotation.id }); }}
                     className="group flex items-center gap-1.5 transition-opacity hover:opacity-70"
                     title="Click to view full size"
                   >
@@ -417,14 +475,27 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
                   </span>
                 )}
 
+                {/* Collapsed cards say how much is folded away, so the panel
+                    stays scannable when everything is shut */}
+                {collapsed && replies > 0 && (
+                  <span className="shrink-0 text-[10px] tabular-nums px-1.5 py-0.5 rounded" style={{ background: "var(--accent-dim)", color: "var(--accent)" }}>
+                    {replies} {replies === 1 ? "reply" : "replies"}
+                  </span>
+                )}
+                {collapsed && streamingIds.has(annotation.id) && (
+                  <span className="shrink-0 text-[10px]" style={{ color: "var(--accent)" }}>answering…</span>
+                )}
+
                 <button
-                  onClick={() => onDelete(annotation.id)}
+                  onClick={(e) => { e.stopPropagation(); onDelete(annotation.id); }}
                   className="btn-icon ml-auto shrink-0 w-6 h-6 text-xs"
                   title="Delete this annotation"
                 >
                   ✕
                 </button>
               </div>
+
+              {!collapsed && (<>
 
               {/* Selected text block — text annotations only */}
               {annotation.type === "text" && annotation.selectedText && (() => {
@@ -528,8 +599,14 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
                 })}
               </div>
 
-              {/* Follow-up */}
-              <div className="px-4 pb-4">
+              {/* Follow-up — sticks to the bottom of the panel while this
+                  card is on screen. Because it is inside the card, the box you
+                  see always belongs to the conversation you are scrolled into;
+                  it hands over to the next card's box at the boundary. */}
+              <div
+                className="px-4 pt-2 pb-4 sticky bottom-0 rounded-b-lg"
+                style={{ background: "var(--surface)", boxShadow: "0 -8px 12px -8px rgba(0,0,0,0.45)", zIndex: 1 }}
+              >
                 {followUpImage[annotation.id] && (
                   <div className="flex items-center gap-2 mb-2">
                     <img
@@ -619,6 +696,7 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
                   </button>
                 </div>
               </div>
+              </>)}
             </div>
           );
         })}

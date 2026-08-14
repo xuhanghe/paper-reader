@@ -151,7 +151,13 @@ select:focus-visible {
   to { transform: rotate(360deg); }
 }
 .pr-spin      { animation: pr-spin 0.8s linear infinite; }
-.pr-fade-up   { animation: pr-fade-up 0.22s ease-out both; }
+/* `backwards`, not `both`: `both` holds the final keyframe forever, and that
+   keyframe's `transform: translateY(0)` counts as a transform. A transformed
+   ancestor becomes the containing block for its descendants, which strands the
+   sticky follow-up box inside its card in WebKit. `backwards` still applies the
+   opening frame before the animation starts — which is all it was there for —
+   and leaves no transform behind afterwards. */
+.pr-fade-up   { animation: pr-fade-up 0.22s ease-out backwards; }
 .pr-modal-pop { animation: pr-modal-pop 0.18s ease-out both; }
 .pr-backdrop  { animation: pr-backdrop-fade 0.15s ease-out both; }
 
