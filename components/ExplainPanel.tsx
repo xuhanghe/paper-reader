@@ -4,6 +4,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Annotation, Model } from "@/types/session";
 import { isSubmitKey } from "@/lib/keys";
+import { withQuotes, quotePreview, type Quote } from "@/lib/quotes";
 
 type Props = {
   annotations: Annotation[];
@@ -120,7 +121,8 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
 
   const submitGeneral = () => {
     if (!generalQuestion.trim()) return;
-    onAskGeneral(generalQuestion.trim(), composerImage || undefined, composerRef || undefined, webSearch);
+    onAskGeneral(withQuotes(generalQuestion.trim(), quotes), composerImage || undefined, composerRef || undefined, webSearch);
+    setQuotes([]);
     setGeneralQuestion("");
     setComposerImage(null);
     setComposerRef(null);
@@ -134,6 +136,10 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
   // Which question is being rewritten, and its working text
   const [editing, setEditing] = useState<{ id: string; index: number } | null>(null);
   const [editDraft, setEditDraft] = useState("");
+  // Passages lifted out of the conversations, waiting to be quoted into the
+  // next question — wherever it is asked
+  const [quotes, setQuotes] = useState<Quote[]>([]);
+  const [pendingQuote, setPendingQuote] = useState<{ text: string; source?: string; top: number; left: number } | null>(null);
   const [fontIdx, setFontIdx] = useState(DEFAULT_FONT_IDX);
   const bottomRef = useRef<HTMLDivElement | null>(null);
 
@@ -192,6 +198,46 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
       });
     }
   }
+
+  // Selecting inside a conversation offers to quote it. Scoped to the list, so
+  // selecting in the composer or the paper does not trigger it.
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const onMouseUp = () => {
+      const sel = typeof window !== "undefined" ? window.getSelection() : null;
+      const text = sel?.toString() ?? "";
+      if (!sel || sel.isCollapsed || !text.trim()) {
+        setPendingQuote(null);
+        return;
+      }
+      const anchor = sel.anchorNode;
+      const within = anchor && (anchor.nodeType === 1 ? (anchor as Element) : anchor.parentElement)?.closest?.("[data-conversation]");
+      if (!within || !el.contains(within)) {
+        setPendingQuote(null);
+        return;
+      }
+      const rect = sel.getRangeAt(0).getBoundingClientRect();
+      setPendingQuote({
+        text,
+        source: (within as HTMLElement).dataset.conversation || undefined,
+        top: rect.bottom + 6,
+        left: rect.left + rect.width / 2,
+      });
+    };
+    el.addEventListener("mouseup", onMouseUp);
+    return () => el.removeEventListener("mouseup", onMouseUp);
+  }, []);
+
+  const addQuote = () => {
+    if (!pendingQuote) return;
+    setQuotes((prev) => [
+      ...prev,
+      { id: `${Date.now()}-${prev.length}`, text: pendingQuote.text.trim(), source: pendingQuote.source },
+    ]);
+    setPendingQuote(null);
+    window.getSelection()?.removeAllRanges();
+  };
 
   useEffect(() => {
     if (activeId && annotationRefs.current[activeId]) {
@@ -277,6 +323,17 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
   // the card it would either scroll away or — when sticky — detach at the
   // card's bottom edge and leave a gap, since a sticky element cannot travel
   // past its own containing block.
+  // Quoted passages ride along with whichever question is asked next, in either
+  // box — that is what makes them work across conversations.
+  const submitFollowUp = (annotationId: string) => {
+    const text = followUpText[annotationId]?.trim();
+    if (!text) return;
+    onFollowUp(annotationId, withQuotes(text, quotes), followUpImage[annotationId]);
+    setFollowUpText((prev) => ({ ...prev, [annotationId]: "" }));
+    setFollowUpImage((prev) => { const next = { ...prev }; delete next[annotationId]; return next; });
+    setQuotes([]);
+  };
+
   const followUpBar = (annotation: Annotation) => (
   <div
     className="shrink-0 px-3 pt-2 pb-2.5"
@@ -339,9 +396,7 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
         }}
         onKeyDown={(e) => {
           if (isSubmitKey(e) && followUpText[annotation.id]?.trim()) {
-            onFollowUp(annotation.id, followUpText[annotation.id].trim(), followUpImage[annotation.id]);
-            setFollowUpText((prev) => ({ ...prev, [annotation.id]: "" }));
-            setFollowUpImage((prev) => { const next = { ...prev }; delete next[annotation.id]; return next; });
+            submitFollowUp(annotation.id);
           }
         }}
         className="flex-1 text-sm px-3 py-1.5 rounded-md focus:outline-none transition-colors"
@@ -390,9 +445,7 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
         <button
           onClick={() => {
             if (followUpText[annotation.id]?.trim()) {
-              onFollowUp(annotation.id, followUpText[annotation.id].trim(), followUpImage[annotation.id]);
-              setFollowUpText((prev) => ({ ...prev, [annotation.id]: "" }));
-              setFollowUpImage((prev) => { const next = { ...prev }; delete next[annotation.id]; return next; });
+              submitFollowUp(annotation.id);
             }
           }}
           className="btn-primary text-sm px-3 py-1.5"
@@ -607,6 +660,7 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
             <div
               key={annotation.id}
               ref={(el) => { annotationRefs.current[annotation.id] = el; }}
+              data-conversation={annotation.label}
               className="rounded-lg overflow-hidden transition-all pr-fade-up"
               style={{
                 background: "var(--surface)",
@@ -850,6 +904,53 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
         })}
         <div ref={bottomRef} />
       </div>
+      {pendingQuote && (
+        <button
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={addQuote}
+          className="btn-primary text-xs px-2.5 py-1 pr-fade-up"
+          style={{ position: "fixed", top: pendingQuote.top, left: pendingQuote.left, transform: "translateX(-50%)", zIndex: 60 }}
+          title="Carry this into your next question"
+        >
+          ❝ Quote
+        </button>
+      )}
+
+      {quotes.length > 0 && (
+        <div
+          className="shrink-0 px-3 py-2 flex flex-wrap items-center gap-1.5"
+          style={{ background: "var(--accent-faint)", borderTop: "1px solid var(--border)" }}
+        >
+          <span className="text-[10px] uppercase tracking-widest shrink-0" style={{ color: "var(--ink-faint)" }}>
+            Quoting
+          </span>
+          {quotes.map((q) => (
+            <span
+              key={q.id}
+              className="inline-flex items-center gap-1 text-[11px] px-2 py-1 rounded max-w-[260px]"
+              style={{ background: "var(--surface)", border: "1px solid var(--border)", color: "var(--ink-muted)" }}
+              title={q.source ? `${q.text}\n\n— from ${q.source}` : q.text}
+            >
+              <span className="truncate">❝ {quotePreview(q.text)}</span>
+              <button
+                onClick={() => setQuotes((prev) => prev.filter((x) => x.id !== q.id))}
+                className="shrink-0 hover:opacity-70"
+                title="Drop this quote"
+              >
+                ✕
+              </button>
+            </span>
+          ))}
+          <button
+            onClick={() => setQuotes([])}
+            className="text-[10px] ml-auto shrink-0 hover:opacity-70"
+            style={{ color: "var(--ink-faint)" }}
+          >
+            clear
+          </button>
+        </div>
+      )}
+
       {showFollowUpBar && followUpBar(barAnnotation)}
       {composer}
     </div>

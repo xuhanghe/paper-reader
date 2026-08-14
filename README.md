@@ -58,6 +58,11 @@ about a figure, a follow-up, a question from the map — goes into a single thre
 for that paper, resumed by session id on each ask. Ask about section 3 an hour
 later and the model still knows what you asked about section 2.
 
+The conversations in the panel are one workspace rather than separate chats:
+select any passage in any of them and **❝ Quote** carries it into your next
+question, whichever conversation you ask it in. An answer streaming in can be
+stopped, and a question already asked can be rewritten and sent again.
+
 **A map of the paper.** A generated outline grounded in verbatim quotes, each of
 which jumps to its passage. Alongside it, a notes column listing every highlight
 and Zotero note: click one to land on the passage itself — not the top of its
@@ -247,6 +252,10 @@ Worth knowing before you rely on them:
   mock**, not a live Anthropic-compatible service.
 - **Custom API endpoints get no tools** — no Zotero MCP, no web search. That
   needs a server-side tool-calling loop the CLI providers get for free.
+- **Rewriting a question cannot un-ask it.** The CLI providers keep their own
+  history server-side and are resumed by session id, so the model still
+  remembers the original wording and reads the edit as a correction. The panel
+  shows only the edited version.
 - **A trashed item can reappear in the sidebar until Zotero syncs.** The list is
   read from the local Zotero API but the trashing goes through zotero.org, so ↻
   before the sync lands will show it again. The sidebar says so when it happens.

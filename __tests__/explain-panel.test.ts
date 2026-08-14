@@ -399,3 +399,114 @@ describe("stopping and rewriting", () => {
     assert.equal(edits.length, 1, "one control, on the one user message");
   });
 });
+
+// ── Quoting across conversations ──────────────────────────────────────
+describe("quoting a passage out of a conversation", () => {
+  let dom: JSDOM;
+  let host: HTMLElement;
+  let asked: string[];
+
+  const mount = (annotations: Annotation[]) => {
+    dom = new JSDOM("<!doctype html><body><div id='root'></div></body>", { pretendToBeVisual: true });
+    const g = globalThis as Record<string, unknown>;
+    g.IS_REACT_ACT_ENVIRONMENT = true;
+    g.window = dom.window;
+    g.document = dom.window.document;
+    Object.defineProperty(globalThis, "navigator", { value: dom.window.navigator, configurable: true, writable: true });
+    g.requestAnimationFrame = dom.window.requestAnimationFrame.bind(dom.window);
+    g.cancelAnimationFrame = dom.window.cancelAnimationFrame.bind(dom.window);
+    // jsdom has no layout, so Range geometry is missing entirely — the panel
+    // uses it to place the quote button over the selection
+    dom.window.Range.prototype.getBoundingClientRect = () => new dom.window.DOMRect(20, 40, 80, 16);
+    dom.window.Range.prototype.getClientRects = (() => []) as unknown as Range["getClientRects"];
+    asked = [];
+    host = dom.window.document.getElementById("root") as unknown as HTMLElement;
+    act(() => {
+      createRoot(host).render(
+        createElement(ExplainPanel, {
+          annotations,
+          activeId: null,
+          model: "claude-sonnet-4-6",
+          streamingIds: new Set<string>(),
+          onFollowUp: (_id: string, q: string) => asked.push(q),
+          onAskGeneral: (q: string) => asked.push(q),
+          onDelete: () => {},
+          onReExplainImage: () => {},
+          onViewInPdf: () => {},
+          annotationRefs: { current: {} },
+          isOpen: true,
+          onToggle: () => {},
+        })
+      );
+    });
+  };
+
+  const click = (el: Element) => act(() => { el.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })); });
+  const button = (text: string) => Array.from(host.querySelectorAll("button")).find((b) => b.textContent?.includes(text));
+
+  // Select a run of text inside one conversation, the way a drag would
+  const selectInside = (needle: string) => {
+    const walker = dom.window.document.createTreeWalker(host, dom.window.NodeFilter.SHOW_TEXT);
+    let node: Text | null = null;
+    while (walker.nextNode()) {
+      const t = walker.currentNode as Text;
+      if (t.data.includes(needle)) { node = t; break; }
+    }
+    assert.ok(node, `no text node containing ${needle}`);
+    const range = dom.window.document.createRange();
+    const at = node!.data.indexOf(needle);
+    range.setStart(node!, at);
+    range.setEnd(node!, at + needle.length);
+    const sel = dom.window.getSelection()!;
+    sel.removeAllRanges();
+    sel.addRange(range);
+    const list = host.querySelector(".overflow-y-auto")!;
+    act(() => { list.dispatchEvent(new dom.window.MouseEvent("mouseup", { bubbles: true })); });
+  };
+
+  test("selecting inside a conversation offers to quote it", () => {
+    mount([CARD_A, CARD_B]);
+    assert.equal(button("Quote"), undefined, "nothing offered before a selection");
+    selectInside("answer A");
+    assert.ok(button("Quote"), "expected a quote control over the selection");
+  });
+
+  test("quoting shows the passage, credited to the conversation it came from", () => {
+    mount([CARD_A, CARD_B]);
+    selectInside("answer A");
+    click(button("Quote")!);
+    assert.ok(host.textContent?.includes("Quoting"), "the pending quote is visible");
+    assert.ok(host.textContent?.includes("answer A"));
+    const chip = Array.from(host.querySelectorAll("[title]")).find((el) => el.getAttribute("title")?.includes("answer A"));
+    assert.ok(chip?.getAttribute("title")?.includes("conversation A"), "credited to its conversation");
+  });
+
+  test("a quote taken from one conversation survives to be used in another", () => {
+    // The whole point: the panel is one workspace, not two chats
+    mount([CARD_A, CARD_B]);
+    selectInside("answer A");
+    click(button("Quote")!);
+    // the follow-up box is bound to conversation B, and the quote is still held
+    const bar = host.textContent?.slice(host.textContent.indexOf("Follow up on")) ?? "";
+    assert.ok(bar.includes("conversation B"), "asking into B");
+    assert.ok(host.textContent?.includes("Quoting"), "with A's passage still attached");
+  });
+
+  test("quotes can be dropped individually and all at once", () => {
+    mount([CARD_A, CARD_B]);
+    selectInside("answer A");
+    click(button("Quote")!);
+    assert.ok(host.textContent?.includes("Quoting"));
+    click(button("clear")!);
+    assert.equal(host.textContent?.includes("Quoting"), false);
+  });
+
+  test("selecting outside a conversation offers nothing", () => {
+    mount([CARD_A]);
+    const sel = dom.window.getSelection()!;
+    sel.removeAllRanges();
+    const list = host.querySelector(".overflow-y-auto")!;
+    act(() => { list.dispatchEvent(new dom.window.MouseEvent("mouseup", { bubbles: true })); });
+    assert.equal(button("Quote"), undefined);
+  });
+});
