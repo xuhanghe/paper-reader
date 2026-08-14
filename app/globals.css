@@ -168,6 +168,22 @@ select:focus-visible {
   color: transparent;
   cursor: help;
 }
+/* Passages with a conversation attached. A rule under the line, not a wash over
+   it: a highlight says "this matters", this says "we talked about this", and
+   the same words can carry both without either becoming unreadable. */
+.pr-asked-rule {
+  background: var(--accent);
+  opacity: 0.75;
+  border-radius: 1px;
+  mix-blend-mode: normal;
+}
+/* The mark itself only carries the id and takes the click */
+.textLayer mark.pr-asked {
+  background: transparent;
+  color: transparent;
+  cursor: pointer;
+}
+
 /* A note entry revealed by clicking its highlight in the paper */
 @keyframes pr-entry-flash {
   0%, 100% { box-shadow: 0 0 0 0 rgba(232, 120, 76, 0); }

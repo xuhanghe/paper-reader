@@ -509,6 +509,22 @@ export default function Home() {
     ],
     [session.highlights, visibleZoteroAnnotations]
   );
+  // Passages with a conversation attached, marked in the page itself. Figure
+  // captures have no text to mark, and a card whose selection has been cleared
+  // has nothing to point at.
+  const askedPassages = useMemo(
+    () =>
+      session.annotations
+        .filter((a) => a.type === "text" && a.selectedText?.trim())
+        .map((a) => ({
+          id: a.id,
+          text: a.selectedText!,
+          pageNumber: a.pageNumber,
+          label: a.label,
+        })),
+    [session.annotations]
+  );
+
   const annotationRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const pdfViewerRef = useRef<PdfViewerHandle>(null);
 
@@ -525,6 +541,13 @@ export default function Home() {
   const jumpToHighlight = useCallback(async (id: string, page: number | undefined, text: string) => {
     const landed = await pdfViewerRef.current?.scrollToHighlight?.(id, page);
     if (!landed && page) pdfViewerRef.current?.highlightText(page, text);
+  }, []);
+
+  // Clicking a marked passage in the paper opens its conversation — the mirror
+  // of the panel's "view in PDF"
+  const openConversation = useCallback((id: string) => {
+    setExplainOpen(true);
+    setActiveAnnotationId(id);
   }, []);
 
   const handleDelete = useCallback((id: string) => {
@@ -1250,6 +1273,8 @@ export default function Home() {
               onEditHighlightNote={handleEditNote}
               onHighlightClick={revealNote}
               highlights={allHighlights}
+              askedPassages={askedPassages}
+              onAskedClick={openConversation}
               onReload={session.zoteroKey ? reloadCurrentMaterial : undefined}
               reloading={reloading}
             />

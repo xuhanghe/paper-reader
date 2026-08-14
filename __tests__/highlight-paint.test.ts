@@ -135,3 +135,53 @@ describe("rangeForText", () => {
     assert.equal(range.startContainer.parentElement?.tagName, "P");
   });
 });
+
+describe("a passage that is both highlighted and asked about", () => {
+  // The reader marks conversations in the page as well as highlights, so the
+  // same words can carry two marks. Painting one must not break the other.
+  test("both marks land, nested, over the same words", () => {
+    setBody("<p>the quick brown fox</p>");
+    assert.equal(markTextInContainer(body, "quick brown", "pr-asked", undefined, { id: "ask1" }), true);
+    assert.equal(
+      markTextInContainer(body, "quick brown", "pr-highlight", undefined, { id: "hl1" }),
+      true,
+      "the second pass must still find the text after the first wrapped it"
+    );
+    assert.equal(body.querySelectorAll("mark.pr-asked").length >= 1, true);
+    assert.equal(body.querySelectorAll("mark.pr-highlight").length >= 1, true);
+    assert.equal(body.textContent, "the quick brown fox", "the words themselves are untouched");
+  });
+
+  test("clearing one kind leaves the other painted", () => {
+    setBody("<p>the quick brown fox</p>");
+    markTextInContainer(body, "quick brown", "pr-asked", undefined, { id: "ask1" });
+    markTextInContainer(body, "quick brown", "pr-highlight", undefined, { id: "hl1" });
+    clearMarks(body, "pr-highlight");
+    assert.equal(body.querySelectorAll("mark.pr-highlight").length, 0);
+    assert.equal(body.querySelectorAll("mark.pr-asked").length >= 1, true);
+    assert.equal(body.textContent, "the quick brown fox");
+  });
+
+  test("clearing both restores the original markup", () => {
+    const original = "<p>the quick brown fox</p>";
+    setBody(original);
+    markTextInContainer(body, "quick brown", "pr-asked", undefined, { id: "ask1" });
+    markTextInContainer(body, "quick brown", "pr-highlight", undefined, { id: "hl1" });
+    clearMarks(body, "pr-highlight");
+    clearMarks(body, "pr-asked");
+    assert.equal(body.innerHTML, original);
+  });
+
+  test("only the outer mark is nudged onto the ink", () => {
+    // alignMarksToInk skips a mark that sits inside another; shifting both
+    // would move the inner one by the offset twice
+    setBody("<p>the quick brown fox</p>");
+    markTextInContainer(body, "quick brown", "pr-asked", undefined, { id: "ask1" });
+    markTextInContainer(body, "quick brown", "pr-highlight", undefined, { id: "hl1" });
+    const all = Array.from(body.querySelectorAll("mark.pr-highlight, mark.pr-asked"));
+    const outer = all.filter((m) => !m.parentElement?.closest("mark.pr-highlight, mark.pr-asked"));
+    const inner = all.filter((m) => m.parentElement?.closest("mark.pr-highlight, mark.pr-asked"));
+    assert.ok(outer.length > 0, "there is an outer mark to nudge");
+    assert.ok(inner.length > 0, "and an inner one that must be skipped");
+  });
+});

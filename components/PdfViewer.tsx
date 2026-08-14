@@ -73,7 +73,12 @@ const FLASH_MS = 1600;
 // Zotero draws its annotations with globalAlpha 0.5 and multiply blending
 const HIGHLIGHT_ALPHA = 0.5;
 
-type HighlightBand = SelectionRect & { id: string; color: string };
+type HighlightBand = SelectionRect & { id: string; color: string; underline?: boolean };
+
+// A passage that has a conversation attached to it. Drawn as a rule under the
+// line rather than a wash over it, so it reads as a different kind of mark from
+// a Zotero highlight and the two can sit on the same words without muddying.
+export type AskedPassage = { id: string; text: string; pageNumber?: number; label?: string };
 
 // Snaps a selection band to the glyphs it covers.
 //
@@ -158,6 +163,10 @@ type Props = {
   // Fires alongside the popover, so the Notes panel can reveal the same entry
   onHighlightClick?: (id: string) => void;
   highlights?: Highlight[];
+  // Passages you have asked about — marked in the page, not just reachable
+  // through the panel's "view in PDF" button
+  askedPassages?: AskedPassage[];
+  onAskedClick?: (id: string) => void;
   // Re-reads the document from Zotero; absent for materials not stored there
   onReload?: () => void;
   reloading?: boolean;
@@ -181,7 +190,7 @@ export type PdfViewerHandle = {
 // virtualized page rendering, cursor-anchored CSS-first zoom with delayed
 // redraw, and a find controller for jump-and-highlight.
 export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
-  { pdfDataUrl, onTextSelected, onAskAboutSelection, onRegionCaptured, onHighlight, onNote, onRemoveHighlight, onRecolorHighlight, onEditHighlightNote, onHighlightClick, highlights = [], onReload, reloading },
+  { pdfDataUrl, onTextSelected, onAskAboutSelection, onRegionCaptured, onHighlight, onNote, onRemoveHighlight, onRecolorHighlight, onEditHighlightNote, onHighlightClick, highlights = [], askedPassages = [], onAskedClick, onReload, reloading },
   ref
 ) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -204,13 +213,15 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
   // ── Persistent highlights on the text layer ─────────────────────
   const highlightsRef = useRef<Highlight[]>(highlights);
   highlightsRef.current = highlights;
+  const askedRef = useRef<AskedPassage[]>(askedPassages);
+  askedRef.current = askedPassages;
 
   // Highlights are painted inside the text layer, so they inherit its
   // misalignment with the rendered glyphs (see snapBandToInk). Nudging each
   // mark onto its line's ink moves both the tint and its click target.
   const alignMarksToInk = useCallback((layer: HTMLElement, pageEl: Element) => {
     const canvas = pageEl.querySelector("canvas") as HTMLCanvasElement | null;
-    const marks = Array.from(layer.querySelectorAll("mark.pr-highlight")) as HTMLElement[];
+    const marks = Array.from(layer.querySelectorAll("mark.pr-highlight, mark.pr-asked")) as HTMLElement[];
     if (!canvas || marks.length === 0) return;
     const canvasRect = canvas.getBoundingClientRect();
     if (canvasRect.width === 0) return;
@@ -218,6 +229,10 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
     // One measurement per line, shared by every mark sitting on it
     const lines: { rect: SelectionRect; marks: HTMLElement[] }[] = [];
     for (const mark of marks) {
+      // A passage that is both highlighted and asked about is wrapped twice.
+      // Only the outer mark is nudged — shifting the inner one as well would
+      // move it by the offset a second time.
+      if (mark.parentElement?.closest("mark.pr-highlight, mark.pr-asked")) continue;
       const r = mark.getBoundingClientRect();
       if (r.width < 1 || r.height < 1) continue;
       const line = lines.find(
@@ -261,6 +276,11 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
     const layer = pageEl?.querySelector(".textLayer") as HTMLElement | null;
     if (!container || !pageEl || !layer) return;
     clearMarks(layer, "pr-highlight");
+    clearMarks(layer, "pr-asked");
+    for (const a of askedRef.current) {
+      if (a.pageNumber && a.pageNumber !== pageNumber) continue;
+      markTextInContainer(layer, a.text, "pr-asked", a.label ? `Asked about: ${a.label}` : "You asked about this — click to open the conversation", { id: a.id });
+    }
     for (const h of highlightsRef.current) {
       if (h.pageNumber && h.pageNumber !== pageNumber) continue;
       const cls = ["pr-highlight", h.note ? "pr-has-note" : ""].filter(Boolean).join(" ");
@@ -302,6 +322,30 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
         });
       }
     }
+    for (const a of askedRef.current) {
+      const marks = Array.from(
+        layer.querySelectorAll(`mark.pr-asked[data-highlight-id="${CSS.escape(a.id)}"]`)
+      ) as HTMLElement[];
+      if (marks.length === 0) continue;
+      const merged = mergeIntoLines(
+        marks
+          .map((m) => m.getBoundingClientRect())
+          .filter((r) => r.width > 0.5 && r.height > 0.5)
+          .map((r) => ({ left: r.left, top: r.top, width: r.width, height: r.height }))
+      );
+      for (const band of merged) {
+        const snapped = canvas && canvasRect ? snapBandToInk(band, canvas, canvasRect) : band;
+        bands.push({
+          id: a.id,
+          color: "var(--accent)",
+          underline: true,
+          left: snapped.left - box.left + container.scrollLeft,
+          top: snapped.top - box.top + container.scrollTop,
+          width: snapped.width,
+          height: snapped.height,
+        });
+      }
+    }
     setHighlightBands((prev) => ({ ...prev, [pageNumber]: bands }));
   }, [alignMarksToInk]);
 
@@ -311,6 +355,10 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
   useEffect(() => {
     clickRef.current = onHighlightClick;
   }, [onHighlightClick]);
+  const askedClickRef = useRef(onAskedClick);
+  useEffect(() => {
+    askedClickRef.current = onAskedClick;
+  }, [onAskedClick]);
 
   useEffect(() => {
     const el = containerRef.current;
@@ -321,20 +369,30 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
     const onMouseUp = (e: MouseEvent) => {
       const selection = window.getSelection();
       if (selection && !selection.isCollapsed) return; // finishing a drag-select
-      let mark = (e.target as HTMLElement)?.closest?.("mark.pr-highlight") as HTMLElement | null;
-      if (!mark) {
+      const hit = (sel: string) => {
+        const direct = (e.target as HTMLElement)?.closest?.(sel) as HTMLElement | null;
+        if (direct) return direct;
         // pdf.js parks a page-sized `.endOfContent` div over the text layer
         // once a selection has been made, and it swallows the hit — so look
         // through everything under the pointer, not just the top element.
-        mark =
+        return (
           (document
             .elementsFromPoint(e.clientX, e.clientY)
-            .map((el) => (el as HTMLElement).closest?.("mark.pr-highlight"))
-            .find(Boolean) as HTMLElement | undefined) ?? null;
-      }
+            .map((el) => (el as HTMLElement).closest?.(sel))
+            .find(Boolean) as HTMLElement | undefined) ?? null
+        );
+      };
+
+      const mark = hit("mark.pr-highlight");
       const id = mark?.dataset.highlightId;
       if (!mark || !id) {
         setHighlightMenu(null);
+        // A passage you asked about carries a conversation, not a colour — open
+        // it rather than the recolour menu. Checked second so a highlight on the
+        // same words still wins.
+        const asked = hit("mark.pr-asked");
+        const askedId = asked?.dataset.highlightId;
+        if (askedId) askedClickRef.current?.(askedId);
         return;
       }
       setHighlightMenu({ id, rect: mark.getBoundingClientRect() });
@@ -349,7 +407,7 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
     containerRef.current?.querySelectorAll(".page[data-page-number]").forEach((page) => {
       paintPageHighlights(parseInt(page.getAttribute("data-page-number")!));
     });
-  }, [highlights, paintPageHighlights]);
+  }, [highlights, askedPassages, paintPageHighlights]);
 
   // ── Selection ribbon ────────────────────────────────────────────
   // Drawn by us instead of ::selection (see mergeIntoLines). Coordinates are
@@ -897,13 +955,21 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
           onMouseUp={handleContainerMouseUp}
         >
           <div className="pdfViewer" />
-          {Object.values(highlightBands).flat().map((b, i) => (
-            <div
-              key={`hl-${b.id}-${i}`}
-              className="pr-band"
-              style={{ left: b.left, top: b.top - SELECTION_PAD, width: b.width, height: b.height + SELECTION_PAD * 2, background: b.color }}
-            />
-          ))}
+          {Object.values(highlightBands).flat().map((b, i) =>
+            b.underline ? (
+              <div
+                key={`ask-${b.id}-${i}`}
+                className="pr-band pr-asked-rule"
+                style={{ left: b.left, top: b.top + b.height + 1, width: b.width, height: 2 }}
+              />
+            ) : (
+              <div
+                key={`hl-${b.id}-${i}`}
+                className="pr-band"
+                style={{ left: b.left, top: b.top - SELECTION_PAD, width: b.width, height: b.height + SELECTION_PAD * 2, background: b.color }}
+              />
+            )
+          )}
           {selectionRects.map((r, i) => (
             <div
               key={i}
