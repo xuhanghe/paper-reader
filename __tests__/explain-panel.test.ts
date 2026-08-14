@@ -421,8 +421,14 @@ describe("quoting a passage out of a conversation", () => {
     dom.window.Range.prototype.getClientRects = (() => []) as unknown as Range["getClientRects"];
     asked = [];
     host = dom.window.document.getElementById("root") as unknown as HTMLElement;
+    quoteRoot = createRoot(host);
+    renderWith(annotations, true);
+  };
+
+  let quoteRoot: Root;
+  const renderWith = (annotations: Annotation[], isOpen: boolean) => {
     act(() => {
-      createRoot(host).render(
+      quoteRoot.render(
         createElement(ExplainPanel, {
           annotations,
           activeId: null,
@@ -434,7 +440,7 @@ describe("quoting a passage out of a conversation", () => {
           onReExplainImage: () => {},
           onViewInPdf: () => {},
           annotationRefs: { current: {} },
-          isOpen: true,
+          isOpen,
           onToggle: () => {},
         })
       );
@@ -499,6 +505,17 @@ describe("quoting a passage out of a conversation", () => {
     assert.ok(host.textContent?.includes("Quoting"));
     click(button("clear")!);
     assert.equal(host.textContent?.includes("Quoting"), false);
+  });
+
+  test("works after the panel opens — the order it actually starts in", () => {
+    // The panel starts closed and empty: the scrolling list it listens on does
+    // not exist yet. Attaching once on mount meant quoting never worked at all
+    // in the real app, only in tests that mounted straight into the open state.
+    mount([]);                    // mounted open but empty — no list yet
+    renderWith([], false);        // closed, as the saved layout has it
+    renderWith([CARD_A, CARD_B], true);   // a question arrives and the panel opens
+    selectInside("answer A");
+    assert.ok(button("Quote"), "quoting has to work on a panel that opened later");
   });
 
   test("selecting outside a conversation offers nothing", () => {

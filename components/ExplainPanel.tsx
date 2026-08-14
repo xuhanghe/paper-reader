@@ -169,6 +169,9 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
   const scrollRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
+    // The scrolling list is behind two early returns — a closed panel and an
+    // empty one — so on first mount this ref is null. The panel starts closed,
+    // which meant these listeners were never attached at all.
     const el = scrollRef.current;
     if (!el) return;
     const onWheel = (e: WheelEvent) => {
@@ -181,7 +184,7 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
     };
     el.addEventListener("wheel", onWheel, { passive: false });
     return () => el.removeEventListener("wheel", onWheel);
-  }, []);
+  }, [isOpen, annotations.length]);
 
   // Whatever becomes active is about to be answered or jumped to, so a folded
   // card opens itself rather than leaving the reply hidden behind a chevron.
@@ -227,7 +230,7 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
     };
     el.addEventListener("mouseup", onMouseUp);
     return () => el.removeEventListener("mouseup", onMouseUp);
-  }, []);
+  }, [isOpen, annotations.length]);
 
   const addQuote = () => {
     if (!pendingQuote) return;
