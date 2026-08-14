@@ -121,59 +121,50 @@ const CARD_A = thread([{ role: "user", content: "q about A" }, { role: "assistan
 const CARD_B = thread([{ role: "user", content: "q about B" }, { role: "assistant", content: "answer B" }], "b2", "conversation B");
 
 describe("follow-up box stays reachable", () => {
-  test("is pinned to the bottom of the panel rather than scrolling away", () => {
-    const html = renderPanel([CARD_A]);
-    const box = html.slice(html.indexOf(FOLLOW_UP) - 800, html.indexOf(FOLLOW_UP));
-    assert.match(box, /sticky/, "the follow-up box should be sticky-positioned");
-    assert.match(box, /bottom-0/);
+  test("there is one box, not one per conversation", () => {
+    // Kept inside a card it either scrolled away with the card or, when
+    // sticky, detached at the card's bottom edge and left a gap above the
+    // paper composer — a sticky element cannot travel past its containing block
+    assert.equal(countFollowUps(renderPanel([CARD_A, CARD_B])), 1);
+    assert.equal(countFollowUps(renderPanel([CARD_A])), 1);
   });
 
-  test("its card does not clip it — overflow-hidden would trap it in the card", () => {
-    // position:sticky resolves against the nearest clipping ancestor, so an
-    // expanded card must not create one
-    const html = renderPanel([CARD_A]);
-    const cardStart = html.indexOf("conversation A");
-    const card = html.slice(Math.max(0, cardStart - 500), cardStart);
-    assert.equal(/overflow-hidden/.test(card), false, "expanded card must not clip");
+  test("it sits after the whole list, flush above the paper composer", () => {
+    const html = renderPanel([CARD_A, CARD_B]);
+    assert.ok(
+      html.indexOf(FOLLOW_UP) > html.lastIndexOf("answer B"),
+      "the box must come after the last conversation, not inside the scrolling list"
+    );
+    assert.ok(
+      html.indexOf(FOLLOW_UP) < html.indexOf("Ask anything about the paper"),
+      "and before the paper composer"
+    );
+  });
+
+  test("it says which conversation it will post to", () => {
+    const html = renderPanel([CARD_A, CARD_B]);
+    assert.ok(html.includes("Follow up on"));
+    const bar = html.slice(html.indexOf("Follow up on"));
+    assert.ok(bar.includes("conversation B"), "binds to the conversation nearest the bar");
+  });
+
+  test("no conversations, no bar", () => {
+    assert.equal(countFollowUps(renderPanel([])), 0);
   });
 });
 
-describe("one box per conversation", () => {
-  test("each open conversation carries its own box", () => {
-    assert.equal(countFollowUps(renderPanel([CARD_A, CARD_B])), 2);
-  });
-
-  test("each box sits inside its own conversation, not pooled at the end", () => {
+describe("folding is reachable without hunting", () => {
+  test("every card carries a dedicated fold button, not just a clickable title", () => {
     const html = renderPanel([CARD_A, CARD_B]);
-    const a = html.indexOf("conversation A");
-    const b = html.indexOf("conversation B");
-    assert.ok(a < b, "sanity: A renders before B");
-    // exactly one box between A and B, and one after B
-    assert.equal(countFollowUps(html.slice(a, b)), 1, "A needs its own box before B starts");
-    assert.equal(countFollowUps(html.slice(b)), 1, "B needs its own box after it");
-  });
-});
-
-describe("folding conversations", () => {
-  test("an open conversation shows its messages and its box", () => {
-    const html = renderPanel([CARD_A]);
-    assert.ok(html.includes("answer A"));
-    assert.equal(countFollowUps(html), 1);
+    assert.equal((html.match(/aria-label="Collapse conversation"/g) || []).length, 2);
   });
 
-  test("the header offers a fold control once there is more than one", () => {
-    assert.ok(renderPanel([CARD_A, CARD_B]).includes("collapse all"));
-    assert.equal(renderPanel([CARD_A]).includes("collapse all"), false);
+  test("the header is still a toggle target in its own right", () => {
+    assert.equal((renderPanel([CARD_A, CARD_B]).match(/aria-expanded="true"/g) || []).length, 2);
   });
 
-  test("conversations start open, so nothing changes for existing readers", () => {
-    const html = renderPanel([CARD_A, CARD_B]);
-    assert.ok(html.includes("answer A") && html.includes("answer B"));
-  });
-
-  test("the fold control is a real toggle target on every card", () => {
-    const html = renderPanel([CARD_A, CARD_B]);
-    assert.equal((html.match(/aria-expanded="true"/g) || []).length, 2);
+  test("the follow-up bar can fold the conversation it is pointed at", () => {
+    assert.ok(renderPanel([CARD_A]).includes("fold"));
   });
 });
 
@@ -197,6 +188,9 @@ describe("folding hides the conversation", () => {
       configurable: true,
       writable: true,
     });
+    // Browser globals the panel uses directly; jsdom hangs them off its window
+    g.requestAnimationFrame = dom.window.requestAnimationFrame.bind(dom.window);
+    g.cancelAnimationFrame = dom.window.cancelAnimationFrame.bind(dom.window);
     host = dom.window.document.getElementById("root") as unknown as HTMLElement;
     root = createRoot(host);
     act(() => {
@@ -223,15 +217,24 @@ describe("folding hides the conversation", () => {
   const click = (el: Element) => act(() => { el.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })); });
   const boxes = () => host.querySelectorAll('input[placeholder^="Ask a follow-up"]').length;
 
-  test("folding one conversation hides its messages and its box", () => {
+  test("folding one conversation hides its messages, leaving the others alone", () => {
     mount([CARD_A, CARD_B]);
-    assert.equal(boxes(), 2, "both open to begin with");
+    assert.ok(host.textContent?.includes("answer A"));
 
     click(headers()[0]);
-    assert.equal(host.textContent?.includes("answer A"), false, "A's messages are folded away");
+    assert.equal(host.textContent?.includes("answer A"), false, "A is folded away");
     assert.ok(host.textContent?.includes("answer B"), "B is untouched");
-    assert.equal(boxes(), 1, "only the open conversation keeps a box");
     assert.equal(headers()[0].getAttribute("aria-expanded"), "false");
+  });
+
+  test("the dedicated fold button works, not just the header", () => {
+    mount([CARD_A]);
+    const fold = Array.from(host.querySelectorAll("button")).find(
+      (b) => b.getAttribute("aria-label") === "Collapse conversation"
+    )!;
+    assert.ok(fold, "expected a fold button on the card");
+    click(fold);
+    assert.equal(host.textContent?.includes("answer A"), false);
   });
 
   test("the folded card still says how much is hidden", () => {
@@ -249,6 +252,13 @@ describe("folding hides the conversation", () => {
     assert.equal(boxes(), 1);
   });
 
+  test("folding the conversation the bar points at retires the bar", () => {
+    mount([CARD_A]);
+    assert.equal(boxes(), 1);
+    click(headers()[0]);
+    assert.equal(boxes(), 0, "a folded conversation is not one you are writing to");
+  });
+
   test("collapse all folds every conversation, then restores them", () => {
     mount([CARD_A, CARD_B]);
     const toggle = Array.from(host.querySelectorAll("button")).find((b) => b.textContent?.includes("collapse all"))!;
@@ -259,7 +269,7 @@ describe("folding hides the conversation", () => {
 
     const expand = Array.from(host.querySelectorAll("button")).find((b) => b.textContent?.includes("expand all"))!;
     click(expand);
-    assert.equal(boxes(), 2);
+    assert.equal(boxes(), 1, "one bar, for the conversation nearest it");
     assert.ok(host.textContent?.includes("answer A") && host.textContent?.includes("answer B"));
   });
 });

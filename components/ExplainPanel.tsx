@@ -184,6 +184,41 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
     }
   }, [activeId, annotationRefs]);
 
+  // Which conversation the follow-up bar belongs to: the last one still on
+  // screen, i.e. the one nearest the bar itself. Measured from scroll rather
+  // than tracked per card, so it is right even when one conversation is longer
+  // than the panel and no boundary is in view.
+  const [visibleId, setVisibleId] = useState<string | null>(null);
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    let frame = 0;
+    const pick = () => {
+      frame = 0;
+      const view = el.getBoundingClientRect();
+      let found: string | null = null;
+      for (const a of annotations) {
+        const card = annotationRefs.current[a.id];
+        if (!card) continue;
+        const r = card.getBoundingClientRect();
+        if (r.bottom > view.top + 8 && r.top < view.bottom - 8) found = a.id;
+      }
+      setVisibleId(found);
+    };
+    // Deferred, never synchronous — setState during an effect cascades a render
+    const schedule = () => { if (!frame) frame = requestAnimationFrame(pick); };
+    schedule();
+    el.addEventListener("scroll", schedule, { passive: true });
+    return () => {
+      el.removeEventListener("scroll", schedule);
+      if (frame) cancelAnimationFrame(frame);
+    };
+  }, [annotations, annotationRefs]);
+
+  const barAnnotation =
+    annotations.find((a) => a.id === visibleId) ?? annotations[annotations.length - 1];
+  const showFollowUpBar = barAnnotation && !collapsedIds.has(barAnnotation.id);
+
   if (!isOpen) {
     return (
       <button
@@ -212,6 +247,125 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
       </button>
     );
   }
+
+  // The follow-up bar sits outside the scrolling list, flush above the paper
+  // composer, and is bound to whichever conversation you are reading. Kept in
+  // the card it would either scroll away or — when sticky — detach at the
+  // card's bottom edge and leave a gap, since a sticky element cannot travel
+  // past its own containing block.
+  const followUpBar = (annotation: Annotation) => (
+  <div
+    className="shrink-0 px-3 pt-2 pb-2.5"
+    style={{ background: "var(--surface)", borderTop: "1px solid var(--border)" }}
+  >
+    <div className="flex items-center gap-1.5 mb-1.5">
+      <span className="text-[10px] uppercase tracking-widest shrink-0" style={{ color: "var(--ink-faint)" }}>Follow up on</span>
+      <button
+        onClick={() => { annotationRefs.current[annotation.id]?.scrollIntoView({ behavior: "smooth", block: "start" }); }}
+        className="text-[11px] min-w-0 truncate transition-opacity hover:opacity-70"
+        style={{ color: "var(--accent)" }}
+        title="Scroll to this conversation"
+      >
+        {annotation.label}
+      </button>
+      <button
+        onClick={() => toggleCollapsed(annotation.id)}
+        className="btn-icon ml-auto shrink-0 px-1.5 py-0.5 text-[10px]"
+        title="Collapse this conversation"
+      >
+        ▾ fold
+      </button>
+    </div>
+    {followUpImage[annotation.id] && (
+      <div className="flex items-center gap-2 mb-2">
+        <img
+          src={followUpImage[annotation.id]}
+          alt="figure to attach"
+          className="max-h-14 object-contain"
+          style={{ border: "1px solid var(--accent)", borderRadius: "3px" }}
+        />
+        <span className="text-[10px]" style={{ color: "var(--ink-faint)" }}>figure attached</span>
+        <button
+          onClick={() => setFollowUpImage((prev) => { const next = { ...prev }; delete next[annotation.id]; return next; })}
+          className="btn-icon w-5 h-5 text-[10px]"
+          title="Remove figure"
+        >
+          ✕
+        </button>
+      </div>
+    )}
+    <div className="flex gap-2">
+      <input
+        type="text"
+        placeholder="Ask a follow-up… (paste a figure to attach it)"
+        value={followUpText[annotation.id] || ""}
+        onChange={(e) =>
+          setFollowUpText((prev) => ({ ...prev, [annotation.id]: e.target.value }))
+        }
+        onPaste={(e) => {
+          const file = Array.from(e.clipboardData.items)
+            .find((item) => item.type.startsWith("image/"))
+            ?.getAsFile();
+          if (!file) return;
+          e.preventDefault();
+          const reader = new FileReader();
+          reader.onload = () =>
+            setFollowUpImage((prev) => ({ ...prev, [annotation.id]: reader.result as string }));
+          reader.readAsDataURL(file);
+        }}
+        onKeyDown={(e) => {
+          if (isSubmitKey(e) && followUpText[annotation.id]?.trim()) {
+            onFollowUp(annotation.id, followUpText[annotation.id].trim(), followUpImage[annotation.id]);
+            setFollowUpText((prev) => ({ ...prev, [annotation.id]: "" }));
+            setFollowUpImage((prev) => { const next = { ...prev }; delete next[annotation.id]; return next; });
+          }
+        }}
+        className="flex-1 text-sm px-3 py-1.5 rounded-md focus:outline-none transition-colors"
+        style={{
+          border: "1px solid var(--border)",
+          background: "var(--paper)",
+          color: "var(--ink)",
+          fontFamily: "var(--font-geist-mono), monospace",
+          fontSize: "0.8em",
+        }}
+        onFocus={(e) => (e.currentTarget.style.borderColor = "var(--accent)")}
+        onBlur={(e) => (e.currentTarget.style.borderColor = "var(--border)")}
+      />
+      <label
+        className="btn-icon w-8 self-stretch flex items-center justify-center cursor-pointer text-sm"
+        title="Attach a figure image"
+      >
+        📎
+        <input
+          type="file"
+          accept="image/*"
+          className="hidden"
+          onChange={(e) => {
+            const file = e.target.files?.[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = () =>
+              setFollowUpImage((prev) => ({ ...prev, [annotation.id]: reader.result as string }));
+            reader.readAsDataURL(file);
+            e.target.value = "";
+          }}
+        />
+      </label>
+      <button
+        onClick={() => {
+          if (followUpText[annotation.id]?.trim()) {
+            onFollowUp(annotation.id, followUpText[annotation.id].trim(), followUpImage[annotation.id]);
+            setFollowUpText((prev) => ({ ...prev, [annotation.id]: "" }));
+            setFollowUpImage((prev) => { const next = { ...prev }; delete next[annotation.id]; return next; });
+          }
+        }}
+        className="btn-primary text-sm px-3 py-1.5"
+      >
+        Ask
+      </button>
+    </div>
+  </div>
+  );
 
   // Bottom composer — ask about the paper without selecting anything first;
   // supports a pasted/attached image and referencing another library paper
@@ -416,10 +570,7 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
             <div
               key={annotation.id}
               ref={(el) => { annotationRefs.current[annotation.id] = el; }}
-              // No overflow-hidden: it would make this card the containing
-              // block for the sticky follow-up box below, pinning it to the
-              // card instead of the panel. Corners are rounded per-child.
-              className={`rounded-lg transition-all pr-fade-up ${collapsed ? "overflow-hidden" : ""}`}
+              className="rounded-lg overflow-hidden transition-all pr-fade-up"
               style={{
                 background: "var(--surface)",
                 border: isActive ? "1px solid var(--accent)" : "1px solid var(--border)",
@@ -443,7 +594,14 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
                 }}
                 title={collapsed ? "Expand this conversation" : "Collapse this conversation"}
               >
-                <span className="text-[9px] shrink-0" style={{ color: "var(--accent)" }}>{collapsed ? "▸" : "▾"}</span>
+                <button
+                  onClick={(e) => { e.stopPropagation(); toggleCollapsed(annotation.id); }}
+                  className="btn-icon shrink-0 w-6 h-6 text-[11px] leading-none"
+                  title={collapsed ? "Expand this conversation" : "Collapse this conversation"}
+                  aria-label={collapsed ? "Expand conversation" : "Collapse conversation"}
+                >
+                  {collapsed ? "▸" : "▾"}
+                </button>
                 <span
                   className="shrink-0 text-[11px] font-medium px-1.5 py-0.5 rounded"
                   style={
@@ -599,109 +757,13 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
                 })}
               </div>
 
-              {/* Follow-up — sticks to the bottom of the panel while this
-                  card is on screen. Because it is inside the card, the box you
-                  see always belongs to the conversation you are scrolled into;
-                  it hands over to the next card's box at the boundary. */}
-              <div
-                className="px-4 pt-2 pb-4 sticky bottom-0 rounded-b-lg"
-                style={{ background: "var(--surface)", boxShadow: "0 -8px 12px -8px rgba(0,0,0,0.45)", zIndex: 1 }}
-              >
-                {followUpImage[annotation.id] && (
-                  <div className="flex items-center gap-2 mb-2">
-                    <img
-                      src={followUpImage[annotation.id]}
-                      alt="figure to attach"
-                      className="max-h-14 object-contain"
-                      style={{ border: "1px solid var(--accent)", borderRadius: "3px" }}
-                    />
-                    <span className="text-[10px]" style={{ color: "var(--ink-faint)" }}>figure attached</span>
-                    <button
-                      onClick={() => setFollowUpImage((prev) => { const next = { ...prev }; delete next[annotation.id]; return next; })}
-                      className="btn-icon w-5 h-5 text-[10px]"
-                      title="Remove figure"
-                    >
-                      ✕
-                    </button>
-                  </div>
-                )}
-                <div className="flex gap-2">
-                  <input
-                    type="text"
-                    placeholder="Ask a follow-up… (paste a figure to attach it)"
-                    value={followUpText[annotation.id] || ""}
-                    onChange={(e) =>
-                      setFollowUpText((prev) => ({ ...prev, [annotation.id]: e.target.value }))
-                    }
-                    onPaste={(e) => {
-                      const file = Array.from(e.clipboardData.items)
-                        .find((item) => item.type.startsWith("image/"))
-                        ?.getAsFile();
-                      if (!file) return;
-                      e.preventDefault();
-                      const reader = new FileReader();
-                      reader.onload = () =>
-                        setFollowUpImage((prev) => ({ ...prev, [annotation.id]: reader.result as string }));
-                      reader.readAsDataURL(file);
-                    }}
-                    onKeyDown={(e) => {
-                      if (isSubmitKey(e) && followUpText[annotation.id]?.trim()) {
-                        onFollowUp(annotation.id, followUpText[annotation.id].trim(), followUpImage[annotation.id]);
-                        setFollowUpText((prev) => ({ ...prev, [annotation.id]: "" }));
-                        setFollowUpImage((prev) => { const next = { ...prev }; delete next[annotation.id]; return next; });
-                      }
-                    }}
-                    className="flex-1 text-sm px-3 py-1.5 rounded-md focus:outline-none transition-colors"
-                    style={{
-                      border: "1px solid var(--border)",
-                      background: "var(--paper)",
-                      color: "var(--ink)",
-                      fontFamily: "var(--font-geist-mono), monospace",
-                      fontSize: "0.8em",
-                    }}
-                    onFocus={(e) => (e.currentTarget.style.borderColor = "var(--accent)")}
-                    onBlur={(e) => (e.currentTarget.style.borderColor = "var(--border)")}
-                  />
-                  <label
-                    className="btn-icon w-8 self-stretch flex items-center justify-center cursor-pointer text-sm"
-                    title="Attach a figure image"
-                  >
-                    📎
-                    <input
-                      type="file"
-                      accept="image/*"
-                      className="hidden"
-                      onChange={(e) => {
-                        const file = e.target.files?.[0];
-                        if (!file) return;
-                        const reader = new FileReader();
-                        reader.onload = () =>
-                          setFollowUpImage((prev) => ({ ...prev, [annotation.id]: reader.result as string }));
-                        reader.readAsDataURL(file);
-                        e.target.value = "";
-                      }}
-                    />
-                  </label>
-                  <button
-                    onClick={() => {
-                      if (followUpText[annotation.id]?.trim()) {
-                        onFollowUp(annotation.id, followUpText[annotation.id].trim(), followUpImage[annotation.id]);
-                        setFollowUpText((prev) => ({ ...prev, [annotation.id]: "" }));
-                        setFollowUpImage((prev) => { const next = { ...prev }; delete next[annotation.id]; return next; });
-                      }
-                    }}
-                    className="btn-primary text-sm px-3 py-1.5"
-                  >
-                    Ask
-                  </button>
-                </div>
-              </div>
               </>)}
             </div>
           );
         })}
         <div ref={bottomRef} />
       </div>
+      {showFollowUpBar && followUpBar(barAnnotation)}
       {composer}
     </div>
   );
