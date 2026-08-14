@@ -284,11 +284,26 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
     });
   };
 
+  // Where to land in a conversation depends on why we are going there. Coming
+  // to one for the first time, you want its beginning. Having just asked
+  // something, you want the end — the question you typed and the answer forming
+  // under it, not the top of a thread you have already read.
+  const seenTurns = useRef<Map<string, number>>(new Map());
+  const lastActiveId = useRef<string | null>(null);
   useEffect(() => {
-    if (activeId && annotationRefs.current[activeId]) {
-      annotationRefs.current[activeId]?.scrollIntoView({ behavior: "smooth", block: "start" });
-    }
-  }, [activeId, annotationRefs]);
+    if (!activeId) return;
+    const card = annotationRefs.current[activeId];
+    const turns = annotations.find((a) => a.id === activeId)?.messages.length ?? 0;
+    const before = seenTurns.current.get(activeId);
+    const switched = lastActiveId.current !== activeId;
+    const grew = before !== undefined && turns > before;
+    seenTurns.current.set(activeId, turns);
+    lastActiveId.current = activeId;
+    // A streaming answer rewrites its message without adding one, so this does
+    // not fight the reader for the scrollbar while text arrives
+    if (!card || (!switched && !grew)) return;
+    card.scrollIntoView({ behavior: "smooth", block: grew ? "end" : "start" });
+  }, [activeId, annotations, annotationRefs]);
 
   // Which conversation the follow-up bar belongs to: the last one still on
   // screen, i.e. the one nearest the bar itself. Measured from scroll rather

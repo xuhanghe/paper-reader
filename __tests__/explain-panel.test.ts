@@ -681,3 +681,115 @@ describe("holding several quotes at once", () => {
     assert.ok(host.textContent?.includes("conversation B"), "and it is still B's passage");
   });
 });
+
+// ── Where the panel lands ─────────────────────────────────────────────
+describe("landing point after a turn", () => {
+  let dom: JSDOM;
+  let host: HTMLElement;
+  let root: Root;
+  let scrolls: { block?: string }[];
+  const refs = { current: {} as Record<string, HTMLDivElement | null> };
+
+  const setup = () => {
+    dom = new JSDOM("<!doctype html><body><div id='root'></div></body>", { pretendToBeVisual: true });
+    const g = globalThis as Record<string, unknown>;
+    g.IS_REACT_ACT_ENVIRONMENT = true;
+    g.window = dom.window;
+    g.document = dom.window.document;
+    Object.defineProperty(globalThis, "navigator", { value: dom.window.navigator, configurable: true, writable: true });
+    g.requestAnimationFrame = dom.window.requestAnimationFrame.bind(dom.window);
+    g.cancelAnimationFrame = dom.window.cancelAnimationFrame.bind(dom.window);
+    scrolls = [];
+    // jsdom has no layout, so scrollIntoView does not exist — record the intent
+    dom.window.Element.prototype.scrollIntoView = function (opts?: boolean | ScrollIntoViewOptions) {
+      scrolls.push(typeof opts === "object" && opts ? opts : {});
+    };
+    refs.current = {};
+    host = dom.window.document.getElementById("root") as unknown as HTMLElement;
+    root = createRoot(host);
+  };
+
+  const show = (annotations: Annotation[], activeId: string | null) => {
+    act(() => {
+      root.render(
+        createElement(ExplainPanel, {
+          annotations,
+          activeId,
+          model: "claude-sonnet-4-6",
+          streamingIds: new Set<string>(),
+          onFollowUp: () => {},
+          onAskGeneral: () => {},
+          onDelete: () => {},
+          onReExplainImage: () => {},
+          onViewInPdf: () => {},
+          annotationRefs: refs,
+          isOpen: true,
+          onToggle: () => {},
+        })
+      );
+    });
+  };
+
+  const withTurns = (n: number, id = "a1") =>
+    thread(
+      Array.from({ length: n }, (_, i) =>
+        i % 2 === 0 ? { role: "user" as const, content: `q${i}` } : { role: "assistant" as const, content: `a${i}` }
+      ),
+      id,
+      "conversation A"
+    );
+
+  test("arriving at a conversation lands at its beginning", () => {
+    setup();
+    show([withTurns(4)], null);
+    show([withTurns(4)], "a1");
+    assert.deepEqual(scrolls.map((s) => s.block), ["start"]);
+  });
+
+  test("asking something lands at the end, where the answer is forming", () => {
+    setup();
+    show([withTurns(4)], "a1");        // arrive
+    scrolls.length = 0;
+    show([withTurns(6)], "a1");        // a follow-up adds a turn
+    assert.deepEqual(scrolls.map((s) => s.block), ["end"], "not the top of a thread already read");
+  });
+
+  test("asking in another conversation lands at that one's end", () => {
+    setup();
+    show([withTurns(4, "a1"), withTurns(4, "b2")], "a1");
+    show([withTurns(4, "a1"), withTurns(4, "b2")], "b2");   // visit B
+    scrolls.length = 0;
+    show([withTurns(4, "a1"), withTurns(6, "b2")], "b2");   // ask in B
+    assert.deepEqual(scrolls.map((s) => s.block), ["end"]);
+  });
+
+  test("a streaming answer does not drag the scrollbar around", () => {
+    setup();
+    show([withTurns(4)], "a1");
+    scrolls.length = 0;
+    // the answer is rewritten in place as text arrives — same number of turns
+    const growing = thread(
+      [
+        { role: "user", content: "q0" },
+        { role: "assistant", content: "a1" },
+        { role: "user", content: "q2" },
+        { role: "assistant", content: "partial…" },
+      ],
+      "a1",
+      "conversation A"
+    );
+    show([growing], "a1");
+    const more = thread(
+      [
+        { role: "user", content: "q0" },
+        { role: "assistant", content: "a1" },
+        { role: "user", content: "q2" },
+        { role: "assistant", content: "partial… and more text" },
+      ],
+      "a1",
+      "conversation A"
+    );
+    show([more], "a1");
+    assert.deepEqual(scrolls, [], "no scrolling while the text fills in");
+  });
+});
