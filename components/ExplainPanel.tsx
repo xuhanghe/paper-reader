@@ -735,7 +735,18 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
                   </span>
                 )}
                 {collapsed && streamingIds.has(annotation.id) && (
-                  <span className="shrink-0 text-[10px]" style={{ color: "var(--accent)" }}>answering…</span>
+                  onStop ? (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); onStop(annotation.id); }}
+                      className="shrink-0 text-[10px] px-1.5 py-0.5 rounded"
+                      style={{ border: "1px solid var(--border)", color: "#F87171" }}
+                      title="Stop this answer"
+                    >
+                      ■ stop
+                    </button>
+                  ) : (
+                    <span className="shrink-0 text-[10px]" style={{ color: "var(--accent)" }}>answering…</span>
+                  )
                 )}
 
                 <button
@@ -900,6 +911,19 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
                   );
                 })}
               </div>
+
+              {streamingIds.has(annotation.id) && onStop && (
+                <div className="px-4 pb-3 -mt-1">
+                  <button
+                    onClick={() => onStop(annotation.id)}
+                    className="text-[11px] px-2 py-0.5 rounded transition-colors"
+                    style={{ border: "1px solid var(--border)", color: "#F87171" }}
+                    title="Stop this answer and keep what has arrived"
+                  >
+                    ■ Stop generating
+                  </button>
+                </div>
+              )}
 
               </>)}
             </div>

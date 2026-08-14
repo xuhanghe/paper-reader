@@ -352,6 +352,33 @@ describe("stopping and rewriting", () => {
     assert.deepEqual(stopped, [LIVE.id]);
   });
 
+  test("Stop is on the conversation being answered, not only in the box", () => {
+    // The box binds to whatever is nearest it, so scrolling to another
+    // conversation took the only Stop control away mid-answer
+    mount([CARD_B, LIVE], LIVE.id);
+    const inCard = button("Stop generating");
+    assert.ok(inCard, "expected a Stop beside the answer itself");
+    click(inCard!);
+    assert.deepEqual(stopped, [LIVE.id]);
+  });
+
+  test("a folded conversation can still be stopped from its header", () => {
+    mount([LIVE], LIVE.id);
+    const fold = Array.from(host.querySelectorAll("button")).find(
+      (b) => b.getAttribute("aria-label") === "Collapse conversation"
+    )!;
+    click(fold);
+    const stop = button("stop");
+    assert.ok(stop, "a folded card that is still answering needs a way to stop it");
+    click(stop!);
+    assert.deepEqual(stopped, [LIVE.id]);
+  });
+
+  test("nothing to stop when nothing is streaming", () => {
+    mount([LIVE]);
+    assert.equal(button("Stop generating"), undefined);
+  });
+
   test("Ask comes back once the answer is done", () => {
     mount([LIVE]);
     assert.equal(button("Stop"), undefined);
