@@ -4,7 +4,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Annotation, Model } from "@/types/session";
 import { isSubmitKey } from "@/lib/keys";
-import { withQuotes, quotePreview, type Quote } from "@/lib/quotes";
+import { withQuotes, quotePreview, quoteLabel, addQuote as pushQuote, type Quote } from "@/lib/quotes";
 
 type Props = {
   annotations: Annotation[];
@@ -140,6 +140,12 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
   // next question — wherever it is asked
   const [quotes, setQuotes] = useState<Quote[]>([]);
   const [pendingQuote, setPendingQuote] = useState<{ text: string; source?: string; top: number; left: number } | null>(null);
+  // The box last typed in, so clicking a quote drops its label at the cursor
+  // rather than making the reader remember which number was which
+  const lastBox = useRef<{
+    el: HTMLInputElement | HTMLTextAreaElement;
+    setText: (update: (current: string) => string) => void;
+  } | null>(null);
   const [fontIdx, setFontIdx] = useState(DEFAULT_FONT_IDX);
   const bottomRef = useRef<HTMLDivElement | null>(null);
 
@@ -234,12 +240,48 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
 
   const addQuote = () => {
     if (!pendingQuote) return;
-    setQuotes((prev) => [
-      ...prev,
-      { id: `${Date.now()}-${prev.length}`, text: pendingQuote.text.trim(), source: pendingQuote.source },
-    ]);
+    setQuotes((prev) =>
+      pushQuote(prev, {
+        id: `${Date.now()}-${prev.length}`,
+        text: pendingQuote.text.trim(),
+        source: pendingQuote.source,
+      })
+    );
     setPendingQuote(null);
     window.getSelection()?.removeAllRanges();
+  };
+
+  // Put "[2]" where the cursor is, or at the end of whichever box the reader
+  // would type in if they have not touched one yet — clicking a quote should
+  // never be a dead click.
+  const appendLabel = (label: string) => (current: string) =>
+    current && !/\s$/.test(current) ? `${current} ${label} ` : `${current}${label} `;
+
+  const insertQuoteLabel = (index: number) => {
+    const label = quoteLabel(index);
+    const box = lastBox.current;
+    if (!box) {
+      if (showFollowUpBar && barAnnotation) {
+        setFollowUpText((prev) => ({ ...prev, [barAnnotation.id]: appendLabel(label)(prev[barAnnotation.id] || "") }));
+      } else {
+        setGeneralQuestion(appendLabel(label));
+      }
+      return;
+    }
+    const el = box.el;
+    const at = el.selectionStart ?? el.value.length;
+    const end = el.selectionEnd ?? at;
+    box.setText((current) => {
+      const before = current.slice(0, at);
+      const after = current.slice(end);
+      const spacer = before && !/\s$/.test(before) ? " " : "";
+      return `${before}${spacer}${label} ${after}`;
+    });
+    requestAnimationFrame(() => {
+      el.focus();
+      const caret = at + label.length + 1 + (el.value.slice(0, at) && !/\s$/.test(el.value.slice(0, at)) ? 1 : 0);
+      try { el.setSelectionRange(caret, caret); } catch { /* not all inputs support it */ }
+    });
   };
 
   useEffect(() => {
@@ -410,7 +452,15 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
           fontFamily: "var(--font-geist-mono), monospace",
           fontSize: "0.8em",
         }}
-        onFocus={(e) => (e.currentTarget.style.borderColor = "var(--accent)")}
+        onFocus={(e) => {
+          e.currentTarget.style.borderColor = "var(--accent)";
+          const el = e.currentTarget;
+          lastBox.current = {
+            el,
+            setText: (update) =>
+              setFollowUpText((prev) => ({ ...prev, [annotation.id]: update(prev[annotation.id] || "") })),
+          };
+        }}
         onBlur={(e) => (e.currentTarget.style.borderColor = "var(--border)")}
       />
       <label
@@ -565,7 +615,11 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
           onKeyDown={(e) => { if (isSubmitKey(e)) submitGeneral(); }}
           className="flex-1 min-w-0 text-sm px-3 py-2 rounded-md focus:outline-none transition-all"
           style={{ border: "1px solid var(--border)", background: "var(--surface)", color: "var(--ink)" }}
-          onFocus={(e) => (e.currentTarget.style.borderColor = "var(--accent)")}
+          onFocus={(e) => {
+            e.currentTarget.style.borderColor = "var(--accent)";
+            const el = e.currentTarget;
+            lastBox.current = { el, setText: (update) => setGeneralQuestion((prev) => update(prev)) };
+          }}
           onBlur={(e) => (e.currentTarget.style.borderColor = "var(--border)")}
         />
         <button
@@ -949,20 +1003,40 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
           style={{ background: "var(--accent-faint)", borderTop: "1px solid var(--border)" }}
         >
           <span className="text-[10px] uppercase tracking-widest shrink-0" style={{ color: "var(--ink-faint)" }}>
-            Quoting
+            Quoting {quotes.length > 1 && <span className="tabular-nums">({quotes.length})</span>}
           </span>
-          {quotes.map((q) => (
+          {quotes.map((q, i) => (
             <span
               key={q.id}
-              className="inline-flex items-center gap-1 text-[11px] px-2 py-1 rounded max-w-[260px]"
+              className="inline-flex items-center gap-1 text-[11px] pl-1 pr-1.5 py-1 rounded max-w-[280px]"
               style={{ background: "var(--surface)", border: "1px solid var(--border)", color: "var(--ink-muted)" }}
-              title={q.source ? `${q.text}\n\n— from ${q.source}` : q.text}
             >
-              <span className="truncate">❝ {quotePreview(q.text)}</span>
+              <button
+                // Clicking the chip writes its label into the question, so a
+                // reader never has to remember which passage was which number
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => insertQuoteLabel(i)}
+                className="inline-flex items-center gap-1 min-w-0 hover:opacity-80"
+                title={`Insert ${quoteLabel(i)} into your question\n\n${q.text}${q.source ? `\n\n— from ${q.source}` : ""}`}
+              >
+                <span
+                  className="shrink-0 tabular-nums px-1 rounded text-[10px] font-medium"
+                  style={{ background: "var(--accent-dim)", color: "var(--accent)" }}
+                >
+                  {quoteLabel(i)}
+                </span>
+                <span className="truncate">{quotePreview(q.text)}</span>
+                {q.source && (
+                  <span className="shrink-0 text-[10px] truncate max-w-[90px]" style={{ color: "var(--ink-faint)" }}>
+                    · {q.source}
+                  </span>
+                )}
+              </button>
               <button
                 onClick={() => setQuotes((prev) => prev.filter((x) => x.id !== q.id))}
                 className="shrink-0 hover:opacity-70"
                 title="Drop this quote"
+                aria-label="Drop quote"
               >
                 ✕
               </button>

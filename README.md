@@ -60,7 +60,10 @@ later and the model still knows what you asked about section 2.
 
 The conversations in the panel are one workspace rather than separate chats:
 select any passage in any of them and **❝ Quote** carries it into your next
-question, whichever conversation you ask it in. An answer streaming in can be
+question, whichever conversation you ask it in. Hold several at once and each
+gets a label — `[1]`, `[2]` — shown on its chip and sent to the model, so a
+question can say *"why does [1] contradict [2]?"* and be answered precisely.
+Clicking a chip drops its label at the cursor. An answer streaming in can be
 stopped, and a question already asked can be rewritten and sent again.
 
 **A map of the paper.** A generated outline grounded in verbatim quotes, each of

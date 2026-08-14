@@ -554,3 +554,130 @@ describe("quoting a passage out of a conversation", () => {
     assert.equal(button("Quote"), undefined);
   });
 });
+
+describe("holding several quotes at once", () => {
+  let dom: JSDOM;
+  let host: HTMLElement;
+
+  const mount = (annotations: Annotation[]) => {
+    dom = new JSDOM("<!doctype html><body><div id='root'></div></body>", { pretendToBeVisual: true });
+    const g = globalThis as Record<string, unknown>;
+    g.IS_REACT_ACT_ENVIRONMENT = true;
+    g.window = dom.window;
+    g.document = dom.window.document;
+    Object.defineProperty(globalThis, "navigator", { value: dom.window.navigator, configurable: true, writable: true });
+    g.requestAnimationFrame = dom.window.requestAnimationFrame.bind(dom.window);
+    g.cancelAnimationFrame = dom.window.cancelAnimationFrame.bind(dom.window);
+    dom.window.Range.prototype.getBoundingClientRect = () => new dom.window.DOMRect(20, 40, 80, 16);
+    dom.window.Range.prototype.getClientRects = (() => []) as unknown as Range["getClientRects"];
+    host = dom.window.document.getElementById("root") as unknown as HTMLElement;
+    act(() => {
+      createRoot(host).render(
+        createElement(ExplainPanel, {
+          annotations,
+          activeId: null,
+          model: "claude-sonnet-4-6",
+          streamingIds: new Set<string>(),
+          onFollowUp: () => {},
+          onAskGeneral: () => {},
+          onDelete: () => {},
+          onReExplainImage: () => {},
+          onViewInPdf: () => {},
+          annotationRefs: { current: {} },
+          isOpen: true,
+          onToggle: () => {},
+        })
+      );
+    });
+  };
+
+  const click = (el: Element) => act(() => { el.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })); });
+  const button = (text: string) => Array.from(host.querySelectorAll("button")).find((b) => b.textContent?.includes(text));
+
+  const quote = (needle: string) => {
+    const walker = dom.window.document.createTreeWalker(host, dom.window.NodeFilter.SHOW_TEXT);
+    let node: Text | null = null;
+    while (walker.nextNode()) {
+      const t = walker.currentNode as Text;
+      if (t.data.includes(needle)) { node = t; break; }
+    }
+    assert.ok(node, `no text node containing ${needle}`);
+    const range = dom.window.document.createRange();
+    const at = node!.data.indexOf(needle);
+    range.setStart(node!, at);
+    range.setEnd(node!, at + needle.length);
+    const sel = dom.window.getSelection()!;
+    sel.removeAllRanges();
+    sel.addRange(range);
+    act(() => {
+      host.querySelector(".overflow-y-auto")!.dispatchEvent(new dom.window.MouseEvent("mouseup", { bubbles: true }));
+    });
+    click(button("Quote")!);
+  };
+
+  const chips = () => Array.from(host.querySelectorAll("[aria-label='Drop quote']"));
+
+  test("passages from two conversations are held together and numbered", () => {
+    mount([CARD_A, CARD_B]);
+    quote("answer A");
+    quote("answer B");
+    assert.equal(chips().length, 2);
+    assert.ok(host.textContent?.includes("[1]"));
+    assert.ok(host.textContent?.includes("[2]"), "the second passage is addressable as [2]");
+    assert.ok(host.textContent?.includes("(2)"), "the strip says how many are held");
+  });
+
+  test("each chip names the conversation it came from", () => {
+    mount([CARD_A, CARD_B]);
+    quote("answer A");
+    quote("answer B");
+    const strip = host.textContent ?? "";
+    assert.ok(strip.includes("conversation A") && strip.includes("conversation B"));
+  });
+
+  test("the same passage twice stays one quote, so the numbers do not shift", () => {
+    mount([CARD_A]);
+    quote("answer A");
+    quote("answer A");
+    assert.equal(chips().length, 1);
+  });
+
+  test("clicking a quote writes its label into the box being typed in", () => {
+    // The point of the labels: pointing at a passage without having to
+    // remember which number it was
+    mount([CARD_A, CARD_B]);
+    quote("answer A");
+    quote("answer B");
+
+    // React's onFocus does not fire under jsdom, so this exercises the path
+    // taken when no box has been focused yet: the label goes to the box the
+    // reader would type in — the follow-up box, since it is showing.
+    const label2 = Array.from(host.querySelectorAll("button")).find((b) => b.textContent?.startsWith("[2]"));
+    assert.ok(label2, "expected a clickable [2] chip");
+    click(label2!);
+
+    const box = host.querySelector('input[placeholder^="Ask a follow-up"]') as HTMLInputElement;
+    assert.ok(box.value.includes("[2]"), `expected [2] in the question, got ${JSON.stringify(box.value)}`);
+  });
+
+  test("with no conversation to follow up on, the label lands in the paper composer", () => {
+    mount([CARD_A]);
+    quote("answer A");
+    // fold the only conversation, so the follow-up box retires
+    click(Array.from(host.querySelectorAll("button")).find((b) => b.getAttribute("aria-label") === "Collapse conversation")!);
+    click(Array.from(host.querySelectorAll("button")).find((b) => b.textContent?.startsWith("[1]"))!);
+    const composer = host.querySelector('input[data-composer="general"]') as HTMLInputElement;
+    assert.ok(composer.value.includes("[1]"), `expected [1] in the composer, got ${JSON.stringify(composer.value)}`);
+  });
+
+  test("dropping one renumbers the rest, so the labels stay contiguous", () => {
+    mount([CARD_A, CARD_B]);
+    quote("answer A");
+    quote("answer B");
+    click(chips()[0]);                       // drop [1]
+    assert.equal(chips().length, 1);
+    assert.ok(host.textContent?.includes("[1]"), "what was [2] becomes [1]");
+    assert.equal(host.textContent?.includes("[2]"), false);
+    assert.ok(host.textContent?.includes("conversation B"), "and it is still B's passage");
+  });
+});
