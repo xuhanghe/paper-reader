@@ -203,6 +203,12 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
   // screen, i.e. the one nearest the bar itself. Measured from scroll rather
   // than tracked per card, so it is right even when one conversation is longer
   // than the panel and no boundary is in view.
+  //
+  // Folded conversations are skipped rather than allowed to win. A folded card
+  // takes barely any height, so scrolling to the bottom of the list often puts
+  // one nearest the bar — and treating that as "the conversation you are in"
+  // took the box away while an open conversation sat right above it.
+  const openConversations = annotations.filter((a) => !collapsedIds.has(a.id));
   const [visibleId, setVisibleId] = useState<string | null>(null);
   useEffect(() => {
     const el = scrollRef.current;
@@ -212,7 +218,7 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
       frame = 0;
       const view = el.getBoundingClientRect();
       let found: string | null = null;
-      for (const a of annotations) {
+      for (const a of openConversations) {
         const card = annotationRefs.current[a.id];
         if (!card) continue;
         const r = card.getBoundingClientRect();
@@ -228,11 +234,14 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
       el.removeEventListener("scroll", schedule);
       if (frame) cancelAnimationFrame(frame);
     };
-  }, [annotations, annotationRefs]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [annotations, collapsedIds, annotationRefs]);
 
+  // Nothing open on screen still leaves the last open conversation to write to;
+  // the bar only goes away when there is nothing writable at all.
   const barAnnotation =
-    annotations.find((a) => a.id === visibleId) ?? annotations[annotations.length - 1];
-  const showFollowUpBar = barAnnotation && !collapsedIds.has(barAnnotation.id);
+    openConversations.find((a) => a.id === visibleId) ?? openConversations[openConversations.length - 1];
+  const showFollowUpBar = !!barAnnotation;
 
   if (!isOpen) {
     return (

@@ -259,6 +259,25 @@ describe("folding hides the conversation", () => {
     assert.equal(boxes(), 0, "a folded conversation is not one you are writing to");
   });
 
+  test("folding the last conversation keeps the box, pointed at one still open", () => {
+    // A folded card is barely any height, so scrolling to the bottom puts it
+    // nearest the box — which used to take the box away entirely, even with an
+    // open conversation sitting right above it
+    mount([CARD_A, CARD_B]);
+    click(headers()[1]);                       // fold the last one
+    assert.equal(boxes(), 1, "there is still an open conversation to write to");
+    const bar = host.textContent?.slice(host.textContent.indexOf("Follow up on")) ?? "";
+    assert.ok(bar.includes("conversation A"), "the box points at the open conversation");
+  });
+
+  test("folding every one is the only thing that retires the box", () => {
+    mount([CARD_A, CARD_B]);
+    click(headers()[1]);
+    assert.equal(boxes(), 1);
+    click(headers()[0]);
+    assert.equal(boxes(), 0);
+  });
+
   test("collapse all folds every conversation, then restores them", () => {
     mount([CARD_A, CARD_B]);
     const toggle = Array.from(host.querySelectorAll("button")).find((b) => b.textContent?.includes("collapse all"))!;
