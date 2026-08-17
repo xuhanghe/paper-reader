@@ -1,8 +1,10 @@
+// Must come first: react-dom decides at import time whether it is in a
+// browser, and takes an IE-era code path if it is not.
+import { dom, freshRoot } from "./helpers/dom-env.js";
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import { createElement, act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { JSDOM } from "jsdom";
 import { renderToStaticMarkup } from "react-dom/server";
 import { ExplainPanel } from "../components/ExplainPanel.js";
 import type { Annotation, Message } from "../types/session.js";
@@ -171,27 +173,11 @@ describe("folding is reachable without hunting", () => {
 // Folding is interactive state, so static rendering cannot reach it — these
 // mount the panel for real and click the header.
 describe("folding hides the conversation", () => {
-  let dom: JSDOM;
   let root: Root;
   let host: HTMLElement;
 
   const mount = (annotations: Annotation[]) => {
-    dom = new JSDOM("<!doctype html><body><div id='root'></div></body>", { pretendToBeVisual: true });
-    const g = globalThis as Record<string, unknown>;
-    g.IS_REACT_ACT_ENVIRONMENT = true;
-    g.window = dom.window;
-    g.document = dom.window.document;
-    // navigator is a getter-only global on modern Node, so it has to be
-    // redefined rather than assigned
-    Object.defineProperty(globalThis, "navigator", {
-      value: dom.window.navigator,
-      configurable: true,
-      writable: true,
-    });
-    // Browser globals the panel uses directly; jsdom hangs them off its window
-    g.requestAnimationFrame = dom.window.requestAnimationFrame.bind(dom.window);
-    g.cancelAnimationFrame = dom.window.cancelAnimationFrame.bind(dom.window);
-    host = dom.window.document.getElementById("root") as unknown as HTMLElement;
+    host = freshRoot();
     root = createRoot(host);
     act(() => {
       root.render(
@@ -215,7 +201,7 @@ describe("folding hides the conversation", () => {
 
   const headers = () => Array.from(host.querySelectorAll('[aria-expanded]')) as HTMLElement[];
   const click = (el: Element) => act(() => { el.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })); });
-  const boxes = () => host.querySelectorAll('input[placeholder^="Ask a follow-up"]').length;
+  const boxes = () => host.querySelectorAll('textarea[placeholder^="Ask a follow-up"]').length;
 
   test("folding one conversation hides its messages, leaving the others alone", () => {
     mount([CARD_A, CARD_B]);
@@ -295,23 +281,14 @@ describe("folding hides the conversation", () => {
 
 // ── Stop / edit / resend ──────────────────────────────────────────────
 describe("stopping and rewriting", () => {
-  let dom: JSDOM;
   let host: HTMLElement;
   let stopped: string[];
   let edited: [string, number, string][];
 
   const mount = (annotations: Annotation[], streamingId?: string) => {
-    dom = new JSDOM("<!doctype html><body><div id='root'></div></body>", { pretendToBeVisual: true });
-    const g = globalThis as Record<string, unknown>;
-    g.IS_REACT_ACT_ENVIRONMENT = true;
-    g.window = dom.window;
-    g.document = dom.window.document;
-    Object.defineProperty(globalThis, "navigator", { value: dom.window.navigator, configurable: true, writable: true });
-    g.requestAnimationFrame = dom.window.requestAnimationFrame.bind(dom.window);
-    g.cancelAnimationFrame = dom.window.cancelAnimationFrame.bind(dom.window);
     stopped = [];
     edited = [];
-    host = dom.window.document.getElementById("root") as unknown as HTMLElement;
+    host = freshRoot();
     act(() => {
       createRoot(host).render(
         createElement(ExplainPanel, {
@@ -336,6 +313,10 @@ describe("stopping and rewriting", () => {
 
   const click = (el: Element) => act(() => { el.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })); });
   const button = (text: string) => Array.from(host.querySelectorAll("button")).find((b) => b.textContent?.includes(text));
+
+  // Never assert on a DOM node: node:assert stringifies it for the failure
+  // message, and inspecting a jsdom element exhausts the heap
+  const editorOpen = () => !!button("Send again");
 
   const LIVE = thread(
     [{ role: "user", content: "why two stages" }, { role: "assistant", content: "partial answer so far" }],
@@ -393,7 +374,7 @@ describe("stopping and rewriting", () => {
     assert.ok(edit, "expected an edit control on the question");
     click(edit!);
 
-    const box = host.querySelector("textarea") as HTMLTextAreaElement;
+    const box = host.querySelector("[data-editing] textarea") as HTMLTextAreaElement;
     assert.ok(box, "editing opens a box");
     assert.equal(box.value, "why two stages", "prefilled, so a typo can be fixed rather than retyped");
   });
@@ -406,14 +387,14 @@ describe("stopping and rewriting", () => {
     click(Array.from(host.querySelectorAll("button")).find((b) => b.getAttribute("aria-label") === "Edit question")!);
     click(button("Send again")!);
     assert.deepEqual(edited, [[LIVE.id, 0, "why two stages"]]);
-    assert.equal(host.querySelector("textarea"), null, "the editor closes on send");
+    assert.equal(editorOpen(), false, "the editor closes on send");
   });
 
   test("cancelling leaves the question as it was", () => {
     mount([LIVE]);
     click(Array.from(host.querySelectorAll("button")).find((b) => b.getAttribute("aria-label") === "Edit question")!);
     click(button("Cancel")!);
-    assert.equal(host.querySelector("textarea"), null);
+    assert.equal(editorOpen(), false);
     assert.deepEqual(edited, []);
     assert.ok(host.textContent?.includes("why two stages"));
   });
@@ -429,25 +410,12 @@ describe("stopping and rewriting", () => {
 
 // ── Quoting across conversations ──────────────────────────────────────
 describe("quoting a passage out of a conversation", () => {
-  let dom: JSDOM;
   let host: HTMLElement;
   let asked: string[];
 
   const mount = (annotations: Annotation[]) => {
-    dom = new JSDOM("<!doctype html><body><div id='root'></div></body>", { pretendToBeVisual: true });
-    const g = globalThis as Record<string, unknown>;
-    g.IS_REACT_ACT_ENVIRONMENT = true;
-    g.window = dom.window;
-    g.document = dom.window.document;
-    Object.defineProperty(globalThis, "navigator", { value: dom.window.navigator, configurable: true, writable: true });
-    g.requestAnimationFrame = dom.window.requestAnimationFrame.bind(dom.window);
-    g.cancelAnimationFrame = dom.window.cancelAnimationFrame.bind(dom.window);
-    // jsdom has no layout, so Range geometry is missing entirely — the panel
-    // uses it to place the quote button over the selection
-    dom.window.Range.prototype.getBoundingClientRect = () => new dom.window.DOMRect(20, 40, 80, 16);
-    dom.window.Range.prototype.getClientRects = (() => []) as unknown as Range["getClientRects"];
     asked = [];
-    host = dom.window.document.getElementById("root") as unknown as HTMLElement;
+    host = freshRoot();
     quoteRoot = createRoot(host);
     renderWith(annotations, true);
   };
@@ -556,21 +524,10 @@ describe("quoting a passage out of a conversation", () => {
 });
 
 describe("holding several quotes at once", () => {
-  let dom: JSDOM;
   let host: HTMLElement;
 
   const mount = (annotations: Annotation[]) => {
-    dom = new JSDOM("<!doctype html><body><div id='root'></div></body>", { pretendToBeVisual: true });
-    const g = globalThis as Record<string, unknown>;
-    g.IS_REACT_ACT_ENVIRONMENT = true;
-    g.window = dom.window;
-    g.document = dom.window.document;
-    Object.defineProperty(globalThis, "navigator", { value: dom.window.navigator, configurable: true, writable: true });
-    g.requestAnimationFrame = dom.window.requestAnimationFrame.bind(dom.window);
-    g.cancelAnimationFrame = dom.window.cancelAnimationFrame.bind(dom.window);
-    dom.window.Range.prototype.getBoundingClientRect = () => new dom.window.DOMRect(20, 40, 80, 16);
-    dom.window.Range.prototype.getClientRects = (() => []) as unknown as Range["getClientRects"];
-    host = dom.window.document.getElementById("root") as unknown as HTMLElement;
+    host = freshRoot();
     act(() => {
       createRoot(host).render(
         createElement(ExplainPanel, {
@@ -656,7 +613,7 @@ describe("holding several quotes at once", () => {
     assert.ok(label2, "expected a clickable [2] chip");
     click(label2!);
 
-    const box = host.querySelector('input[placeholder^="Ask a follow-up"]') as HTMLInputElement;
+    const box = host.querySelector('textarea[placeholder^="Ask a follow-up"]') as HTMLInputElement;
     assert.ok(box.value.includes("[2]"), `expected [2] in the question, got ${JSON.stringify(box.value)}`);
   });
 
@@ -666,7 +623,7 @@ describe("holding several quotes at once", () => {
     // fold the only conversation, so the follow-up box retires
     click(Array.from(host.querySelectorAll("button")).find((b) => b.getAttribute("aria-label") === "Collapse conversation")!);
     click(Array.from(host.querySelectorAll("button")).find((b) => b.textContent?.startsWith("[1]"))!);
-    const composer = host.querySelector('input[data-composer="general"]') as HTMLInputElement;
+    const composer = host.querySelector('textarea[data-composer="general"]') as HTMLInputElement;
     assert.ok(composer.value.includes("[1]"), `expected [1] in the composer, got ${JSON.stringify(composer.value)}`);
   });
 
@@ -684,28 +641,18 @@ describe("holding several quotes at once", () => {
 
 // ── Where the panel lands ─────────────────────────────────────────────
 describe("landing point after a turn", () => {
-  let dom: JSDOM;
   let host: HTMLElement;
   let root: Root;
   let scrolls: { block?: string }[];
   const refs = { current: {} as Record<string, HTMLDivElement | null> };
 
   const setup = () => {
-    dom = new JSDOM("<!doctype html><body><div id='root'></div></body>", { pretendToBeVisual: true });
-    const g = globalThis as Record<string, unknown>;
-    g.IS_REACT_ACT_ENVIRONMENT = true;
-    g.window = dom.window;
-    g.document = dom.window.document;
-    Object.defineProperty(globalThis, "navigator", { value: dom.window.navigator, configurable: true, writable: true });
-    g.requestAnimationFrame = dom.window.requestAnimationFrame.bind(dom.window);
-    g.cancelAnimationFrame = dom.window.cancelAnimationFrame.bind(dom.window);
     scrolls = [];
-    // jsdom has no layout, so scrollIntoView does not exist — record the intent
     dom.window.Element.prototype.scrollIntoView = function (opts?: boolean | ScrollIntoViewOptions) {
       scrolls.push(typeof opts === "object" && opts ? opts : {});
     };
     refs.current = {};
-    host = dom.window.document.getElementById("root") as unknown as HTMLElement;
+    host = freshRoot();
     root = createRoot(host);
   };
 
@@ -791,5 +738,27 @@ describe("landing point after a turn", () => {
     );
     show([more], "a1");
     assert.deepEqual(scrolls, [], "no scrolling while the text fills in");
+  });
+});
+
+describe("question boxes hold more than one line", () => {
+  // They were single-line <input>s: a newline could not be typed at all, and a
+  // long question scrolled sideways with its own beginning off screen. Growth
+  // itself needs layout, which jsdom has none of — this guards the element type
+  // the behaviour depends on.
+  test("both question boxes are textareas, not single-line inputs", () => {
+    const html = renderPanel([CARD_A]);
+    assert.match(html, /<textarea[^>]*placeholder="Ask a follow-up/);
+    assert.match(html, /<textarea[^>]*data-composer="general"/);
+    assert.equal(/<input[^>]*placeholder="Ask a follow-up/.test(html), false);
+    assert.equal(/<input[^>]*data-composer="general"/.test(html), false);
+  });
+
+  test("they do not show a resize grip — the height is managed", () => {
+    const html = renderPanel([CARD_A]);
+    // the class attribute is emitted after the placeholder, so look forward
+    const at = html.indexOf("Ask a follow-up");
+    const tagEnd = html.indexOf(">", at);
+    assert.match(html.slice(at, tagEnd), /resize-none/);
   });
 });

@@ -1,5 +1,5 @@
 "use client";
-import { useRef, useEffect, useState } from "react";
+import { useRef, useEffect, useLayoutEffect, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Annotation, Model } from "@/types/session";
@@ -82,6 +82,36 @@ function ImageLightbox({
       </div>
     </div>
   );
+}
+
+// A question box that grows with what is in it.
+//
+// These were single-line <input>s, which cannot hold a newline at all and
+// scroll horizontally once the text outruns the width — so a long question hid
+// its own beginning. A textarea wraps, and this keeps its height matched to the
+// content up to a ceiling, after which it scrolls rather than eating the panel.
+const MAX_BOX_HEIGHT = 168;
+
+function GrowingTextarea({
+  value,
+  ...props
+}: React.TextareaHTMLAttributes<HTMLTextAreaElement> & { value: string }) {
+  const ref = useRef<HTMLTextAreaElement | null>(null);
+  // Layout effect, not effect: resizing after paint shows one frame at the old
+  // height, which reads as a flicker on every keystroke
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    el.style.height = "auto";
+    // scrollHeight excludes the border, and these are border-box, so the height
+    // has to add it back or every box sits two pixels short and shows a
+    // scrollbar it does not need
+    const border = el.offsetHeight - el.clientHeight;
+    const wanted = el.scrollHeight + border;
+    el.style.height = `${Math.min(wanted, MAX_BOX_HEIGHT)}px`;
+    el.style.overflowY = wanted > MAX_BOX_HEIGHT ? "auto" : "hidden";
+  }, [value]);
+  return <textarea ref={ref} rows={1} value={value} {...props} />;
 }
 
 const FONT_SIZES = [12, 13, 14, 15, 16, 17, 18, 20];
@@ -435,9 +465,8 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
         </button>
       </div>
     )}
-    <div className="flex gap-2">
-      <input
-        type="text"
+    <div className="flex gap-2 items-end">
+      <GrowingTextarea
         placeholder="Ask a follow-up… (paste a figure to attach it)"
         value={followUpText[annotation.id] || ""}
         onChange={(e) =>
@@ -459,13 +488,14 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
             submitFollowUp(annotation.id);
           }
         }}
-        className="flex-1 text-sm px-3 py-1.5 rounded-md focus:outline-none transition-colors"
+        className="flex-1 min-w-0 text-sm px-3 py-1.5 rounded-md focus:outline-none transition-colors resize-none"
         style={{
           border: "1px solid var(--border)",
           background: "var(--paper)",
           color: "var(--ink)",
           fontFamily: "var(--font-geist-mono), monospace",
           fontSize: "0.8em",
+          lineHeight: 1.5,
         }}
         onFocus={(e) => {
           e.currentTarget.style.borderColor = "var(--accent)";
@@ -578,7 +608,7 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
         </div>
       )}
 
-      <div className="flex gap-1.5 items-center">
+      <div className="flex gap-1.5 items-end">
         <button
           onClick={() => setRefPickerOpen((v) => !v)}
           className="btn-icon w-7 h-7 text-sm shrink-0"
@@ -612,8 +642,7 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
             }}
           />
         </label>
-        <input
-          type="text"
+        <GrowingTextarea
           value={generalQuestion}
           placeholder={webSearch ? "Ask anything — web search ON 🌐…" : "Ask anything about the paper…"}
           onChange={(e) => setGeneralQuestion(e.target.value)}
@@ -628,8 +657,8 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
             }
           }}
           onKeyDown={(e) => { if (isSubmitKey(e)) submitGeneral(); }}
-          className="flex-1 min-w-0 text-sm px-3 py-2 rounded-md focus:outline-none transition-all"
-          style={{ border: "1px solid var(--border)", background: "var(--surface)", color: "var(--ink)" }}
+          className="flex-1 min-w-0 text-sm px-3 py-2 rounded-md focus:outline-none transition-all resize-none"
+          style={{ border: "1px solid var(--border)", background: "var(--surface)", color: "var(--ink)", lineHeight: 1.5 }}
           onFocus={(e) => {
             e.currentTarget.style.borderColor = "var(--accent)";
             const el = e.currentTarget;
@@ -906,17 +935,16 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
                             />
                           )}
                           {isEditing ? (
-                            <div className="flex flex-col gap-1.5">
-                              <textarea
+                            <div className="flex flex-col gap-1.5" data-editing="">
+                              <GrowingTextarea
                                 autoFocus
-                                rows={Math.min(6, Math.max(2, editDraft.split("\n").length))}
                                 value={editDraft}
                                 onChange={(e) => setEditDraft(e.target.value)}
                                 onKeyDown={(e) => {
                                   if (isSubmitKey(e)) { e.preventDefault(); resendEdit(annotation.id); }
                                   if (e.key === "Escape") setEditing(null);
                                 }}
-                                className="w-full text-sm px-2 py-1.5 rounded resize-y focus:outline-none"
+                                className="w-full text-sm px-2 py-1.5 rounded resize-none focus:outline-none"
                                 style={{
                                   border: "1px solid var(--accent)",
                                   background: "var(--paper)",
