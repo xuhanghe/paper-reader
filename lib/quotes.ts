@@ -59,3 +59,44 @@ export function withQuotes(question: string, quotes: Quote[]): string {
       : "Passages I selected from our conversation, labelled so I can refer to them:";
   return `${lead}\n\n${blocks.join("\n\n")}\n\n${question}`;
 }
+
+// ── Reading a question back ───────────────────────────────────────────
+// A question that carried passages stores them inside its own text, so the
+// link between a passage and the question that quoted it needs nothing new on
+// disk: it is recovered by parsing the question back into its parts. That also
+// makes every conversation already saved jumpable, not just the ones asked
+// from here on.
+
+export type QuotedPassage = {
+  label: string;
+  text: string;
+  source?: string;
+};
+
+// Matches exactly what withQuotes writes, both singular and plural
+const LEAD = /^(?:A passage|Passages) I selected from our conversation, labelled so I can refer to (?:it|them):\n\n/;
+const BLOCK = /^\[(\d+)\](?: from “([^”]*)”)?\n((?:>.*(?:\n|$))+)/;
+
+export function parseQuotes(content: string): { quotes: QuotedPassage[]; question: string } {
+  const lead = LEAD.exec(content);
+  if (!lead) return { quotes: [], question: content };
+
+  let rest = content.slice(lead[0].length);
+  const quotes: QuotedPassage[] = [];
+  for (;;) {
+    const block = BLOCK.exec(rest);
+    if (!block) break;
+    const text = block[3]
+      .split("\n")
+      .filter((line) => line.startsWith(">"))
+      .map((line) => line.replace(/^> ?/, ""))
+      .join("\n")
+      .trim();
+    quotes.push({ label: `[${block[1]}]`, text, source: block[2] || undefined });
+    rest = rest.slice(block[0].length).replace(/^\n+/, "");
+  }
+
+  // A lead with nothing under it is not a quoted question — leave it whole
+  // rather than swallow the reader's own words
+  return quotes.length > 0 ? { quotes, question: rest.trim() } : { quotes: [], question: content };
+}

@@ -66,6 +66,13 @@ question can say *"why does [1] contradict [2]?"* and be answered precisely.
 Clicking a chip drops its label at the cursor. An answer streaming in can be
 stopped, and a question already asked can be rewritten and sent again.
 
+Once a passage has been used, the link stays walkable in both directions. The
+passage is underlined in blue where it was originally written, and clicking it
+jumps to the question that quoted it; the question shows the passage as a chip,
+and clicking that goes back. Either end unfolds a folded conversation on the way.
+None of it is stored separately — a question keeps the passages it carried inside
+its own text, so the links are read back out of threads that already exist.
+
 **A map of the paper.** A generated outline grounded in verbatim quotes, each of
 which jumps to its passage. Alongside it, a notes column listing every highlight
 and Zotero note: click one to land on the passage itself — not the top of its

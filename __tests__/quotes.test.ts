@@ -1,6 +1,6 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
-import { withQuotes, quotePreview, quoteLabel, addQuote, QUOTE_PREVIEW_CHARS } from "../lib/quotes.js";
+import { withQuotes, quotePreview, quoteLabel, addQuote, parseQuotes, QUOTE_PREVIEW_CHARS } from "../lib/quotes.js";
 
 // A quote travels inside the question text, which is why it works on every
 // provider without any of them knowing the feature exists.
@@ -111,5 +111,57 @@ describe("addQuote", () => {
   test("whitespace does not make a passage look new", () => {
     const list = addQuote(addQuote([], q("  same  ", "A")), { id: "2", text: "same", source: "A" });
     assert.equal(list.length, 1);
+  });
+});
+
+// Reading a question back is what makes a quote a two-way link: the passage is
+// underlined where it was written and leads to the question, and the question
+// leads back to it. Both ends are recovered from the question text itself, so
+// this parser is the only thing standing between the reader and a dead link —
+// including in conversations saved long before the feature existed.
+describe("parseQuotes", () => {
+  const q = (text: string, source?: string) => ({ id: "1", text, source });
+
+  test("an ordinary question is left exactly as it is", () => {
+    assert.deepEqual(parseQuotes("why does that hold?"), { quotes: [], question: "why does that hold?" });
+  });
+
+  test("round-trips one passage: what went out comes back", () => {
+    const out = parseQuotes(withQuotes("why?", [q("the kernel is bandwidth bound", "Shared Memory")]));
+    assert.equal(out.question, "why?");
+    assert.deepEqual(out.quotes, [{ label: "[1]", text: "the kernel is bandwidth bound", source: "Shared Memory" }]);
+  });
+
+  test("round-trips several, keeping the labels the reader saw", () => {
+    const out = parseQuotes(withQuotes("why does [1] contradict [2]?", [q("first", "A"), q("second", "B")]));
+    assert.equal(out.question, "why does [1] contradict [2]?");
+    assert.deepEqual(out.quotes.map((x) => [x.label, x.text, x.source]), [
+      ["[1]", "first", "A"],
+      ["[2]", "second", "B"],
+    ]);
+  });
+
+  test("a multi-line passage comes back whole, without its '>' markers", () => {
+    const out = parseQuotes(withQuotes("compare these", [q("line one\nline two", "A")]));
+    assert.equal(out.quotes[0].text, "line one\nline two");
+    assert.equal(out.question, "compare these");
+  });
+
+  test("an unattributed passage parses without inventing a source", () => {
+    const out = parseQuotes(withQuotes("why?", [q("no source here")]));
+    assert.equal(out.quotes[0].source, undefined);
+    assert.equal(out.quotes[0].text, "no source here");
+  });
+
+  test("a question that only looks like a quoted one is left alone", () => {
+    // No blocks under the lead means it is the reader's own words, and
+    // swallowing them would leave the question showing as blank
+    const impostor = "A passage I selected from our conversation, labelled so I can refer to it:\n\nbut then I never quoted anything";
+    assert.deepEqual(parseQuotes(impostor), { quotes: [], question: impostor });
+  });
+
+  test("a question containing a blockquote of its own is not mistaken for a quote", () => {
+    const own = "why is this wrong?\n\n> some markdown I pasted";
+    assert.deepEqual(parseQuotes(own), { quotes: [], question: own });
   });
 });

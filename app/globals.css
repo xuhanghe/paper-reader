@@ -19,6 +19,12 @@
   --accent-dim:   rgba(232, 120, 76, 0.18);
   --accent-faint: rgba(232, 120, 76, 0.09);
 
+  /* Passages carried from a conversation into a question. Deliberately not the
+     accent: the accent already means "this is the paper", and a quote link is
+     a different kind of thing — a thread between two places in the panel. */
+  --quote:      #7EA6F0;
+  --quote-dim:  rgba(126, 166, 240, 0.16);
+
   /* Type badge colours */
   --badge-text-bg:   rgba(227, 179, 65, 0.15);
   --badge-text-fg:   #E3B341;
@@ -182,6 +188,34 @@ select:focus-visible {
   background: transparent;
   color: transparent;
   cursor: pointer;
+}
+
+/* A passage that was carried into a question. Underlined rather than washed
+   over: it sits inside prose the reader is still reading, so it has to read as
+   a link, not as a highlight. The mark keeps the text's own colour — the
+   underline is the whole signal. */
+mark.pr-quoted {
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-color: var(--quote);
+  text-decoration-thickness: 2px;
+  text-underline-offset: 2px;
+  border-radius: 2px;
+}
+mark.pr-quoted:hover {
+  background: var(--quote-dim);
+}
+/* Landing on either end of a quote link pulses it, so the jump says where it
+   arrived instead of leaving the reader to find the spot */
+@keyframes pr-quote-flash {
+  0%, 100% { background: transparent; }
+  40%      { background: var(--quote-dim); box-shadow: 0 0 0 3px var(--quote-dim); }
+}
+.pr-quote-flash {
+  animation: pr-quote-flash 0.7s ease-in-out 2;
+  border-radius: 3px;
 }
 
 /* A note entry revealed by clicking its highlight in the paper */

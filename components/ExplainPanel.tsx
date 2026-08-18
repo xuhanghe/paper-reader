@@ -1,10 +1,11 @@
 "use client";
-import { useRef, useEffect, useLayoutEffect, useState } from "react";
+import { useRef, useEffect, useLayoutEffect, useMemo, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Annotation, Model } from "@/types/session";
 import { isSubmitKey } from "@/lib/keys";
-import { withQuotes, quotePreview, quoteLabel, addQuote as pushQuote, type Quote } from "@/lib/quotes";
+import { withQuotes, quotePreview, quoteLabel, parseQuotes, addQuote as pushQuote, type Quote, type QuotedPassage } from "@/lib/quotes";
+import { clearMarks, markTextInContainer } from "@/lib/highlight-dom";
 
 type Props = {
   annotations: Annotation[];
@@ -164,7 +165,7 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
   const [expandedText, setExpandedText] = useState<Set<string>>(new Set());
   const [collapsedIds, setCollapsedIds] = useState<Set<string>>(new Set());
   // Which question is being rewritten, and its working text
-  const [editing, setEditing] = useState<{ id: string; index: number } | null>(null);
+  const [editing, setEditing] = useState<{ id: string; index: number; quotes: QuotedPassage[] } | null>(null);
   const [editDraft, setEditDraft] = useState("");
   // Passages lifted out of the conversations, waiting to be quoted into the
   // next question — wherever it is asked
@@ -190,7 +191,13 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
   // question with a fresh answer streaming under it
   const resendEdit = (annotationId: string) => {
     if (!editing || !editDraft.trim()) return;
-    onEditMessage?.(annotationId, editing.index, editDraft.trim());
+    // The editor shows the question alone; the passages it carried are put
+    // back, so rewording a question never silently drops what it pointed at
+    const restored = withQuotes(
+      editDraft.trim(),
+      editing.quotes.map((q, n) => ({ id: String(n), text: q.text, source: q.source }))
+    );
+    onEditMessage?.(annotationId, editing.index, restored);
     setEditing(null);
   };
 
@@ -313,6 +320,137 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
       try { el.setSelectionRange(caret, caret); } catch { /* not all inputs support it */ }
     });
   };
+
+  // ── Quote links, both ways ──────────────────────────────────────────
+  // A question stores the passages it carried inside its own text, so the link
+  // between a passage and the question that quoted it is recovered by reading
+  // the thread back rather than kept beside it. Nothing extra is written to
+  // disk, and conversations from before this existed became jumpable too.
+  type QuoteLink = QuotedPassage & { id: string; targetId: string; targetIndex: number };
+  const quoteLinks = useMemo<QuoteLink[]>(() => {
+    const links: QuoteLink[] = [];
+    for (const a of annotations) {
+      a.messages.forEach((m, i) => {
+        if (m.role !== "user") return;
+        parseQuotes(m.content).quotes.forEach((q, n) => {
+          if (!q.source || !q.text.trim()) return;
+          links.push({ ...q, id: `${a.id}:${i}:${n}`, targetId: a.id, targetIndex: i });
+        });
+      });
+    }
+    return links;
+  }, [annotations]);
+
+  const messageRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  // Which conversation each link was actually painted in — two conversations
+  // can carry the same label, and the reverse jump should not have to guess
+  const paintedIn = useRef<Map<string, string>>(new Map());
+  const lastPaint = useRef("");
+
+  // Underline each quoted passage where it was written. These marks are drawn
+  // into DOM React owns, so they are cleared and repainted as a whole rather
+  // than left to drift — and a conversation that is streaming is left alone,
+  // because its text is being rewritten underneath them.
+  useLayoutEffect(() => {
+    const containersOf = (id: string) =>
+      Array.from(annotationRefs.current[id]?.querySelectorAll("[data-quotable]") ?? []) as HTMLElement[];
+
+    // Streaming rewrites `annotations` on every chunk; without this the whole
+    // layer would be torn down and rebuilt several times a second, taking any
+    // selection the reader was making with it.
+    const signature = [
+      quoteLinks.map((l) => `${l.id}»${l.text}`).join("|"),
+      [...collapsedIds].sort().join(","),
+      [...streamingIds].sort().join(","),
+    ].join("#");
+    const stillPainted = [...paintedIn.current.keys()].every((id) =>
+      scrollRef.current?.querySelector(`mark.pr-quoted[data-highlight-id="${id}"]`)
+    );
+    if (signature === lastPaint.current && stillPainted) return;
+    lastPaint.current = signature;
+
+    for (const a of annotations) for (const c of containersOf(a.id)) clearMarks(c, "pr-quoted");
+
+    const placed = new Map<string, string>();
+    for (const a of annotations) {
+      if (collapsedIds.has(a.id) || streamingIds.has(a.id)) continue;
+      const containers = containersOf(a.id);
+      for (const link of quoteLinks) {
+        if (link.source !== a.label || placed.has(link.id)) continue;
+        for (const container of containers) {
+          const done = markTextInContainer(container, link.text, "pr-quoted", "Quoted in a question — click to go to it", {
+            id: link.id,
+            // A chip echoes its passage; marking one would link it to itself
+            skipSelector: "[data-quote-chip]",
+          });
+          if (done) {
+            placed.set(link.id, a.id);
+            break;
+          }
+        }
+      }
+    }
+    paintedIn.current = placed;
+  }, [annotations, quoteLinks, collapsedIds, streamingIds, annotationRefs]);
+
+  const flash = (el: HTMLElement) => {
+    el.classList.add("pr-quote-flash");
+    setTimeout(() => el.classList.remove("pr-quote-flash"), 1500);
+  };
+
+  const expand = (id: string) =>
+    setCollapsedIds((prev) => {
+      if (!prev.has(id)) return prev;
+      const next = new Set(prev);
+      next.delete(id);
+      return next;
+    });
+
+  // Both ends of a link land the same way: unfold whatever is folded, let that
+  // render happen — the marks are painted in it — then scroll and pulse.
+  const jumpTo = (annotationId: string, find: () => HTMLElement | null | undefined) => {
+    expand(annotationId);
+    requestAnimationFrame(() => {
+      const el = find() ?? annotationRefs.current[annotationId];
+      if (!el) return;
+      el.scrollIntoView({ behavior: "smooth", block: "center" });
+      flash(el);
+    });
+  };
+
+  // Passage → the question that quoted it
+  const goToQuestion = (linkId: string) => {
+    const link = quoteLinks.find((l) => l.id === linkId);
+    if (!link) return;
+    jumpTo(link.targetId, () => messageRefs.current[`${link.targetId}:${link.targetIndex}`]);
+  };
+
+  // …and back: question → the passage it was taken from
+  const goToPassage = (linkId: string, source?: string) => {
+    const id = paintedIn.current.get(linkId) ?? annotations.find((a) => a.label === source)?.id;
+    if (!id) return;
+    jumpTo(id, () =>
+      annotationRefs.current[id]?.querySelector(`mark.pr-quoted[data-highlight-id="${linkId}"]`) as HTMLElement | null
+    );
+  };
+
+  // The marks are not React's, so their clicks are caught by delegation. No
+  // dependency list: re-binding each render is cheaper than reasoning about a
+  // stale closure over the links.
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const onClick = (e: MouseEvent) => {
+      const mark = (e.target as Element | null)?.closest?.("mark.pr-quoted") as HTMLElement | null;
+      const id = mark?.dataset.highlightId;
+      if (!id) return;
+      e.preventDefault();
+      e.stopPropagation();
+      goToQuestion(id);
+    };
+    el.addEventListener("click", onClick);
+    return () => el.removeEventListener("click", onClick);
+  });
 
   // Where to land in a conversation depends on why we are going there. Coming
   // to one for the first time, you want its beginning. Having just asked
@@ -880,7 +1018,7 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
                         </button>
                       )}
                     </div>
-                    <p className="px-3 pb-2 text-xs leading-relaxed whitespace-pre-wrap" style={{ color: "var(--ink-muted)", fontFamily: "var(--font-geist-mono), monospace" }}>
+                    <p data-quotable="" className="px-3 pb-2 text-xs leading-relaxed whitespace-pre-wrap" style={{ color: "var(--ink-muted)", fontFamily: "var(--font-geist-mono), monospace" }}>
                       {shown}
                     </p>
                     {long && (
@@ -901,20 +1039,28 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
               })()}
 
               {/* Messages */}
-              <div className="px-4 pt-3 pb-2 space-y-3">
+              <div data-quotable="" className="px-4 pt-3 pb-2 space-y-3">
                 {annotation.messages.map((msg, i) => {
                   const isUser = msg.role === "user";
                   const isFollowUp = isUser && i > 0;
                   // Every ask seeds an empty assistant message before streaming,
                   // so the newest one is where the reply is about to land
                   const isEditing = editing?.id === annotation.id && editing.index === i;
+                  // A question that carried passages shows them as chips and
+                  // asks only what was actually typed
+                  const asked = isUser ? parseQuotes(msg.content) : null;
                   const waitingHere =
                     !isUser &&
                     !msg.content &&
                     i === annotation.messages.length - 1 &&
                     streamingIds.has(annotation.id);
                   return (
-                    <div key={i} className={isFollowUp ? "pt-3" : ""} style={isFollowUp ? { borderTop: "1px solid var(--border-light)" } : {}}>
+                    <div
+                      key={i}
+                      ref={(el) => { messageRefs.current[`${annotation.id}:${i}`] = el; }}
+                      className={isFollowUp ? "pt-3" : ""}
+                      style={isFollowUp ? { borderTop: "1px solid var(--border-light)" } : {}}
+                    >
                       <p className="text-[10px] font-semibold mb-1 tracking-wide uppercase flex items-center gap-1.5" style={{ color: isUser ? "var(--ink-faint)" : "var(--accent)" }}>
                         <span
                           className="w-1.5 h-1.5 rounded-full inline-block"
@@ -970,10 +1116,29 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
                             </div>
                           ) : (
                             <div className="group/msg flex items-start gap-1.5">
-                              <p className="flex-1 min-w-0" style={{ color: "var(--ink-muted)", fontFamily: "var(--font-geist-sans), system-ui, sans-serif" }}>{msg.content}</p>
+                              <div className="flex-1 min-w-0">
+                                {asked!.quotes.length > 0 && (
+                                  <div data-quote-chip="" className="flex flex-col items-start gap-1 mb-1.5">
+                                    {asked!.quotes.map((q, n) => (
+                                      <button
+                                        key={n}
+                                        onClick={() => goToPassage(`${annotation.id}:${i}:${n}`, q.source)}
+                                        className="inline-flex items-center gap-1 max-w-full text-[11px] pl-1 pr-1.5 py-0.5 rounded transition-colors hover:opacity-80"
+                                        style={{ background: "var(--quote-dim)", border: "1px solid var(--quote)", color: "var(--ink-muted)" }}
+                                        title={`Go back to this passage${q.source ? ` in “${q.source}”` : ""}\n\n${q.text}`}
+                                      >
+                                        <span className="shrink-0 tabular-nums text-[10px] font-medium" style={{ color: "var(--quote)" }}>{q.label}</span>
+                                        <span className="truncate min-w-0">{quotePreview(q.text)}</span>
+                                        <span className="shrink-0 text-[10px]" style={{ color: "var(--quote)" }}>↩</span>
+                                      </button>
+                                    ))}
+                                  </div>
+                                )}
+                                <p style={{ color: "var(--ink-muted)", fontFamily: "var(--font-geist-sans), system-ui, sans-serif" }}>{asked!.question}</p>
+                              </div>
                               {onEditMessage && (
                                 <button
-                                  onClick={() => { setEditing({ id: annotation.id, index: i }); setEditDraft(msg.content); }}
+                                  onClick={() => { setEditing({ id: annotation.id, index: i, quotes: asked!.quotes }); setEditDraft(asked!.question); }}
                                   className="btn-icon shrink-0 w-5 h-5 text-[10px] opacity-0 group-hover/msg:opacity-100 focus:opacity-100 transition-opacity"
                                   title="Edit this question and ask it again"
                                   aria-label="Edit question"

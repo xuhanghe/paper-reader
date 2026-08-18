@@ -63,14 +63,19 @@ const NON_PROSE = new Set(["SCRIPT", "STYLE", "NOSCRIPT", "TEMPLATE", "TITLE"]);
 // start/end offsets in their concatenated text
 function locateText(
   container: HTMLElement,
-  query: string
+  query: string,
+  skipSelector?: string
 ): { nodes: { node: Text; start: number }[]; rawStart: number; rawEnd: number } | null {
   // Snapshot text nodes with their offsets in the concatenated raw string
   const walker = container.ownerDocument.createTreeWalker(container, NodeFilter.SHOW_TEXT, {
-    acceptNode: (node) =>
-      NON_PROSE.has((node.parentNode as Element | null)?.nodeName ?? "")
-        ? NodeFilter.FILTER_REJECT
-        : NodeFilter.FILTER_ACCEPT,
+    acceptNode: (node) => {
+      const parent = node.parentNode as Element | null;
+      if (NON_PROSE.has(parent?.nodeName ?? "")) return NodeFilter.FILTER_REJECT;
+      // Regions that show the passage rather than contain it — a chip echoing a
+      // quote must not be mistaken for the place it was quoted from
+      if (skipSelector && parent?.closest?.(skipSelector)) return NodeFilter.FILTER_REJECT;
+      return NodeFilter.FILTER_ACCEPT;
+    },
   });
   const nodes: { node: Text; start: number }[] = [];
   let full = "";
@@ -102,9 +107,9 @@ export function markTextInContainer(
   query: string,
   className: string,
   title?: string,
-  options?: { id?: string; color?: string }
+  options?: { id?: string; color?: string; skipSelector?: string }
 ): boolean {
-  const found = locateText(container, query);
+  const found = locateText(container, query, options?.skipSelector);
   if (!found) return false;
   const { nodes, rawStart, rawEnd } = found;
   const doc = container.ownerDocument;

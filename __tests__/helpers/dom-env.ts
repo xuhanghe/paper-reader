@@ -22,6 +22,10 @@ g.Element = dom.window.Element;
 g.Node = dom.window.Node;
 g.Event = dom.window.Event;
 g.MouseEvent = dom.window.MouseEvent;
+// Browser globals the highlight layer reaches for by name
+g.NodeFilter = dom.window.NodeFilter;
+g.Range = dom.window.Range;
+g.Text = dom.window.Text;
 g.IS_REACT_ACT_ENVIRONMENT = true;
 Object.defineProperty(globalThis, "navigator", {
   value: dom.window.navigator,

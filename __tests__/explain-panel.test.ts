@@ -8,6 +8,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { ExplainPanel } from "../components/ExplainPanel.js";
 import type { Annotation, Message } from "../types/session.js";
+import { withQuotes } from "../lib/quotes.js";
 
 // The waiting indicator has to sit where the answer will appear — under the
 // question just asked. It used to render above the whole thread, so asking a
@@ -760,5 +761,155 @@ describe("question boxes hold more than one line", () => {
     const at = html.indexOf("Ask a follow-up");
     const tagEnd = html.indexOf(">", at);
     assert.match(html.slice(at, tagEnd), /resize-none/);
+  });
+});
+
+// ── Quote links ───────────────────────────────────────────────────────
+// A quote is only half a connection if it goes one way. The passage has to
+// carry a visible mark back to the question that used it, and the question has
+// to lead back to the passage — otherwise "why does [1] contradict [2]?" is
+// still an answer the reader has to go hunting through the panel to check.
+describe("jumping between a passage and the question that quoted it", () => {
+  const PASSAGE = "The kernel is bandwidth bound";
+  const QUESTION = "does that still hold on H100?";
+
+  const SOURCE = thread(
+    [
+      { role: "user", content: "what is this" },
+      { role: "assistant", content: `${PASSAGE} at this size.` },
+    ],
+    "a1",
+    "conversation A"
+  );
+  const ASKER = thread(
+    [
+      { role: "user", content: withQuotes(QUESTION, [{ id: "q", text: PASSAGE, source: "conversation A" }]) },
+      { role: "assistant", content: "Yes, more so." },
+    ],
+    "b2",
+    "conversation B"
+  );
+
+  let host: HTMLElement;
+  let root: Root;
+  const refs = { current: {} as Record<string, HTMLDivElement | null> };
+
+  const show = (annotations: Annotation[], streaming?: string) => {
+    act(() => {
+      root.render(
+        createElement(ExplainPanel, {
+          annotations,
+          activeId: null,
+          model: "claude-sonnet-4-6",
+          streamingIds: new Set(streaming ? [streaming] : []),
+          onFollowUp: () => {},
+          onAskGeneral: () => {},
+          onEditMessage: () => {},
+          onDelete: () => {},
+          onReExplainImage: () => {},
+          onViewInPdf: () => {},
+          annotationRefs: refs,
+          isOpen: true,
+          onToggle: () => {},
+        })
+      );
+    });
+  };
+
+  const mount = (annotations: Annotation[] = [SOURCE, ASKER], streaming?: string) => {
+    refs.current = {};
+    host = freshRoot();
+    root = createRoot(host);
+    show(annotations, streaming);
+  };
+
+  const marks = () => Array.from(host.querySelectorAll("mark.pr-quoted"));
+  const click = (el: Element) => act(() => { el.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })); });
+  // The jump unfolds, waits for that render, then scrolls — so it lands a frame later
+  const settle = async () => { await act(async () => { await new Promise((r) => setTimeout(r, 5)); }); };
+  const flashed = () => host.querySelector(".pr-quote-flash");
+  const chip = () =>
+    Array.from(host.querySelectorAll("button")).find((b) => b.getAttribute("title")?.startsWith("Go back to this passage"));
+
+  test("the passage is underlined where it was written", () => {
+    mount();
+    assert.equal(marks().length, 1);
+    assert.equal(marks()[0].textContent, PASSAGE);
+  });
+
+  test("it is marked in the conversation it came from, not the one that quoted it", () => {
+    mount();
+    const card = marks()[0].closest("[data-conversation]") as HTMLElement;
+    assert.equal(card.dataset.conversation, "conversation A");
+  });
+
+  test("nothing is underlined until a question actually quotes something", () => {
+    mount([SOURCE]);
+    assert.equal(marks().length, 0);
+  });
+
+  test("the question shows what was typed, not the machinery that carried the quote", () => {
+    mount();
+    const text = host.textContent ?? "";
+    assert.ok(text.includes(QUESTION));
+    assert.equal(text.includes("A passage I selected"), false, "the wrapper is for the model, not the reader");
+  });
+
+  test("the question carries a chip naming the passage it points at", () => {
+    mount();
+    const c = chip();
+    assert.ok(c, "expected a way back to the passage from the question");
+    assert.ok(c!.textContent?.includes("[1]"), "labelled as it was in the prompt");
+    assert.ok(c!.getAttribute("title")?.includes("conversation A"), "and credited to its conversation");
+  });
+
+  test("clicking the underlined passage lands on the question that quoted it", async () => {
+    mount();
+    click(marks()[0]);
+    await settle();
+    const landed = flashed();
+    assert.ok(landed, "expected the jump to say where it arrived");
+    assert.ok(landed!.textContent?.includes(QUESTION));
+  });
+
+  test("clicking the chip lands back on the passage — the same link, travelled backwards", async () => {
+    mount();
+    click(chip()!);
+    await settle();
+    const landed = flashed();
+    assert.ok(landed, "expected to land somewhere");
+    assert.equal(landed!.tagName, "MARK");
+    assert.equal(landed!.textContent, PASSAGE);
+  });
+
+  test("a folded conversation unfolds itself rather than swallowing the jump", async () => {
+    mount();
+    const fold = Array.from(host.querySelectorAll("button")).find(
+      (b) => b.getAttribute("aria-label") === "Collapse conversation"
+    );
+    click(fold!);
+    assert.equal(marks().length, 0, "sanity: a folded conversation has nothing to mark");
+    click(chip()!);
+    await settle();
+    assert.equal(marks().length, 1, "the source conversation is open again");
+    assert.equal(flashed()?.textContent, PASSAGE);
+  });
+
+  test("a conversation still being answered is left unmarked", () => {
+    // Its text is being rewritten chunk by chunk; wrapping marks around it
+    // mid-flight would fight React for the same nodes
+    mount([SOURCE, ASKER], "a1");
+    assert.equal(marks().length, 0);
+    show([SOURCE, ASKER]);
+    assert.equal(marks().length, 1, "and marked again once the answer is done");
+  });
+
+  test("rewriting a question keeps the passage it pointed at", () => {
+    // The editor shows the typed question alone — the quote must survive it
+    mount();
+    const asker = host.querySelector('[data-conversation="conversation B"]')!;
+    click(asker.querySelector('button[aria-label="Edit question"]')!);
+    const box = host.querySelector("[data-editing] textarea") as HTMLTextAreaElement;
+    assert.equal(box.value, QUESTION, "the editor holds the question, not the wrapper");
   });
 });
