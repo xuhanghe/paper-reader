@@ -21,6 +21,7 @@ import {
   sessionRelativeFile,
 } from "@/lib/session-store";
 import { claudeBin } from "@/lib/bin";
+import { unwrapPartials } from "@/lib/claude-stream";
 
 export const runtime = "nodejs";
 
@@ -40,8 +41,23 @@ function teeToThread(source: ReadableStream, opts: TeeOpts): ReadableStream {
   let carry = "";
   let acc = "";
   let resultText = "";
-  return source.pipeThrough(
-    new TransformStream({
+  let persisted = false;
+  const persist = () => {
+    if (persisted) return;
+    persisted = true;
+    const finalText = acc || resultText;
+    if (!finalText.trim()) return;
+    appendThread(opts.paperId, {
+      ts: Date.now(),
+      role: "assistant",
+      text: finalText,
+      kind: opts.kind,
+      annotationId: opts.annotationId,
+    }).catch(() => {});
+  };
+  // `cancel` is in the streams standard and in Node, but not yet in the
+  // TypeScript lib types — declared here rather than dropped
+  const transformer: Transformer & { cancel?: () => void } = {
       transform(chunk, controller) {
         controller.enqueue(chunk);
         carry += decoder.decode(chunk as BufferSource, { stream: true });
@@ -63,19 +79,16 @@ function teeToThread(source: ReadableStream, opts: TeeOpts): ReadableStream {
         }
       },
       flush() {
-        const finalText = acc || resultText;
-        if (finalText.trim()) {
-          appendThread(opts.paperId, {
-            ts: Date.now(),
-            role: "assistant",
-            text: finalText,
-            kind: opts.kind,
-            annotationId: opts.annotationId,
-          }).catch(() => {});
-        }
+        persist();
       },
-    })
-  );
+      // Stopping an answer cancels this stream, and cancel is not flush — so
+      // without this the part that did arrive is shown in the panel and then
+      // missing from the thread on disk, which is the copy a reload reads back
+      cancel() {
+        persist();
+      },
+  };
+  return source.pipeThrough(new TransformStream(transformer));
 }
 
 export async function POST(req: Request) {
@@ -224,14 +237,30 @@ export async function POST(req: Request) {
     "--model", modelFlag,
     ...effortArgs(effort),
     "--output-format", "stream-json",
+    // Without this the CLI only reports whole messages, so an answer appears
+    // in one lump at the end — and stopping it leaves an empty bubble even
+    // though the model had already written most of the reply
+    "--include-partial-messages",
     ...(useStdin ? ["--input-format", "stream-json"] : []),
     "--verbose",
     "--dangerously-skip-permissions",
     ...claudeMcpArgs(), // Zotero library access
   ];
+  let child: ReturnType<typeof spawn> | null = null;
+  const stopChild = () => {
+    if (!child || child.killed) return;
+    child.kill("SIGTERM");
+    // The CLI ignores SIGTERM while a request is in flight often enough to
+    // matter: a stopped answer that keeps generating costs tokens and CPU
+    const proc = child;
+    setTimeout(() => { if (!proc.killed) proc.kill("SIGKILL"); }, 2000).unref?.();
+  };
+  req.signal.addEventListener("abort", stopChild);
+
   const stream = new ReadableStream({
     start(controller) {
       const proc = spawn(claudeBin(), args);
+      child = proc;
       if (useStdin) {
         proc.stdin.write(
           JSON.stringify({
@@ -252,6 +281,9 @@ export async function POST(req: Request) {
       proc.stderr.on("data", (d: Buffer) => console.error("[claude stderr]", d.toString().slice(0, 400)));
       proc.on("error", (err) => { console.error("[claude spawn error]", err); controller.error(err); });
     },
+    cancel() {
+      stopChild();
+    },
   });
-  return streamResponse(teeToThread(stream, teeOpts));
+  return streamResponse(teeToThread(unwrapPartials(stream), teeOpts));
 }

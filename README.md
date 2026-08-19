@@ -262,6 +262,10 @@ Worth knowing before you rely on them:
   mock**, not a live Anthropic-compatible service.
 - **Custom API endpoints get no tools** — no Zotero MCP, no web search. That
   needs a server-side tool-calling loop the CLI providers get for free.
+- **Stopping an answer does not un-write it.** The text that arrived is kept
+  and saved, and the provider's own child process is killed, but the CLIs
+  record what they had already generated in their server-side session — so the
+  next turn may refer to a passage you never saw.
 - **Rewriting a question cannot un-ask it.** The CLI providers keep their own
   history server-side and are resumed by session id, so the model still
   remembers the original wording and reads the edit as a correction. The panel

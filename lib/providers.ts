@@ -80,11 +80,27 @@ export function codexStream(
   prompt: string,
   opts?: { images?: string[]; effort?: unknown; resumeId?: string; onClose?: () => void }
 ): ReadableStream {
+  let child: ReturnType<typeof spawn> | null = null;
   return new ReadableStream({
     start(controller) {
       const proc = spawn(codexBin(), codexArgs(prompt, opts));
+      child = proc;
       proc.stdin.end();
       let buf = "";
+      // What has already been sent for each message, so an item reported while
+      // it is still being written contributes only the part that is new. Codex
+      // may only report finished messages, in which case this sends the whole
+      // one exactly once — but where it does report progress, stopping an
+      // answer now keeps the text that had arrived.
+      const sent = new Map<string, string>();
+      const emitAgentMessage = (item: { id?: unknown; type?: string; text?: unknown }) => {
+        if (item?.type !== "agent_message" || typeof item.text !== "string") return;
+        const key = typeof item.id === "string" ? item.id : "";
+        const already = sent.get(key) ?? "";
+        const delta = item.text.startsWith(already) ? item.text.slice(already.length) : item.text;
+        sent.set(key, item.text);
+        if (delta) controller.enqueue(encodeEvent(delta));
+      };
       proc.stdout.on("data", (chunk: Buffer) => {
         buf += chunk.toString();
         const lines = buf.split("\n");
@@ -97,8 +113,8 @@ export function codexStream(
               controller.enqueue(
                 encoder.encode(JSON.stringify({ type: "system", session_id: ev.thread_id }) + "\n")
               );
-            } else if (ev.type === "item.completed" && ev.item?.type === "agent_message" && typeof ev.item.text === "string") {
-              controller.enqueue(encodeEvent(ev.item.text));
+            } else if (ev.type === "item.updated" || ev.type === "item.completed") {
+              emitAgentMessage(ev.item ?? {});
             }
           } catch {
             // non-JSON line
@@ -113,6 +129,14 @@ export function codexStream(
         controller.enqueue(encodeEvent("Error: could not run the codex CLI. Is it installed and logged in?"));
         controller.close();
       });
+    },
+    // Stopping an answer has to stop the model too; a child left running
+    // finishes the reply nobody will read, on the reader's own machine
+    cancel() {
+      if (!child || child.killed) return;
+      const proc = child;
+      proc.kill("SIGTERM");
+      setTimeout(() => { if (!proc.killed) proc.kill("SIGKILL"); }, 2000).unref?.();
     },
   });
 }
