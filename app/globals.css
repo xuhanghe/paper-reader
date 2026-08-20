@@ -218,6 +218,14 @@ mark.pr-quoted:hover {
   border-radius: 3px;
 }
 
+/* Question boxes grow with what is typed. Where the engine supports it this is
+   the whole implementation; where it does not, it is ignored and the component
+   measures instead. */
+.pr-autosize {
+  field-sizing: content;
+  max-height: 168px;
+}
+
 /* A reference the model wrote into its own answer. It has to read as part of
    the sentence — a chip would break the prose — so it is the text itself,
    underlined, with the destination as a small tag after it. */

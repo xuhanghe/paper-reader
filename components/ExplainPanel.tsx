@@ -1,5 +1,5 @@
 "use client";
-import { useRef, useEffect, useLayoutEffect, useMemo, useState } from "react";
+import { useRef, useEffect, useLayoutEffect, useMemo, useState, memo } from "react";
 import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Annotation, Model } from "@/types/session";
@@ -47,10 +47,16 @@ type Props = {
 const citationUrlTransform = (url: string): string =>
   parseCitation(url) ? url : defaultUrlTransform(url);
 
+type MarkdownComponents = {
+  a: (props: { href?: string; children?: React.ReactNode }) => React.ReactElement;
+};
+
+// Click-time behaviour, read from a ref when a citation is actually clicked.
+// What has to be decided while rendering — whether the target exists at all —
+// arrives as a plain prop, so nothing reads a ref during render.
 type CiteHandlers = {
   paper?: (page: number, quote: string) => void;
   turn?: (turn: number) => void;
-  resolves?: (turn: number) => boolean;
 };
 
 function textOf(node: React.ReactNode): string {
@@ -65,10 +71,14 @@ function CitationAnchor({
   href,
   children,
   cite,
+  knownTurns,
+  canJumpToPaper,
 }: {
   href?: string;
   children?: React.ReactNode;
-  cite: React.MutableRefObject<CiteHandlers>;
+  cite: React.RefObject<CiteHandlers>;
+  knownTurns: Set<number>;
+  canJumpToPaper: boolean;
 }) {
   const citation = parseCitation(href);
   if (!citation) {
@@ -81,16 +91,15 @@ function CitationAnchor({
 
   const raw = textOf(children);
   const label = citationLabel(raw) || raw;
-  const handlers = cite.current;
 
   if (citation.kind === "turn") {
     // A number that points at nothing reads as plain words rather than as a
     // link that goes nowhere — the model does sometimes invent one
-    if (!handlers.resolves?.(citation.turn) || !handlers.turn) return <span>{label}</span>;
+    if (!knownTurns.has(citation.turn)) return <span>{label}</span>;
     return (
       <button
         type="button"
-        onClick={() => handlers.turn?.(citation.turn)}
+        onClick={() => cite.current.turn?.(citation.turn)}
         className="pr-cite pr-cite-turn"
         title={`Go back to turn ${citation.turn} of this conversation`}
       >
@@ -100,11 +109,11 @@ function CitationAnchor({
     );
   }
 
-  if (!handlers.paper) return <span>{label}</span>;
+  if (!canJumpToPaper) return <span>{label}</span>;
   return (
     <button
       type="button"
-      onClick={() => handlers.paper?.(citation.page, raw)}
+      onClick={() => cite.current.paper?.(citation.page, raw)}
       className="pr-cite pr-cite-paper"
       title={`Find this passage on page ${citation.page}`}
     >
@@ -113,6 +122,33 @@ function CitationAnchor({
     </button>
   );
 }
+
+// An answer, re-rendered only when its own text changes.
+//
+// Markdown is parsed from scratch on every render — remark, rehype and a fresh
+// React tree — so without this, one keystroke in the follow-up box re-parsed
+// every answer on screen. Typing lagged in proportion to how much had been
+// said, which is exactly backwards.
+//
+// The plugin list is module-level for the same reason: a new array each render
+// is a new prop, and nothing downstream can memoise past it.
+const REMARK_PLUGINS = [remarkGfm];
+
+const Answer = memo(function Answer({
+  content,
+  components,
+}: {
+  content: string;
+  components: MarkdownComponents;
+}) {
+  return (
+    <div className="prose-paper">
+      <ReactMarkdown remarkPlugins={REMARK_PLUGINS} components={components} urlTransform={citationUrlTransform}>
+        {content}
+      </ReactMarkdown>
+    </div>
+  );
+});
 
 function ImageLightbox({
   src,
@@ -179,8 +215,25 @@ function ImageLightbox({
 // content up to a ceiling, after which it scrolls rather than eating the panel.
 const MAX_BOX_HEIGHT = 168;
 
+// Where the browser can size a textarea to its content itself, let it.
+//
+// The JS way — reset the height to auto, read scrollHeight, write the new
+// height — forces the whole document to be laid out twice per keystroke, and
+// this document contains a rendered PDF page with its text layer. `field-sizing`
+// does the same job in the engine, with no layout the app can see. Probed once;
+// the class is always applied, since a browser without it simply ignores it.
+let fieldSizing: boolean | null = null;
+function browserSizesTextareas(): boolean {
+  if (fieldSizing === null) {
+    fieldSizing =
+      typeof CSS !== "undefined" && typeof CSS.supports === "function" && CSS.supports("field-sizing", "content");
+  }
+  return fieldSizing;
+}
+
 function GrowingTextarea({
   value,
+  className,
   ...props
 }: React.TextareaHTMLAttributes<HTMLTextAreaElement> & { value: string }) {
   const ref = useRef<HTMLTextAreaElement | null>(null);
@@ -188,7 +241,7 @@ function GrowingTextarea({
   // height, which reads as a flicker on every keystroke
   useLayoutEffect(() => {
     const el = ref.current;
-    if (!el) return;
+    if (!el || browserSizesTextareas()) return;
     el.style.height = "auto";
     // scrollHeight excludes the border, and these are border-box, so the height
     // has to add it back or every box sits two pixels short and shows a
@@ -198,7 +251,7 @@ function GrowingTextarea({
     el.style.height = `${Math.min(wanted, MAX_BOX_HEIGHT)}px`;
     el.style.overflowY = wanted > MAX_BOX_HEIGHT ? "auto" : "hidden";
   }, [value]);
-  return <textarea ref={ref} rows={1} value={value} {...props} />;
+  return <textarea ref={ref} rows={1} value={value} className={`pr-autosize ${className ?? ""}`} {...props} />;
 }
 
 const FONT_SIZES = [12, 13, 14, 15, 16, 17, 18, 20];
@@ -536,19 +589,32 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
     return false;
   };
 
-  // Kept current on every render, read at click time. The components map below
-  // is built once so the answer is not remounted as it streams.
+  // Which turns there are to jump to. Keyed on the numbers themselves, so it
+  // changes when an ask is numbered rather than once per streamed chunk — the
+  // components map hangs off it, and rebuilding that map would remount every
+  // citation in every answer on screen.
+  const turnKey = useMemo(() => {
+    const turns: number[] = [];
+    for (const a of annotations) for (const m of a.messages) if (m.turn) turns.push(m.turn);
+    return turns.sort((x, y) => x - y).join(",");
+  }, [annotations]);
+
   const citeRef = useRef<CiteHandlers>({});
-  citeRef.current = {
-    paper: onCitePaper,
-    turn: goToTurn,
-    resolves: (n) => annotations.some((a) => a.messages.some((m) => m.turn === n)),
-  };
-  const markdownComponents = useRef({
-    a: (props: { href?: string; children?: React.ReactNode }) => (
-      <CitationAnchor href={props.href} cite={citeRef}>{props.children}</CitationAnchor>
-    ),
-  }).current;
+  useEffect(() => {
+    citeRef.current = { paper: onCitePaper, turn: goToTurn };
+  });
+
+  const canJumpToPaper = !!onCitePaper;
+  const markdownComponents = useMemo<MarkdownComponents>(() => {
+    const knownTurns = new Set(turnKey ? turnKey.split(",").map(Number) : []);
+    return {
+      a: (props: { href?: string; children?: React.ReactNode }) => (
+        <CitationAnchor href={props.href} cite={citeRef} knownTurns={knownTurns} canJumpToPaper={canJumpToPaper}>
+          {props.children}
+        </CitationAnchor>
+      ),
+    };
+  }, [turnKey, canJumpToPaper]);
 
   // The marks are not React's, so their clicks are caught by delegation. No
   // dependency list: re-binding each render is cheaper than reasoning about a
@@ -1279,11 +1345,10 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
                           Thinking…
                         </div>
                       ) : (
-                        <div className="prose-paper">
-                          <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents} urlTransform={citationUrlTransform}>
-                            {msg.content || (streamingIds.has(annotation.id) ? "" : "▌")}
-                          </ReactMarkdown>
-                        </div>
+                        <Answer
+                          content={msg.content || (streamingIds.has(annotation.id) ? "" : "▌")}
+                          components={markdownComponents}
+                        />
                       )}
                     </div>
                   );

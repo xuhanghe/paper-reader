@@ -757,10 +757,11 @@ describe("question boxes hold more than one line", () => {
 
   test("they do not show a resize grip — the height is managed", () => {
     const html = renderPanel([CARD_A]);
-    // the class attribute is emitted after the placeholder, so look forward
+    // Read the whole tag: attribute order is not something to depend on
     const at = html.indexOf("Ask a follow-up");
-    const tagEnd = html.indexOf(">", at);
-    assert.match(html.slice(at, tagEnd), /resize-none/);
+    const tag = html.slice(html.lastIndexOf("<textarea", at), html.indexOf(">", at));
+    assert.match(tag, /resize-none/);
+    assert.match(tag, /pr-autosize/, "and the engine sizes it where it can");
   });
 });
 
