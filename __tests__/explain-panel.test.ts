@@ -915,3 +915,72 @@ describe("jumping between a passage and the question that quoted it", () => {
   });
 });
 
+
+// The follow-up box belongs to whichever conversation you are reading, which is
+// often not the one that was last clicked. Asking in any other one used to look
+// like arriving there for the first time, and landed at the top of a thread you
+// had just written into.
+describe("landing after asking in a conversation you had not clicked", () => {
+  let host: HTMLElement;
+  let root: Root;
+  let scrolls: { block?: string }[];
+  const refs = { current: {} as Record<string, HTMLDivElement | null> };
+
+  const setup = () => {
+    scrolls = [];
+    dom.window.Element.prototype.scrollIntoView = function (opts?: boolean | ScrollIntoViewOptions) {
+      scrolls.push(typeof opts === "object" && opts ? opts : {});
+    };
+    refs.current = {};
+    host = freshRoot();
+    root = createRoot(host);
+  };
+
+  const show = (annotations: Annotation[], activeId: string | null) => {
+    act(() => {
+      root.render(
+        createElement(ExplainPanel, {
+          annotations, activeId, model: "m", streamingIds: new Set<string>(),
+          onFollowUp: () => {}, onAskGeneral: () => {}, onDelete: () => {},
+          onReExplainImage: () => {}, onViewInPdf: () => {},
+          annotationRefs: refs, isOpen: true, onToggle: () => {},
+        })
+      );
+    });
+  };
+
+  const turns = (n: number, id: string) =>
+    thread(
+      Array.from({ length: n }, (_, i) =>
+        i % 2 === 0 ? { role: "user" as const, content: `q${i}` } : { role: "assistant" as const, content: `a${i}` }
+      ),
+      id,
+      `conversation ${id}`
+    );
+
+  test("lands at the end, not the top of the thread just written into", () => {
+    setup();
+    // Reading A; B is on screen further down and is where the box is bound
+    show([turns(4, "a1"), turns(4, "b2")], "a1");
+    scrolls.length = 0;
+    // A follow-up asked in B: two messages appear and B becomes active
+    show([turns(4, "a1"), turns(6, "b2")], "b2");
+    assert.deepEqual(scrolls.map((s) => s.block), ["end"]);
+  });
+
+  test("but a conversation merely opened still lands at its beginning", () => {
+    setup();
+    show([turns(4, "a1"), turns(4, "b2")], "a1");
+    scrolls.length = 0;
+    show([turns(4, "a1"), turns(4, "b2")], "b2");   // clicked, nothing added
+    assert.deepEqual(scrolls.map((s) => s.block), ["start"]);
+  });
+
+  test("a brand-new conversation lands at its beginning too", () => {
+    setup();
+    show([turns(4, "a1")], "a1");
+    scrolls.length = 0;
+    show([turns(4, "a1"), turns(2, "c3")], "c3");   // a fresh explain
+    assert.deepEqual(scrolls.map((s) => s.block), ["start"]);
+  });
+});

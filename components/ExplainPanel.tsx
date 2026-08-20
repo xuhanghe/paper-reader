@@ -624,13 +624,24 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
   const seenTurns = useRef<Map<string, number>>(new Map());
   const lastActiveId = useRef<string | null>(null);
   useEffect(() => {
-    if (!activeId) return;
+    // Every conversation's length is tracked, not just the active one. The
+    // follow-up box belongs to whichever conversation you are reading, which
+    // is often not the one that was last clicked — and tracking only the
+    // active one made asking in any other look like arriving there for the
+    // first time, which lands at the top of a thread you just wrote into.
+    const before = activeId ? seenTurns.current.get(activeId) : undefined;
+    const counts = new Map<string, number>();
+    for (const a of annotations) counts.set(a.id, a.messages.length);
+    seenTurns.current = counts;
+
+    if (!activeId) {
+      lastActiveId.current = null;
+      return;
+    }
     const card = annotationRefs.current[activeId];
-    const turns = annotations.find((a) => a.id === activeId)?.messages.length ?? 0;
-    const before = seenTurns.current.get(activeId);
+    const turns = counts.get(activeId) ?? 0;
     const switched = lastActiveId.current !== activeId;
     const grew = before !== undefined && turns > before;
-    seenTurns.current.set(activeId, turns);
     lastActiveId.current = activeId;
     // A streaming answer rewrites its message without adding one, so this does
     // not fight the reader for the scrollbar while text arrives
