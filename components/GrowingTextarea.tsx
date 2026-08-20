@@ -10,7 +10,19 @@ import { useRef, useLayoutEffect } from "react";
 // scroll horizontally once the text outruns the width — so a long question hid
 // its own beginning. A textarea wraps, and this keeps its height matched to the
 // content up to a ceiling, after which it scrolls rather than eating the panel.
-const MAX_BOX_HEIGHT = 168;
+//
+// The ceiling is half the window, not a fixed number of pixels. A fixed one is
+// always wrong: 168px is eight lines, and a question long enough to need eight
+// lines is exactly the one you want to reread before sending. Half the window
+// still leaves the paper and the answer visible, and the box shrinks back the
+// moment the text does.
+const MAX_BOX_FRACTION = 0.5;
+const MAX_BOX_FLOOR = 220;
+
+function maxBoxHeight(): number {
+  const viewport = typeof window === "undefined" ? 0 : window.innerHeight;
+  return Math.max(MAX_BOX_FLOOR, Math.round(viewport * MAX_BOX_FRACTION));
+}
 
 // Where the browser can size a textarea to its content itself, let it.
 //
@@ -45,8 +57,9 @@ export function GrowingTextarea({
     // scrollbar it does not need
     const border = el.offsetHeight - el.clientHeight;
     const wanted = el.scrollHeight + border;
-    el.style.height = `${Math.min(wanted, MAX_BOX_HEIGHT)}px`;
-    el.style.overflowY = wanted > MAX_BOX_HEIGHT ? "auto" : "hidden";
+    const ceiling = maxBoxHeight();
+    el.style.height = `${Math.min(wanted, ceiling)}px`;
+    el.style.overflowY = wanted > ceiling ? "auto" : "hidden";
   }, [value]);
   return <textarea ref={ref} rows={1} value={value} className={`pr-autosize ${className ?? ""}`} {...props} />;
 }

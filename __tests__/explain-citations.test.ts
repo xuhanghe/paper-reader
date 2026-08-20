@@ -113,3 +113,49 @@ describe("citations in an answer", () => {
     assert.ok(host.textContent?.includes("why [this](turn:1)?"));
   });
 });
+
+// Going back to where a jump started. The buttons live beside the
+// conversations because that is where most jumps are taken from.
+describe("undoing a jump", () => {
+  let host: HTMLElement;
+  let moves: string[];
+
+  const mount = (canBack: boolean, canForward: boolean) => {
+    moves = [];
+    host = freshRoot();
+    act(() => {
+      createRoot(host).render(
+        createElement(ExplainPanel, {
+          annotations: [thread([{ role: "assistant", content: "an answer" }])],
+          activeId: null, model: "m", streamingIds: new Set<string>(),
+          onFollowUp: () => {}, onAskGeneral: () => {}, onDelete: () => {},
+          onReExplainImage: () => {}, onViewInPdf: () => {},
+          annotationRefs: { current: {} },
+          canGoBack: canBack, canGoForward: canForward,
+          onGoBack: () => moves.push("back"), onGoForward: () => moves.push("forward"),
+          isOpen: true, onToggle: () => {},
+        })
+      );
+    });
+  };
+  const button = (label: string) =>
+    Array.from(host.querySelectorAll("button")).find((b) => b.getAttribute("aria-label") === label);
+
+  test("both controls are offered", () => {
+    mount(true, true);
+    assert.ok(button("Back"));
+    assert.ok(button("Forward"));
+  });
+
+  test("clicking back asks to go back", () => {
+    mount(true, false);
+    act(() => { button("Back")!.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })); });
+    assert.deepEqual(moves, ["back"]);
+  });
+
+  test("with nowhere to go they are disabled rather than misleading", () => {
+    mount(false, false);
+    assert.equal((button("Back") as HTMLButtonElement).disabled, true);
+    assert.equal((button("Forward") as HTMLButtonElement).disabled, true);
+  });
+});

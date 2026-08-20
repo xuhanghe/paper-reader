@@ -78,7 +78,16 @@ type HighlightBand = SelectionRect & { id: string; color: string; underline?: bo
 // A passage that has a conversation attached to it. Drawn as a rule under the
 // line rather than a wash over it, so it reads as a different kind of mark from
 // a Zotero highlight and the two can sit on the same words without muddying.
-export type AskedPassage = { id: string; text: string; pageNumber?: number; label?: string };
+// A passage with something attached to it: one you asked about, or one the
+// model cited in an answer. Drawn the same way, in different colours — the
+// point of marking them at all is knowing which is which at a glance.
+export type AskedPassage = {
+  id: string;
+  text: string;
+  pageNumber?: number;
+  label?: string;
+  kind?: "asked" | "cited";
+};
 
 // Snaps a selection band to the glyphs it covers.
 //
@@ -184,6 +193,10 @@ export type PdfViewerHandle = {
   // Renders pages to JPEG snapshots (for multimodal paper context).
   // Returns [] for page numbers out of range or when no document is loaded.
   renderPageImages?: (pageNumbers: number[], scale?: number) => Promise<{ n: number; dataUrl: string }[]>;
+  // Where the reader is in the document, and how to put them back there —
+  // what "go back to where I came from" needs from this pane
+  getScroll?: () => number;
+  setScroll?: (top: number) => void;
 };
 
 // Built on the official PDF.js viewer component (the same one Overleaf uses):
@@ -279,7 +292,15 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
     clearMarks(layer, "pr-asked");
     for (const a of askedRef.current) {
       if (a.pageNumber && a.pageNumber !== pageNumber) continue;
-      markTextInContainer(layer, a.text, "pr-asked", a.label ? `Asked about: ${a.label}` : "You asked about this — click to open the conversation", { id: a.id });
+      const cited = a.kind === "cited";
+      const title = cited
+        ? a.label
+          ? `Cited in: ${a.label}`
+          : "The model cited this — click to open the answer"
+        : a.label
+          ? `Asked about: ${a.label}`
+          : "You asked about this — click to open the conversation";
+      markTextInContainer(layer, a.text, "pr-asked", title, { id: a.id });
     }
     for (const h of highlightsRef.current) {
       if (h.pageNumber && h.pageNumber !== pageNumber) continue;
@@ -337,7 +358,7 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
         const snapped = canvas && canvasRect ? snapBandToInk(band, canvas, canvasRect) : band;
         bands.push({
           id: a.id,
-          color: "var(--accent)",
+          color: a.kind === "cited" ? "var(--quote)" : "var(--accent)",
           underline: true,
           left: snapped.left - box.left + container.scrollLeft,
           top: snapped.top - box.top + container.scrollTop,
@@ -747,6 +768,8 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
 
   // ── Imperative handle ───────────────────────────────────────────
   useImperativeHandle(ref, () => ({
+    getScroll: () => containerRef.current?.scrollTop ?? 0,
+    setScroll: (top: number) => containerRef.current?.scrollTo({ top, behavior: "smooth" }),
     // Jumps to a passage by searching the page's text layer ourselves. pdf.js's
     // find controller used to do this, but it paints its own per-span highlight
     // — a second, ragged highlight style on top of ours — and its matching
@@ -960,7 +983,7 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
               <div
                 key={`ask-${b.id}-${i}`}
                 className="pr-band pr-asked-rule"
-                style={{ left: b.left, top: b.top + b.height + 1, width: b.width, height: 2 }}
+                style={{ left: b.left, top: b.top + b.height + 1, width: b.width, height: 2, background: b.color }}
               />
             ) : (
               <div

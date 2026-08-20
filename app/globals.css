@@ -178,8 +178,9 @@ select:focus-visible {
    it: a highlight says "this matters", this says "we talked about this", and
    the same words can carry both without either becoming unreadable. */
 .pr-asked-rule {
-  background: var(--accent);
-  opacity: 0.75;
+  /* The colour is set per band: the accent for a passage you asked about, the
+     quote colour for one the model cited */
+  opacity: 0.8;
   border-radius: 1px;
   mix-blend-mode: normal;
 }
@@ -223,7 +224,9 @@ mark.pr-quoted:hover {
    measures instead. */
 .pr-autosize {
   field-sizing: content;
-  max-height: 168px;
+  /* Matches MAX_BOX_FRACTION in GrowingTextarea, for the engines that size the
+     box themselves */
+  max-height: max(220px, 50vh);
 }
 
 /* A reference the model wrote into its own answer. It has to read as part of

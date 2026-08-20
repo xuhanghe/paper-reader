@@ -2,6 +2,7 @@
 import { useRef, useState, useCallback, useEffect, useMemo, useSyncExternalStore } from "react";
 import { extractZoteroItemText } from "@/lib/extract-text";
 import { isStale } from "@/lib/takeaways";
+import { emptyNav, record as recordSpot, back as navBack, forward as navForward, type Spot } from "@/lib/nav-history";
 import dynamic from "next/dynamic";
 import { useSession, sessionIdFor } from "@/hooks/useSession";
 import { MindmapSidebar } from "@/components/MindmapSidebar";
@@ -16,7 +17,8 @@ import { MaterialTabs, MaterialTab } from "@/components/MaterialTabs";
 import { DEFAULT_HIGHLIGHT_COLOR } from "@/lib/highlight-colors";
 import { providerIdFor } from "@/lib/provider-id";
 import { RegionResult } from "@/hooks/useRegionDrag";
-import type { PdfViewerHandle } from "@/components/PdfViewer";
+import type { PdfViewerHandle, AskedPassage } from "@/components/PdfViewer";
+import type { PanelScroll } from "@/components/ExplainPanel";
 
 const PdfViewer = dynamic(() => import("@/components/PdfViewer").then((m) => m.PdfViewer), {
   ssr: false,
@@ -517,17 +519,24 @@ export default function Home() {
   // Passages with a conversation attached, marked in the page itself. Figure
   // captures have no text to mark, and a card whose selection has been cleared
   // has nothing to point at.
-  const askedPassages = useMemo(
+  // Passages the model cited and the reader followed. Marked in their own
+  // colour, and not persisted: this is a trail through a reading session, not
+  // an annotation on the paper.
+  const [citedPassages, setCitedPassages] = useState<AskedPassage[]>([]);
+
+  const askedPassages = useMemo<AskedPassage[]>(
     () =>
       session.annotations
         .filter((a) => a.type === "text" && a.selectedText?.trim())
-        .map((a) => ({
+        .map((a): AskedPassage => ({
           id: a.id,
           text: a.selectedText!,
           pageNumber: a.pageNumber,
           label: a.label,
-        })),
-    [session.annotations]
+          kind: "asked",
+        }))
+        .concat(citedPassages),
+    [session.annotations, citedPassages]
   );
 
   const annotationRefs = useRef<Record<string, HTMLDivElement | null>>({});
@@ -543,7 +552,53 @@ export default function Home() {
 
   // Land on the highlight itself. Text search is only the fallback: it starts
   // at the top of the page and, for CJK, often doesn't match the passage at all.
+  // ── Going back to where a jump started ──────────────────────────────
+  // Every jump in the reader — a citation into the paper, an underlined
+  // passage into a conversation, a quote back to where it was said — is
+  // recorded before it happens, so it can be undone and redone.
+  const panelScroll = useRef<PanelScroll>(null);
+  const [nav, setNav] = useState(emptyNav);
+
+  // Where the reader is right now, in both panes at once
+  const spotNow = useCallback(
+    (): Spot => ({
+      doc: pdfViewerRef.current?.getScroll?.() ?? 0,
+      panel: panelScroll.current?.get() ?? 0,
+      activeId: activeAnnotationId,
+    }),
+    [activeAnnotationId]
+  );
+
+  // Called by every jump, before it moves anything
+  const recordJump = useCallback(() => {
+    const from = spotNow();
+    setNav((state) => recordSpot(state, from));
+  }, [spotNow]);
+
+  const goTo = useCallback((spot: Spot) => {
+    pdfViewerRef.current?.setScroll?.(spot.doc);
+    panelScroll.current?.set(spot.panel);
+    setActiveAnnotationId(spot.activeId);
+  }, []);
+
+  // Moving happens here, not inside the state updater: an updater has to be
+  // pure, and React may run it twice
+  const goBack = useCallback(() => {
+    const step = navBack(nav, spotNow());
+    if (!step) return;
+    goTo(step.to);
+    setNav(step.state);
+  }, [nav, spotNow, goTo]);
+
+  const goForward = useCallback(() => {
+    const step = navForward(nav, spotNow());
+    if (!step) return;
+    goTo(step.to);
+    setNav(step.state);
+  }, [nav, spotNow, goTo]);
+
   const jumpToHighlight = useCallback(async (id: string, page: number | undefined, text: string) => {
+    recordJump();
     const landed = await pdfViewerRef.current?.scrollToHighlight?.(id, page);
     if (!landed && page) pdfViewerRef.current?.highlightText(page, text);
   }, []);
@@ -551,9 +606,14 @@ export default function Home() {
   // Clicking a marked passage in the paper opens its conversation — the mirror
   // of the panel's "view in PDF"
   const openConversation = useCallback((id: string) => {
+    // A cited passage is marked under the id of the answer that cited it,
+    // prefixed so it cannot collide with a conversation's own passage
+    const annotationId = id.startsWith("cited:") ? id.split(":")[1] : id;
+    if (!annotationId || annotationId === "?") return;
+    recordJump();
     setExplainOpen(true);
-    setActiveAnnotationId(id);
-  }, []);
+    setActiveAnnotationId(annotationId);
+  }, [recordJump]);
 
   const handleDelete = useCallback((id: string) => {
     removeAnnotation(id);
@@ -721,11 +781,12 @@ export default function Home() {
 
   const handleViewInPdf = useCallback(
     (annotationId: string) => {
+      recordJump();
       const annotation = session.annotations.find((a) => a.id === annotationId);
       if (!annotation?.selectedText || !annotation.pageNumber) return;
       pdfViewerRef.current?.highlightText(annotation.pageNumber, annotation.selectedText);
     },
-    [session.annotations]
+    [session.annotations, recordJump]
   );
 
   const handleTextSelected = useCallback(
@@ -1425,8 +1486,26 @@ export default function Home() {
           onDelete={handleDelete}
           onReExplainImage={handleReExplainImage}
           onViewInPdf={handleViewInPdf}
-          onCitePaper={(page, quote) => pdfViewerRef.current?.highlightText(page, quote)}
+          onCitePaper={(page: number, quote: string, fromAnnotationId?: string) => {
+            recordJump();
+            // Keep the passage marked once it has been visited, so an answer's
+            // sources stay visible on the page instead of flashing past
+            setCitedPassages((prev) => {
+              if (prev.some((p) => p.text === quote && p.pageNumber === page)) return prev;
+              const label = session.annotations.find((a) => a.id === fromAnnotationId)?.label;
+              return [
+                ...prev,
+                { id: `cited:${fromAnnotationId ?? "?"}:${prev.length}`, text: quote, pageNumber: page, label, kind: "cited" as const },
+              ];
+            });
+            pdfViewerRef.current?.highlightText(page, quote);
+          }}
           annotationRefs={annotationRefs}
+          scrollHandle={panelScroll}
+          canGoBack={nav.back.length > 0}
+          canGoForward={nav.forward.length > 0}
+          onGoBack={goBack}
+          onGoForward={goForward}
           isOpen={explainOpen}
           onToggle={() => setExplainOpen((v) => !v)}
           width={explainWidth}
@@ -1441,7 +1520,7 @@ export default function Home() {
           mindmapError={mindmapError}
           hasPdf={!!session.pdfDataUrl}
           onGenerateMindmap={handleGenerateMindmap}
-          onJumpToSource={(page, quote) => pdfViewerRef.current?.highlightText(page, quote)}
+          onJumpToSource={(page, quote) => { recordJump(); pdfViewerRef.current?.highlightText(page, quote); }}
           onJumpToHighlight={jumpToHighlight}
           onAskAboutNode={handleAskAboutSelection}
           concepts={session.concepts}

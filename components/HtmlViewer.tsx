@@ -223,6 +223,10 @@ export const HtmlViewer = forwardRef<PdfViewerHandle, Props>(function HtmlViewer
   }, [stripOverlays, paintHighlights, toViewport]);
 
   useImperativeHandle(ref, () => ({
+    // Where the reader is in the page — the snapshot scrolls inside its own
+    // document, so this reaches through the frame
+    getScroll: () => iframeRef.current?.contentWindow?.scrollY ?? 0,
+    setScroll: (top: number) => iframeRef.current?.contentWindow?.scrollTo({ top, behavior: "smooth" }),
     // Flash a passage that has no persistent highlight — a mindmap quote, or a
     // highlight whose text no longer matches the snapshot
     highlightText(_pageNumber: number, text: string) {

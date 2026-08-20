@@ -1,5 +1,5 @@
 "use client";
-import { useRef, useEffect, useLayoutEffect, useMemo, useState, memo } from "react";
+import { useRef, useEffect, useLayoutEffect, useMemo, useState, memo, useImperativeHandle } from "react";
 import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Annotation, Model } from "@/types/session";
@@ -23,9 +23,19 @@ type Props = {
   onDelete: (annotationId: string) => void;
   onReExplainImage: (annotationId: string) => void;
   onViewInPdf: (annotationId: string) => void;
-  // Land on a passage the model cited, by page and verbatim text
-  onCitePaper?: (page: number, quote: string) => void;
+  // Land on a passage the model cited, by page and verbatim text. The third
+  // argument is the conversation the citation was written in, so the passage
+  // can be marked on the page as belonging to that answer.
+  onCitePaper?: (page: number, quote: string, fromAnnotationId?: string) => void;
   annotationRefs: React.MutableRefObject<Record<string, HTMLDivElement | null>>;
+  // Filled in with how to read and restore this pane's scroll, for going back
+  // to where a jump started
+  scrollHandle?: React.Ref<PanelScroll>;
+  // Undoing a jump, and redoing it
+  canGoBack?: boolean;
+  canGoForward?: boolean;
+  onGoBack?: () => void;
+  onGoForward?: () => void;
   isOpen: boolean;
   onToggle: () => void;
   width?: number;
@@ -48,6 +58,10 @@ type Props = {
 const citationUrlTransform = (url: string): string =>
   parseCitation(url) ? url : defaultUrlTransform(url);
 
+// How the page reads and restores this pane's scroll, for going back to where
+// a jump started
+export type PanelScroll = { get: () => number; set: (top: number) => void };
+
 type MarkdownComponents = {
   a: (props: { href?: string; children?: React.ReactNode }) => React.ReactElement;
 };
@@ -56,7 +70,7 @@ type MarkdownComponents = {
 // What has to be decided while rendering — whether the target exists at all —
 // arrives as a plain prop, so nothing reads a ref during render.
 type CiteHandlers = {
-  paper?: (page: number, quote: string) => void;
+  paper?: (page: number, quote: string, fromAnnotationId?: string) => void;
   turn?: (turn: number) => void;
 };
 
@@ -114,7 +128,13 @@ function CitationAnchor({
   return (
     <button
       type="button"
-      onClick={() => cite.current.paper?.(citation.page, raw)}
+      onClick={(e) => {
+        // Which conversation this citation was written in — read off the card
+        // rather than threaded through props, which would break the memo that
+        // keeps answers from re-rendering as they stream
+        const card = (e.currentTarget as HTMLElement).closest("[data-annotation-id]") as HTMLElement | null;
+        cite.current.paper?.(citation.page, raw, card?.dataset.annotationId);
+      }}
       className="pr-cite pr-cite-paper"
       title={`Find this passage on page ${citation.page}`}
     >
@@ -212,7 +232,7 @@ const FONT_SIZES = [12, 13, 14, 15, 16, 17, 18, 20];
 const DEFAULT_FONT_IDX = 2; // 14px
 const COLLAPSE_CHARS = 300;
 
-export function ExplainPanel({ annotations, activeId, model, streamingIds, onFollowUp, onStop, onEditMessage, onAskGeneral, onDelete, onReExplainImage, onViewInPdf, onCitePaper, annotationRefs, isOpen, onToggle, width = 460, modelControls }: Props) {
+export function ExplainPanel({ annotations, activeId, model, streamingIds, onFollowUp, onStop, onEditMessage, onAskGeneral, onDelete, onReExplainImage, onViewInPdf, onCitePaper, annotationRefs, scrollHandle, canGoBack, canGoForward, onGoBack, onGoForward, isOpen, onToggle, width = 460, modelControls }: Props) {
   const [followUpText, setFollowUpText] = useState<Record<string, string>>({});
   const [generalQuestion, setGeneralQuestion] = useState("");
   const [composerImage, setComposerImage] = useState<string | null>(null);
@@ -552,6 +572,15 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
     for (const a of annotations) for (const m of a.messages) if (m.turn) turns.push(m.turn);
     return turns.sort((x, y) => x - y).join(",");
   }, [annotations]);
+
+  useImperativeHandle(
+    scrollHandle,
+    () => ({
+      get: () => scrollRef.current?.scrollTop ?? 0,
+      set: (top: number) => scrollRef.current?.scrollTo({ top, behavior: "smooth" }),
+    }),
+    []
+  );
 
   const citeRef = useRef<CiteHandlers>({});
   useEffect(() => {
@@ -976,6 +1005,30 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
         className="btn-icon w-7 h-7 text-base leading-none"
         title="Larger text (Ctrl+scroll)"
       >+</button>
+      {(onGoBack || onGoForward) && (
+        // Undo a jump, and redo it. Kept beside the conversations because that
+        // is where most jumps are taken from, and both panes move together.
+        <span className="inline-flex items-center mr-1">
+          <button
+            onClick={onGoBack}
+            disabled={!canGoBack}
+            className="btn-icon w-6 h-6 text-[11px] disabled:opacity-30"
+            title="Back to where you jumped from"
+            aria-label="Back"
+          >
+            ↰
+          </button>
+          <button
+            onClick={onGoForward}
+            disabled={!canGoForward}
+            className="btn-icon w-6 h-6 text-[11px] disabled:opacity-30"
+            title="Forward again"
+            aria-label="Forward"
+          >
+            ↱
+          </button>
+        </span>
+      )}
       {annotations.length > 1 && (
         <button
           onClick={toggleAll}
@@ -1039,6 +1092,7 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
               key={annotation.id}
               ref={(el) => { annotationRefs.current[annotation.id] = el; }}
               data-conversation={annotation.label}
+              data-annotation-id={annotation.id}
               className="rounded-lg overflow-hidden transition-all pr-fade-up"
               style={{
                 background: "var(--surface)",
