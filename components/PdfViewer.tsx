@@ -8,7 +8,7 @@ import { SelectionPopover } from "./SelectionPopover";
 import { useTextSelection } from "@/hooks/useTextSelection";
 import { useRegionDrag } from "@/hooks/useRegionDrag";
 import { RegionResult } from "@/hooks/useRegionDrag";
-import { markTextInContainer, clearMarks, rangeForText } from "@/lib/highlight-dom";
+import { markTextInContainer, clearMarks, rangeForText, findIgnoringWhitespace } from "@/lib/highlight-dom";
 import { highlightTint, DEFAULT_HIGHLIGHT_COLOR } from "@/lib/highlight-colors";
 import { HighlightPopover } from "./HighlightPopover";
 import type { Highlight } from "@/types/session";
@@ -185,7 +185,12 @@ type Props = {
 export type AnnotationPosition = { pageIndex: number; rects: number[][] };
 
 export type PdfViewerHandle = {
-  highlightText: (pageNumber: number, text: string) => void;
+  // Resolves true when the passage was found and lit up, false when only the
+  // page could be reached — the caller decides what to say about that
+  highlightText: (pageNumber: number, text: string) => boolean | Promise<boolean> | void;
+  // Which page a passage is actually on, read from the document's own text.
+  // A citation whose page number is wrong is still a citation worth following.
+  locateText?: (text: string) => Promise<number | null>;
   // Scrolls a painted highlight into view by id. Resolves false when the mark
   // can't be found, so the caller can fall back to a text search.
   scrollToHighlight?: (id: string, pageNumber?: number) => Promise<boolean>;
@@ -774,10 +779,10 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
     // find controller used to do this, but it paints its own per-span highlight
     // — a second, ragged highlight style on top of ours — and its matching
     // fails on CJK for the same whitespace reasons ours once did.
-    async highlightText(pageNumber: number, text: string) {
+    async highlightText(pageNumber: number, text: string): Promise<boolean> {
       const viewer = viewerRef.current;
       const container = containerRef.current;
-      if (!viewer || !container || !text.trim()) return;
+      if (!viewer || !container || !text.trim()) return false;
       if (pageNumber >= 1 && pageNumber <= viewer.pagesCount) {
         viewer.currentPageNumber = pageNumber;
       }
@@ -800,10 +805,25 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
             });
             flashBands(rects);
           }
-          return;
+          return true;
         }
         await new Promise((resolve) => setTimeout(resolve, 80));
       }
+      return false;
+    },
+
+    // Scans the document's own text rather than the rendered layers: only a
+    // few pages are ever rendered, so anything else would miss.
+    async locateText(text: string): Promise<number | null> {
+      const doc = pdfDocRef.current;
+      if (!doc || !text.trim()) return null;
+      for (let p = 1; p <= doc.numPages; p++) {
+        const page = await doc.getPage(p);
+        const content = await page.getTextContent();
+        const pageText = content.items.map((item) => ("str" in item ? item.str : "")).join(" ");
+        if (findIgnoringWhitespace(pageText, text)) return p;
+      }
+      return null;
     },
 
     // Jumps to the exact passage rather than the top of its page: the painted

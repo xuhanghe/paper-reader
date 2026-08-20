@@ -59,13 +59,21 @@ describe("system prompts", () => {
 describe("citations reach every ask, not just the first", () => {
   test("a follow-up carries the scheme", () => {
     const msg = buildAskMessage({ kind: "followup", question: "why?" });
-    assert.match(msg, /\(paper:N\)/);
+    assert.match(msg, /\(paper:\d+\)/, "with a worked example, not a placeholder");
     assert.match(msg, /\(turn:N\)/);
     assert.ok(msg.startsWith("why?"), "the question still comes first");
   });
 
   test("an explain carries it too", () => {
-    assert.match(buildAskMessage({ kind: "explain", selectedText: "the kernel" }), /\(paper:N\)/);
+    assert.match(buildAskMessage({ kind: "explain", selectedText: "the kernel" }), /\(paper:\d+\)/);
+  });
+
+  test("it says the link text is the quote, and names the way that goes wrong", () => {
+    // The model read "[verbatim excerpt](paper:N)" as the literal text to
+    // write, so the link searched the page for the words "verbatim excerpt"
+    const msg = buildAskMessage({ kind: "followup", question: "why?" });
+    assert.ok(msg.includes("the link text is the quote"));
+    assert.ok(msg.includes("never a description"));
   });
 
   test("an empty follow-up stays empty, so it is still rejected", () => {
@@ -76,7 +84,8 @@ describe("citations reach every ask, not just the first", () => {
 
   test("the bootstrap explains the scheme in full", () => {
     const boot = buildSessionBootstrap({ title: "A paper", agentic: true, paperPath: "/p/paper.md" });
-    assert.match(boot, /\[verbatim excerpt\]\(paper:N\)/);
+    assert.ok(boot.includes("the link text IS the quote"));
+    assert.match(boot, /\(paper:\d+\)/, "shown as a worked example");
     assert.match(boot, /\[turn N\]/);
   });
 });

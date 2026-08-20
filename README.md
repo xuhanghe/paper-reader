@@ -288,9 +288,9 @@ Worth knowing before you rely on them:
   record what they had already generated in their server-side session — so the
   next turn may refer to a passage you never saw.
 - **A citation is only as exact as the model made it.** The link text has to be
-  copied from the paper verbatim to be found on the page; when the model
-  paraphrases it instead, the click still takes you to the cited page, but
-  nothing is highlighted there.
+  copied from the paper verbatim to be found. A wrong page number is survivable
+  — the whole document is searched for the words — but a paraphrase is not, and
+  the reader is told so rather than left on a page with nothing lit up.
 - **Rewriting a question cannot un-ask it.** The CLI providers keep their own
   history server-side and are resumed by session id, so the model still
   remembers the original wording and reads the edit as a correction. The panel

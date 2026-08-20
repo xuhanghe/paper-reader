@@ -779,6 +779,54 @@ export default function Home() {
     }
   }, [session.annotations, session.concepts, session.model, session.mapModel, session.mapEffort, customApi, setTakeaways]);
 
+  // Following a citation the model wrote.
+  //
+  // The link text has to be copied off the page for the passage to be found.
+  // When it is not — the model paraphrased, or labelled the link instead of
+  // quoting into it — the page number alone would land the reader somewhere
+  // near and light nothing up, which reads as the feature being broken. So the
+  // whole document is searched before giving up, and giving up says so.
+  const [citeMiss, setCiteMiss] = useState<string | null>(null);
+
+  const followCitation = useCallback(
+    async (page: number, quote: string, fromAnnotationId?: string) => {
+      setCiteMiss(null);
+      const viewer = pdfViewerRef.current;
+      if (!viewer) return;
+
+      let landedOn: number | null = (await viewer.highlightText(page, quote)) ? page : null;
+      if (landedOn === null) {
+        // The page number may simply be wrong; the words are what matter
+        const found = await viewer.locateText?.(quote);
+        if (found && found !== page && (await viewer.highlightText(found, quote))) landedOn = found;
+      }
+
+      if (landedOn === null) {
+        setCiteMiss("Those exact words aren't in the paper — the model paraphrased its citation.");
+        setTimeout(() => setCiteMiss(null), 6000);
+        return;
+      }
+
+      // Marked only once it has actually been found, so the trail on the page
+      // never contains a passage nobody was shown
+      setCitedPassages((prev) => {
+        if (prev.some((p) => p.text === quote && p.pageNumber === landedOn)) return prev;
+        const label = session.annotations.find((a) => a.id === fromAnnotationId)?.label;
+        return [
+          ...prev,
+          {
+            id: `cited:${fromAnnotationId ?? "?"}:${prev.length}`,
+            text: quote,
+            pageNumber: landedOn ?? undefined,
+            label,
+            kind: "cited" as const,
+          },
+        ];
+      });
+    },
+    [session.annotations]
+  );
+
   const handleViewInPdf = useCallback(
     (annotationId: string) => {
       recordJump();
@@ -1387,6 +1435,20 @@ export default function Home() {
         </div>
       )}
 
+      {/* A citation whose words are not on the page: say so, rather than
+          leaving the reader on the right page wondering what was highlighted */}
+      {citeMiss && (
+        <div
+          className="fixed bottom-5 left-1/2 -translate-x-1/2 z-[60] flex items-center gap-3 px-4 py-2.5 rounded-lg text-xs pr-fade-up"
+          style={{ background: "var(--paper)", border: "1px solid var(--border)", boxShadow: "var(--shadow-modal)", color: "var(--ink-muted)" }}
+          role="status"
+        >
+          <span style={{ color: "var(--quote)" }}>❝</span>
+          <span className="max-w-[420px]">{citeMiss}</span>
+          <button onClick={() => setCiteMiss(null)} className="btn-icon w-5 h-5 leading-none">✕</button>
+        </div>
+      )}
+
       {customApiModalOpen && (
         <CustomApiModal
           initial={customApi}
@@ -1488,17 +1550,7 @@ export default function Home() {
           onViewInPdf={handleViewInPdf}
           onCitePaper={(page: number, quote: string, fromAnnotationId?: string) => {
             recordJump();
-            // Keep the passage marked once it has been visited, so an answer's
-            // sources stay visible on the page instead of flashing past
-            setCitedPassages((prev) => {
-              if (prev.some((p) => p.text === quote && p.pageNumber === page)) return prev;
-              const label = session.annotations.find((a) => a.id === fromAnnotationId)?.label;
-              return [
-                ...prev,
-                { id: `cited:${fromAnnotationId ?? "?"}:${prev.length}`, text: quote, pageNumber: page, label, kind: "cited" as const },
-              ];
-            });
-            pdfViewerRef.current?.highlightText(page, quote);
+            void followCitation(page, quote, fromAnnotationId);
           }}
           annotationRefs={annotationRefs}
           scrollHandle={panelScroll}

@@ -229,17 +229,18 @@ export const HtmlViewer = forwardRef<PdfViewerHandle, Props>(function HtmlViewer
     setScroll: (top: number) => iframeRef.current?.contentWindow?.scrollTo({ top, behavior: "smooth" }),
     // Flash a passage that has no persistent highlight — a mindmap quote, or a
     // highlight whose text no longer matches the snapshot
-    highlightText(_pageNumber: number, text: string) {
+    highlightText(_pageNumber: number, text: string): boolean {
       const body = iframeRef.current?.contentDocument?.body;
-      if (!body) return;
+      if (!body) return false;
       clearMarks(body, "pr-temp-flash");
       const range = rangeForText(body, text);
       if (!range) {
         const win = iframeRef.current?.contentWindow;
-        (win as (Window & { find?: (...args: unknown[]) => boolean }) | null)?.find?.(
-          text, false, false, true, false, false, false
+        return (
+          (win as (Window & { find?: (...args: unknown[]) => boolean }) | null)?.find?.(
+            text, false, false, true, false, false, false
+          ) ?? false
         );
-        return;
       }
       (range.startContainer.parentElement ?? body).scrollIntoView({ behavior: "smooth", block: "center" });
       markTextInContainer(body, text, "pr-temp-flash");
@@ -247,6 +248,7 @@ export const HtmlViewer = forwardRef<PdfViewerHandle, Props>(function HtmlViewer
         const stillThere = iframeRef.current?.contentDocument?.body;
         if (stillThere) clearMarks(stillThere, "pr-temp-flash");
       }, FLASH_MS);
+      return true;
     },
     async scrollToHighlight(id: string) {
       const doc = iframeRef.current?.contentDocument;
