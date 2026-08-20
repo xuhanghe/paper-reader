@@ -1,6 +1,7 @@
 "use client";
 import { useRef, useState, useCallback, useEffect, useMemo, useSyncExternalStore } from "react";
 import { extractZoteroItemText } from "@/lib/extract-text";
+import { isStale } from "@/lib/takeaways";
 import dynamic from "next/dynamic";
 import { useSession, sessionIdFor } from "@/hooks/useSession";
 import { MindmapSidebar } from "@/components/MindmapSidebar";
@@ -217,6 +218,8 @@ export default function Home() {
     appendMessage,
     updateLastAssistantMessage,
     markTurn,
+    setTakeaways,
+    editTakeaways,
     replaceMessageFrom,
     saveSession,
     loadSession,
@@ -661,6 +664,60 @@ export default function Home() {
     },
     [session.model, session.effort, session.pdfName, session.providerSessions, paperId, customApi, updateLastAssistantMessage, setProviderSession, markTurn]
   );
+
+  // Summarising a conversation into its takeaways. Runs when the Concepts tab
+  // is opened rather than after every answer: it is a separate model call, and
+  // most answers are never looked up again.
+  const [summarizing, setSummarizing] = useState<Set<string>>(new Set());
+  const summarizeQueue = useRef(false);
+
+  const refreshTakeaways = useCallback(async (only?: string) => {
+    // One pass at a time — a paper with a dozen conversations should not open
+    // a dozen model calls the moment a tab is clicked
+    if (summarizeQueue.current) return;
+    const stale = session.annotations.filter((a) => {
+      if (only && a.id !== only) return false;
+      if (!a.messages.some((m) => m.role === "assistant" && m.content.trim())) return false;
+      const concept = session.concepts.find((c) => c.annotationId === a.id);
+      // Asked for by name, it is regenerated whatever its state; on the
+      // automatic pass, a list someone has edited is left alone
+      if (only) return true;
+      if (concept?.edited) return false;
+      return isStale(concept?.summarizedTurns, a.messages.length);
+    });
+    if (stale.length === 0) return;
+
+    summarizeQueue.current = true;
+    try {
+      for (const annotation of stale) {
+        setSummarizing((s) => new Set(s).add(annotation.id));
+        try {
+          const res = await fetch("/api/takeaways", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              label: annotation.label,
+              messages: annotation.messages.map((m) => ({ role: m.role, content: m.content })),
+              model: session.mapModel || session.model,
+              effort: session.mapEffort || "low",
+              custom: (session.mapModel || session.model) === "custom" ? customApi : undefined,
+            }),
+          });
+          const data = await res.json();
+          if (res.ok && Array.isArray(data.takeaways) && data.takeaways.length > 0) {
+            setTakeaways(annotation.id, data.takeaways, annotation.messages.length);
+          }
+        } catch {
+          // A conversation that will not summarise keeps its label; the tab
+          // stays usable rather than failing as a whole
+        } finally {
+          setSummarizing((s) => { const next = new Set(s); next.delete(annotation.id); return next; });
+        }
+      }
+    } finally {
+      summarizeQueue.current = false;
+    }
+  }, [session.annotations, session.concepts, session.model, session.mapModel, session.mapEffort, customApi, setTakeaways]);
 
   const handleViewInPdf = useCallback(
     (annotationId: string) => {
@@ -1389,6 +1446,10 @@ export default function Home() {
           onAskAboutNode={handleAskAboutSelection}
           concepts={session.concepts}
           onSelectConcept={(id) => setActiveAnnotationId(id)}
+          summarizingIds={summarizing}
+          onConceptsShown={refreshTakeaways}
+          onResummarize={(id: string) => refreshTakeaways(id)}
+          onEditTakeaways={editTakeaways}
           highlights={session.highlights || []}
           onRemoveHighlight={handleRemoveHighlight}
           onEditNote={handleEditNote}

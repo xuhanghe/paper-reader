@@ -220,6 +220,34 @@ Paper text (extracted from PDF, may be noisy):
 ${paperText}`;
 }
 
+// ── What a conversation established ──────────────────────────────────
+// The Concepts list is a reading aid, not a transcript: it holds the answers,
+// not the questions. Short enough that a whole paper's worth can be read at a
+// glance, and written in the language the conversation happened in.
+
+export const TAKEAWAYS_HEADER = `Summarise what this conversation established, as notes for someone re-reading the paper later.
+
+Rules:
+- Output ONLY a JSON array of strings. No markdown fences, no commentary, no keys.
+- 2 to 4 items, fewer if the conversation only settled one thing.
+- Each item is at most 14 words and states the finding itself, not the topic: "padding breaks the power-of-two stride, so banks stop colliding", never "discussed bank conflicts" or "the user asked about padding".
+- No numbering, no bullet characters, no trailing full stop.
+- Leave out anything the conversation did not actually settle.`;
+
+export function buildTakeawaysPrompt(label: string, history: HistoryMessage[]): string {
+  // The conversation's own language, judged from the answers — they are longer
+  // than the questions and are what the takeaways are drawn from
+  const answers = history.filter((m) => m.role === "assistant").map((m) => m.content).join("\n");
+  const language = dominantLanguage(answers) ?? inputLanguage(answers);
+  const languageNote = language ? `\n- Write the items in ${language}, the language of the conversation.` : "";
+
+  return `${TAKEAWAYS_HEADER}${languageNote}
+
+The conversation began from: ${label}
+
+${formatHistory(history)}`;
+}
+
 function formatHistory(history: HistoryMessage[]): string {
   return history
     .map((m) => `${m.role === "assistant" ? "explainer" : "me"}: ${m.content.trim()}`)

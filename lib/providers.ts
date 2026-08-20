@@ -1,5 +1,6 @@
 import { spawn } from "child_process";
-import { sanitizeSpawnArg } from "./model-flags";
+import { sanitizeSpawnArg, effortArgs } from "./model-flags";
+import { claudeBin } from "./bin";
 import { codexMcpArgs } from "./mcp-config";
 import { ensureServer } from "./opencode-server";
 import { providerIdFor } from "./provider-id";
@@ -53,6 +54,58 @@ export function streamResponse(stream: ReadableStream): Response {
   return new Response(stream, {
     headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", "X-Accel-Buffering": "no" },
   });
+}
+
+// ── One-shot completions ────────────────────────────────────────────
+// For the things that are not a conversation: the paper map, a conversation's
+// takeaways. No session, no streaming, no resume — ask once, read the answer.
+
+export async function claudeComplete(prompt: string, opts?: { model?: string; effort?: unknown }): Promise<string> {
+  const model = typeof opts?.model === "string" && opts.model.startsWith("claude") ? opts.model : "claude-sonnet-4-6";
+  return new Promise((resolve, reject) => {
+    const proc = spawn(claudeBin(), [
+      "-p", sanitizeSpawnArg(prompt),
+      "--model", model,
+      ...effortArgs(opts?.effort),
+      "--output-format", "json",
+      "--dangerously-skip-permissions",
+    ]);
+    proc.stdin.end();
+    let out = "";
+    proc.stdout.on("data", (c: Buffer) => { out += c.toString(); });
+    proc.stderr.on("data", (d: Buffer) => console.error("[claude stderr]", d.toString().slice(0, 400)));
+    proc.on("error", reject);
+    proc.on("close", (code) => {
+      if (code !== 0) return reject(new Error(`claude exited with ${code}`));
+      try {
+        const envelope = JSON.parse(out);
+        resolve(typeof envelope.result === "string" ? envelope.result : "");
+      } catch {
+        reject(new Error("could not parse the claude envelope"));
+      }
+    });
+  });
+}
+
+// Whichever provider the reader picked, asked once and answered in full
+export async function completeWith(
+  model: unknown,
+  prompt: string,
+  opts?: { effort?: unknown; custom?: unknown }
+): Promise<string> {
+  switch (resolveProvider(model)) {
+    case "codex":
+      return codexComplete(prompt, opts?.effort);
+    case "opencode":
+      return opencodeComplete(prompt, opts?.effort);
+    case "custom": {
+      const cfg = parseCustomConfig(opts?.custom);
+      if (!cfg) throw new Error("custom API is not configured");
+      return customComplete(cfg, [{ role: "user", content: prompt }]);
+    }
+    default:
+      return claudeComplete(prompt, { model: typeof model === "string" ? model : undefined, effort: opts?.effort });
+  }
 }
 
 // ── Codex CLI ───────────────────────────────────────────────────────

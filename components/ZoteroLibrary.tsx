@@ -1,6 +1,7 @@
 "use client";
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { DocType } from "@/types/session";
+import { GrowingTextarea } from "./GrowingTextarea";
 
 // Device-level preference for how root collections are arranged
 const ORDER_KEY = "paper-reader:collection-order";
@@ -470,12 +471,13 @@ export function ZoteroLibrary({ onDocumentLoaded, activeDocName, isOpen, onToggl
           >
             ⌕
           </span>
-          <input
-            type="text"
+          <GrowingTextarea
             value={query}
             placeholder="Search papers…"
             onChange={(e) => handleSearch(e.target.value)}
-            className="w-full text-xs pl-7 pr-2.5 py-1.5 rounded-md focus:outline-none transition-colors"
+            // A query is one line; Enter must not put a newline in it
+            onKeyDown={(e) => { if (e.key === "Enter") e.preventDefault(); }}
+            className="w-full text-xs pl-7 pr-2.5 py-1.5 rounded-md focus:outline-none transition-colors resize-none"
             style={{ border: "1px solid var(--border)", background: "var(--paper)", color: "var(--ink)" }}
             onFocus={(e) => (e.currentTarget.style.borderColor = "var(--accent)")}
             onBlur={(e) => (e.currentTarget.style.borderColor = "var(--border)")}

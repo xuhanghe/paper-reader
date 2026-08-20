@@ -314,6 +314,24 @@ export function useSession() {
     }));
   }, []);
 
+  const setTakeaways = useCallback((annotationId: string, takeaways: string[], summarizedTurns: number) => {
+    setSession((s) => ({
+      ...s,
+      concepts: s.concepts.map((c) =>
+        c.annotationId === annotationId ? { ...c, takeaways, summarizedTurns } : c
+      ),
+    }));
+  }, []);
+
+  const editTakeaways = useCallback((annotationId: string, takeaways: string[]) => {
+    setSession((s) => ({
+      ...s,
+      concepts: s.concepts.map((c) =>
+        c.annotationId === annotationId ? { ...c, takeaways, edited: true } : c
+      ),
+    }));
+  }, []);
+
   const setAnnotationSessionId = useCallback((annotationId: string, sessionId: string) => {
     setSession((s) => ({
       ...s,
@@ -380,6 +398,8 @@ export function useSession() {
     appendMessage,
     updateLastAssistantMessage,
     markTurn,
+    setTakeaways,
+    editTakeaways,
     replaceMessageFrom,
     saveSession,
     loadSession,

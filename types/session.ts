@@ -26,6 +26,15 @@ export type ConceptEntry = {
   annotationId: string;
   label: string;
   type: AnnotationType;
+  // What the conversation established, a few lines at most. Absent until it
+  // has been summarised — the label alone says where you asked something, not
+  // what you learned.
+  takeaways?: string[];
+  // How many messages the summary covers, so it can tell when it is out of date
+  summarizedTurns?: number;
+  // Touched by hand. The automatic pass then leaves it alone — a summary
+  // rewriting someone's own notes is worse than a stale one.
+  edited?: boolean;
 };
 
 // "claude-*" ids run via the claude CLI; "codex" via the codex CLI;

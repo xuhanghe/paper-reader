@@ -2,6 +2,7 @@
 import { useState } from "react";
 import { HIGHLIGHT_COLORS } from "@/lib/highlight-colors";
 import { isSubmitKey } from "@/lib/keys";
+import { GrowingTextarea } from "./GrowingTextarea";
 
 type Props = {
   rect: DOMRect;
@@ -82,18 +83,17 @@ export function HighlightPopover({ rect, color, note, onRecolor, onEditNote, onR
         </button>
       </div>
       {editing ? (
-        <div className="flex items-center gap-1.5 mt-1.5">
-          <input
-            type="text"
+        <div className="flex items-end gap-1.5 mt-1.5">
+          <GrowingTextarea
             autoFocus
             value={draft}
             placeholder="Write a note — empty clears it"
             onChange={(e) => setDraft(e.target.value)}
             onKeyDown={(e) => {
-              if (isSubmitKey(e)) saveNote();
+              if (isSubmitKey(e)) { e.preventDefault(); saveNote(); }
               if (e.key === "Escape") setEditing(false);
             }}
-            className="flex-1 min-w-[220px] text-xs px-2 py-1 rounded focus:outline-none"
+            className="flex-1 min-w-[220px] text-xs px-2 py-1 rounded focus:outline-none resize-none"
             style={{ border: "1px solid var(--accent)", background: "var(--paper)", color: "var(--ink)" }}
           />
           <button onClick={saveNote} className="btn-primary text-xs px-2.5 py-1 shrink-0">Save</button>

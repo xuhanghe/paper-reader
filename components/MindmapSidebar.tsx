@@ -2,6 +2,7 @@
 import { useState, useRef, useEffect } from "react";
 import { Mindmap, MindmapNode, ConceptEntry, Highlight } from "@/types/session";
 import { isSubmitKey } from "@/lib/keys";
+import { GrowingTextarea } from "./GrowingTextarea";
 
 // How long a note entry stays lit after jumping to it from the paper
 const ENTRY_FLASH_MS = 1600;
@@ -20,6 +21,16 @@ type Props = {
   onJumpToHighlight: (id: string, page: number | undefined, text: string) => void;
   onAskAboutNode: (text: string, question: string, page?: number) => void;
   concepts: ConceptEntry[];
+  // Conversations whose summary is being written right now
+  summarizingIds?: Set<string>;
+  // Called when the Concepts tab comes into view, so summaries are written
+  // on demand rather than after every answer
+  onConceptsShown?: () => void;
+  onResummarize?: (annotationId: string) => void;
+  // The list is notes as much as it is a summary: the reader can rewrite a
+  // line, add one, or drop one, and an edited list is left alone by the
+  // automatic pass afterwards
+  onEditTakeaways?: (annotationId: string, takeaways: string[]) => void;
   onSelectConcept: (annotationId: string) => void;
   highlights: Highlight[];
   onRemoveHighlight: (id: string) => void;
@@ -50,18 +61,17 @@ function nodeContext(node: MindmapNode): string {
 function NoteBox({ initial, onSave, onCancel }: { initial: string; onSave: (note: string) => void; onCancel: () => void }) {
   const [draft, setDraft] = useState(initial);
   return (
-    <div className="flex items-center gap-1 mt-1.5" onClick={(e) => e.stopPropagation()}>
-      <input
-        type="text"
+    <div className="flex items-end gap-1 mt-1.5" onClick={(e) => e.stopPropagation()}>
+      <GrowingTextarea
         autoFocus
         value={draft}
         placeholder="Write a note — empty clears it"
         onChange={(e) => setDraft(e.target.value)}
         onKeyDown={(e) => {
-          if (isSubmitKey(e)) onSave(draft.trim());
+          if (isSubmitKey(e)) { e.preventDefault(); onSave(draft.trim()); }
           if (e.key === "Escape") onCancel();
         }}
-        className="flex-1 min-w-0 text-[11px] px-2 py-1 rounded focus:outline-none"
+        className="flex-1 min-w-0 text-[11px] px-2 py-1 rounded focus:outline-none resize-none"
         style={{ border: "1px solid var(--accent)", background: "var(--paper)", color: "var(--ink)" }}
       />
       <button onClick={() => onSave(draft.trim())} className="btn-primary text-[11px] px-2 py-1 shrink-0">
@@ -71,24 +81,177 @@ function NoteBox({ initial, onSave, onCancel }: { initial: string; onSave: (note
   );
 }
 
+// One conversation in the Concepts list: what it established, and whatever the
+// reader has since made of that.
+//
+// These are notes, not just output — a line can be rewritten, dropped, or added
+// by hand. Once that happens the automatic pass leaves the list alone; only an
+// explicit ↻ overwrites work someone did themselves.
+function ConceptCard({
+  concept,
+  busy,
+  onSelect,
+  onResummarize,
+  onEdit,
+}: {
+  concept: ConceptEntry;
+  busy: boolean;
+  onSelect: () => void;
+  onResummarize?: () => void;
+  onEdit?: (takeaways: string[]) => void;
+}) {
+  const lines = concept.takeaways ?? [];
+  // -1 is the line being added; null is not editing at all
+  const [editingAt, setEditingAt] = useState<number | null>(null);
+  const [draft, setDraft] = useState("");
+
+  const startEdit = (i: number) => { setEditingAt(i); setDraft(lines[i]); };
+  const startAdd = () => { setEditingAt(-1); setDraft(""); };
+  const commit = () => {
+    const text = draft.replace(/\s+/g, " ").trim();
+    if (!onEdit) return setEditingAt(null);
+    if (editingAt === -1) {
+      if (text) onEdit([...lines, text]);
+    } else if (editingAt !== null) {
+      // An emptied line is a deleted line — the same gesture, one fewer button
+      onEdit(text ? lines.map((l, i) => (i === editingAt ? text : l)) : lines.filter((_, i) => i !== editingAt));
+    }
+    setEditingAt(null);
+  };
+  const remove = (i: number) => onEdit?.(lines.filter((_, x) => x !== i));
+
+  const editor = (
+    <div className="flex items-end gap-1 mt-1" onClick={(e) => e.stopPropagation()}>
+      <GrowingTextarea
+        autoFocus
+        value={draft}
+        placeholder={editingAt === -1 ? "Add a note…" : "Empty to remove this line"}
+        onChange={(e) => setDraft(e.target.value)}
+        onKeyDown={(e) => {
+          if (isSubmitKey(e)) { e.preventDefault(); commit(); }
+          if (e.key === "Escape") setEditingAt(null);
+        }}
+        className="flex-1 min-w-0 text-xs px-2 py-1 rounded focus:outline-none resize-none"
+        style={{ border: "1px solid var(--accent)", background: "var(--paper)", color: "var(--ink)" }}
+      />
+      <button onClick={commit} className="btn-primary text-[11px] px-2 py-1 shrink-0">Save</button>
+    </div>
+  );
+
+  return (
+    <div
+      className="rounded px-2 py-1.5 transition-colors group/concept"
+      style={{ background: "rgba(230,237,243,0.03)", border: "1px solid var(--border-light)" }}
+    >
+      <div className="flex items-start gap-1.5">
+        <span
+          className="shrink-0 mt-0.5 rounded px-1 py-0.5 text-[10px] font-medium"
+          style={
+            concept.type === "image"
+              ? { background: "var(--badge-fig-bg)", color: "var(--badge-fig-fg)" }
+              : { background: "var(--badge-text-bg)", color: "var(--badge-text-fg)" }
+          }
+        >
+          {concept.type === "image" ? "Fig" : "Txt"}
+        </span>
+        <button
+          onClick={onSelect}
+          className="min-w-0 flex-1 text-left text-[11px] leading-tight truncate transition-opacity hover:opacity-70"
+          style={{ color: "var(--ink-faint)" }}
+          title={`Open this conversation\n\n${concept.label}`}
+        >
+          {concept.label}
+        </button>
+        {concept.edited && (
+          <span className="shrink-0 text-[10px] mt-0.5" style={{ color: "var(--ink-faint)" }} title="Edited by you — the automatic summary leaves it alone">
+            ✎
+          </span>
+        )}
+        {onResummarize && (
+          <button
+            onClick={onResummarize}
+            disabled={busy}
+            className="btn-icon shrink-0 w-5 h-5 text-[10px] opacity-0 group-hover/concept:opacity-100 focus:opacity-100 transition-opacity"
+            title={concept.edited ? "Summarise again — this replaces your edits" : "Summarise this conversation again"}
+            aria-label="Summarise again"
+          >
+            ↻
+          </button>
+        )}
+      </div>
+
+      {busy && lines.length === 0 ? (
+        <p className="text-[11px] mt-1 pl-1" style={{ color: "var(--ink-faint)" }}>summarising…</p>
+      ) : lines.length > 0 ? (
+        <ul className="mt-1 space-y-0.5">
+          {lines.map((line, i) =>
+            editingAt === i ? (
+              <li key={i}>{editor}</li>
+            ) : (
+              <li key={i} className="group/line flex gap-1.5 text-xs leading-snug" style={{ color: "var(--ink-muted)" }}>
+                <span className="shrink-0 select-none" style={{ color: "var(--accent)" }}>·</span>
+                {onEdit ? (
+                  <button
+                    onClick={() => startEdit(i)}
+                    className="min-w-0 flex-1 text-left break-words hover:opacity-70"
+                    title="Edit this note"
+                  >
+                    {line}
+                  </button>
+                ) : (
+                  <span className="min-w-0 flex-1 break-words">{line}</span>
+                )}
+                {onEdit && (
+                  <button
+                    onClick={() => remove(i)}
+                    className="shrink-0 text-[10px] opacity-0 group-hover/line:opacity-100 focus:opacity-100 transition-opacity"
+                    style={{ color: "var(--ink-faint)" }}
+                    title="Remove this line"
+                    aria-label="Remove note line"
+                  >
+                    ✕
+                  </button>
+                )}
+              </li>
+            )
+          )}
+        </ul>
+      ) : editingAt === null ? (
+        <p className="text-[11px] mt-1 pl-1" style={{ color: "var(--ink-faint)" }}>not summarised yet</p>
+      ) : null}
+
+      {editingAt === -1 && editor}
+      {onEdit && editingAt === null && (
+        <button
+          onClick={startAdd}
+          className="mt-1 text-[10px] opacity-0 group-hover/concept:opacity-100 focus:opacity-100 transition-opacity"
+          style={{ color: "var(--accent)" }}
+        >
+          + note
+        </button>
+      )}
+    </div>
+  );
+}
+
 function AskBox({ node, onAsk, onClose }: { node: MindmapNode; onAsk: Props["onAskAboutNode"]; onClose: () => void }) {
   const [question, setQuestion] = useState("");
   return (
-    <div className="flex items-center gap-1 px-1 pb-1.5" onClick={(e) => e.stopPropagation()}>
-      <input
-        type="text"
+    <div className="flex items-end gap-1 px-1 pb-1.5" onClick={(e) => e.stopPropagation()}>
+      <GrowingTextarea
         autoFocus
         value={question}
         placeholder={`Ask about “${node.label}”…`}
         onChange={(e) => setQuestion(e.target.value)}
         onKeyDown={(e) => {
           if (isSubmitKey(e) && question.trim()) {
+            e.preventDefault();
             onAsk(nodeContext(node), question.trim(), node.page);
             onClose();
           }
           if (e.key === "Escape") onClose();
         }}
-        className="flex-1 min-w-0 text-[11px] px-2 py-1 rounded focus:outline-none"
+        className="flex-1 min-w-0 text-[11px] px-2 py-1 rounded focus:outline-none resize-none"
         style={{ border: "1px solid var(--accent)", background: "var(--paper)", color: "var(--ink)" }}
       />
       <button
@@ -221,6 +384,10 @@ export function MindmapSidebar({
   onJumpToHighlight,
   onAskAboutNode,
   concepts,
+  summarizingIds,
+  onConceptsShown,
+  onResummarize,
+  onEditTakeaways,
   onSelectConcept,
   highlights,
   onRemoveHighlight,
@@ -253,6 +420,12 @@ export function MindmapSidebar({
   };
 
   const [tab, setTab] = useState<Tab>("map");
+
+  // Summaries are written when the list is looked at, not after every answer
+  useEffect(() => {
+    if (tab === "concepts") onConceptsShown?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab]);
 
   // Clicking a highlight in the paper brings its note entry into view: switch
   // to the Notes tab, wait for it to render, then scroll the entry in and
@@ -464,21 +637,21 @@ export function MindmapSidebar({
                       </button>
                     </div>
                     {askingHighlightId === askId && (
-                      <div className="flex items-center gap-1 mt-1.5">
-                        <input
-                          type="text"
+                      <div className="flex items-end gap-1 mt-1.5">
+                        <GrowingTextarea
                           autoFocus
                           value={highlightQuestion}
                           placeholder="Ask about this note…"
                           onChange={(e) => setHighlightQuestion(e.target.value)}
                           onKeyDown={(e) => {
                             if (isSubmitKey(e) && highlightQuestion.trim()) {
+                              e.preventDefault();
                               onAskAboutNode(`My Zotero note on this paper: ${plain.slice(0, 800)}`, highlightQuestion.trim());
                               setAskingHighlightId(null);
                             }
                             if (e.key === "Escape") setAskingHighlightId(null);
                           }}
-                          className="flex-1 min-w-0 text-[11px] px-2 py-1 rounded focus:outline-none"
+                          className="flex-1 min-w-0 text-[11px] px-2 py-1 rounded focus:outline-none resize-none"
                           style={{ border: "1px solid var(--accent)", background: "var(--paper)", color: "var(--ink)" }}
                         />
                         <button
@@ -577,21 +750,21 @@ export function MindmapSidebar({
                     />
                   )}
                   {askingHighlightId === `za:${a.key}` && (
-                    <div className="flex items-center gap-1 mt-1.5">
-                      <input
-                        type="text"
+                    <div className="flex items-end gap-1 mt-1.5">
+                      <GrowingTextarea
                         autoFocus
                         value={highlightQuestion}
                         placeholder="Ask about this passage…"
                         onChange={(e) => setHighlightQuestion(e.target.value)}
                         onKeyDown={(e) => {
                           if (isSubmitKey(e) && highlightQuestion.trim()) {
+                            e.preventDefault();
                             onAskAboutNode(a.comment ? `${a.text}\n\nMy Zotero annotation: ${a.comment}` : a.text, highlightQuestion.trim(), a.page);
                             setAskingHighlightId(null);
                           }
                           if (e.key === "Escape") setAskingHighlightId(null);
                         }}
-                        className="flex-1 min-w-0 text-[11px] px-2 py-1 rounded focus:outline-none"
+                        className="flex-1 min-w-0 text-[11px] px-2 py-1 rounded focus:outline-none resize-none"
                         style={{ border: "1px solid var(--accent)", background: "var(--paper)", color: "var(--ink)" }}
                       />
                       <button
@@ -688,21 +861,21 @@ export function MindmapSidebar({
                 />
               )}
               {askingHighlightId === h.id && (
-                <div className="flex items-center gap-1 mt-1.5">
-                  <input
-                    type="text"
+                <div className="flex items-end gap-1 mt-1.5">
+                  <GrowingTextarea
                     autoFocus
                     value={highlightQuestion}
                     placeholder="Ask about this passage…"
                     onChange={(e) => setHighlightQuestion(e.target.value)}
                     onKeyDown={(e) => {
                       if (isSubmitKey(e) && highlightQuestion.trim()) {
+                        e.preventDefault();
                         onAskAboutNode(h.note ? `${h.text}\n\nMy note: ${h.note}` : h.text, highlightQuestion.trim(), h.pageNumber);
                         setAskingHighlightId(null);
                       }
                       if (e.key === "Escape") setAskingHighlightId(null);
                     }}
-                    className="flex-1 min-w-0 text-[11px] px-2 py-1 rounded focus:outline-none"
+                    className="flex-1 min-w-0 text-[11px] px-2 py-1 rounded focus:outline-none resize-none"
                     style={{ border: "1px solid var(--accent)", background: "var(--paper)", color: "var(--ink)" }}
                   />
                   <button
@@ -723,44 +896,27 @@ export function MindmapSidebar({
         </div>
       )}
 
-      {/* Concepts tab */}
+      {/* Concepts tab — what each conversation established, and your own notes on it */}
       {tab === "concepts" && (
-        <div className="flex-1 overflow-y-auto p-2 space-y-0.5">
+        <div className="flex-1 overflow-y-auto p-2 space-y-1.5">
           {concepts.length === 0 && (
             <p className="text-xs text-center mt-4 px-2" style={{ color: "var(--ink-faint)" }}>
-              Explained concepts will appear here
+              What you work out in the Explain panel is summarised here
             </p>
           )}
           {concepts.map((c) => (
-            <button
+            <ConceptCard
               key={c.annotationId}
-              onClick={() => onSelectConcept(c.annotationId)}
-              className="w-full text-left text-xs rounded px-2 py-1.5 transition-colors flex items-start gap-1.5"
-              style={{ color: "var(--ink-muted)" }}
-              onMouseEnter={(e) => {
-                (e.currentTarget as HTMLButtonElement).style.background = "rgba(230,237,243,0.07)";
-                (e.currentTarget as HTMLButtonElement).style.color = "var(--ink)";
-              }}
-              onMouseLeave={(e) => {
-                (e.currentTarget as HTMLButtonElement).style.background = "transparent";
-                (e.currentTarget as HTMLButtonElement).style.color = "var(--ink-muted)";
-              }}
-            >
-              <span
-                className="shrink-0 mt-0.5 rounded px-1 py-0.5 text-[10px] font-medium"
-                style={
-                  c.type === "image"
-                    ? { background: "var(--badge-fig-bg)", color: "var(--badge-fig-fg)" }
-                    : { background: "var(--badge-text-bg)", color: "var(--badge-text-fg)" }
-                }
-              >
-                {c.type === "image" ? "Fig" : "Txt"}
-              </span>
-              <span className="leading-tight break-words">{c.label}</span>
-            </button>
+              concept={c}
+              busy={summarizingIds?.has(c.annotationId) ?? false}
+              onSelect={() => onSelectConcept(c.annotationId)}
+              onResummarize={onResummarize ? () => onResummarize(c.annotationId) : undefined}
+              onEdit={onEditTakeaways ? (lines) => onEditTakeaways(c.annotationId, lines) : undefined}
+            />
           ))}
         </div>
       )}
+
     </div>
   );
 }

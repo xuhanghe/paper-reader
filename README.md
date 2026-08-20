@@ -80,6 +80,12 @@ builds on something already settled it links that instead of repeating it, and
 clicking goes back to the question it means. A pointer that resolves to nothing
 is rendered as plain words rather than a link that goes nowhere.
 
+**Concepts you can write in.** The Concepts tab holds what each conversation
+actually established — a few lines per conversation, written by the model when
+you open the tab rather than after every answer. They are notes, not output:
+rewrite a line, add one, empty one to drop it. Once you have edited a list the
+automatic pass leaves it alone, and only an explicit ↻ replaces your words.
+
 **A map of the paper.** A generated outline grounded in verbatim quotes, each of
 which jumps to its passage. Alongside it, a notes column listing every highlight
 and Zotero note: click one to land on the passage itself — not the top of its
@@ -221,6 +227,7 @@ app/
   api/sessions/         per-paper state
   api/paper/            text extraction and page snapshots
   api/mindmap/          paper map generation
+  api/takeaways/        one conversation, summarised
   api/fetch-page/       reading a URL
 components/
   PdfViewer.tsx         pdf.js viewer, ink-snapped bands, region capture

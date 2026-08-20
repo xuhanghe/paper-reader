@@ -2,6 +2,7 @@
 import { useState } from "react";
 import { HIGHLIGHT_COLORS, DEFAULT_HIGHLIGHT_COLOR } from "@/lib/highlight-colors";
 import { isSubmitKey } from "@/lib/keys";
+import { GrowingTextarea } from "./GrowingTextarea";
 
 type Props = {
   rect: DOMRect;
@@ -112,18 +113,17 @@ export function SelectionPopover({ rect, selectedText, onExplain, onAsk, onHighl
       )}
 
       {noteMode ? (
-        <div className="flex items-center gap-1.5 mt-1.5">
-          <input
-            type="text"
+        <div className="flex items-end gap-1.5 mt-1.5">
+          <GrowingTextarea
             autoFocus
             value={noteText}
             placeholder="Write a note for this passage…"
             onChange={(e) => setNoteText(e.target.value)}
             onKeyDown={(e) => {
-              if (isSubmitKey(e)) submitNote();
+              if (isSubmitKey(e)) { e.preventDefault(); submitNote(); }
               if (e.key === "Escape") setNoteMode(false);
             }}
-            className="flex-1 min-w-0 text-xs px-2 py-1 rounded focus:outline-none"
+            className="flex-1 min-w-0 text-xs px-2 py-1 rounded focus:outline-none resize-none"
             style={{
               border: "1px solid var(--accent)",
               background: "var(--paper)",
@@ -138,18 +138,17 @@ export function SelectionPopover({ rect, selectedText, onExplain, onAsk, onHighl
           )}
         </div>
       ) : (
-        <div className="flex items-center gap-1.5 mt-1.5">
-          <input
-            type="text"
+        <div className="flex items-end gap-1.5 mt-1.5">
+          <GrowingTextarea
             value={question}
             placeholder="or ask a question about it…"
             onChange={(e) => setQuestion(e.target.value)}
             onFocus={() => setFocused(true)}
             onKeyDown={(e) => {
-              if (isSubmitKey(e)) submitQuestion();
+              if (isSubmitKey(e)) { e.preventDefault(); submitQuestion(); }
               if (e.key === "Escape") onDismiss();
             }}
-            className="flex-1 min-w-0 text-xs px-2 py-1 rounded focus:outline-none"
+            className="flex-1 min-w-0 text-xs px-2 py-1 rounded focus:outline-none resize-none"
             style={{
               border: "1px solid var(--border)",
               background: "var(--paper)",

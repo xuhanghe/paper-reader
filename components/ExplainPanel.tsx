@@ -7,6 +7,7 @@ import { isSubmitKey } from "@/lib/keys";
 import { withQuotes, quotePreview, quoteLabel, parseQuotes, addQuote as pushQuote, type Quote, type QuotedPassage } from "@/lib/quotes";
 import { clearMarks, markTextInContainer } from "@/lib/highlight-dom";
 import { parseCitation, citationLabel } from "@/lib/citations";
+import { GrowingTextarea } from "./GrowingTextarea";
 
 type Props = {
   annotations: Annotation[];
@@ -205,53 +206,6 @@ function ImageLightbox({
       </div>
     </div>
   );
-}
-
-// A question box that grows with what is in it.
-//
-// These were single-line <input>s, which cannot hold a newline at all and
-// scroll horizontally once the text outruns the width — so a long question hid
-// its own beginning. A textarea wraps, and this keeps its height matched to the
-// content up to a ceiling, after which it scrolls rather than eating the panel.
-const MAX_BOX_HEIGHT = 168;
-
-// Where the browser can size a textarea to its content itself, let it.
-//
-// The JS way — reset the height to auto, read scrollHeight, write the new
-// height — forces the whole document to be laid out twice per keystroke, and
-// this document contains a rendered PDF page with its text layer. `field-sizing`
-// does the same job in the engine, with no layout the app can see. Probed once;
-// the class is always applied, since a browser without it simply ignores it.
-let fieldSizing: boolean | null = null;
-function browserSizesTextareas(): boolean {
-  if (fieldSizing === null) {
-    fieldSizing =
-      typeof CSS !== "undefined" && typeof CSS.supports === "function" && CSS.supports("field-sizing", "content");
-  }
-  return fieldSizing;
-}
-
-function GrowingTextarea({
-  value,
-  className,
-  ...props
-}: React.TextareaHTMLAttributes<HTMLTextAreaElement> & { value: string }) {
-  const ref = useRef<HTMLTextAreaElement | null>(null);
-  // Layout effect, not effect: resizing after paint shows one frame at the old
-  // height, which reads as a flicker on every keystroke
-  useLayoutEffect(() => {
-    const el = ref.current;
-    if (!el || browserSizesTextareas()) return;
-    el.style.height = "auto";
-    // scrollHeight excludes the border, and these are border-box, so the height
-    // has to add it back or every box sits two pixels short and shows a
-    // scrollbar it does not need
-    const border = el.offsetHeight - el.clientHeight;
-    const wanted = el.scrollHeight + border;
-    el.style.height = `${Math.min(wanted, MAX_BOX_HEIGHT)}px`;
-    el.style.overflowY = wanted > MAX_BOX_HEIGHT ? "auto" : "hidden";
-  }, [value]);
-  return <textarea ref={ref} rows={1} value={value} className={`pr-autosize ${className ?? ""}`} {...props} />;
 }
 
 const FONT_SIZES = [12, 13, 14, 15, 16, 17, 18, 20];
@@ -898,14 +852,17 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
 
       {refPickerOpen && (
         <div className="rounded p-2 space-y-1.5" style={{ border: "1px solid var(--border)", background: "var(--surface)" }}>
-          <input
-            type="text"
+          <GrowingTextarea
             autoFocus
             value={refQuery}
             placeholder="Search your Zotero library…"
             onChange={(e) => searchLibrary(e.target.value)}
-            onKeyDown={(e) => { if (e.key === "Escape") setRefPickerOpen(false); }}
-            className="w-full text-xs px-2 py-1.5 rounded focus:outline-none"
+            onKeyDown={(e) => {
+              // A query is one line; Enter must not put a newline in it
+              if (e.key === "Enter") e.preventDefault();
+              if (e.key === "Escape") setRefPickerOpen(false);
+            }}
+            className="w-full text-xs px-2 py-1.5 rounded focus:outline-none resize-none"
             style={{ border: "1px solid var(--accent)", background: "var(--paper)", color: "var(--ink)" }}
           />
           <div className="max-h-36 overflow-y-auto">
