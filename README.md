@@ -73,6 +73,13 @@ and clicking that goes back. Either end unfolds a folded conversation on the way
 None of it is stored separately — a question keeps the passages it carried inside
 its own text, so the links are read back out of threads that already exist.
 
+**Answers that point at things.** When the model draws on the paper it links
+the passage — the words it quoted, underlined, with the page after them — and
+clicking lands on those words in the document, not the top of the page. When it
+builds on something already settled it links that instead of repeating it, and
+clicking goes back to the question it means. A pointer that resolves to nothing
+is rendered as plain words rather than a link that goes nowhere.
+
 **A map of the paper.** A generated outline grounded in verbatim quotes, each of
 which jumps to its passage. Alongside it, a notes column listing every highlight
 and Zotero note: click one to land on the passage itself — not the top of its

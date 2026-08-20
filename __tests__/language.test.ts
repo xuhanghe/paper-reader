@@ -111,8 +111,10 @@ describe("buildAskMessage — the directive that actually holds", () => {
     assert.equal(buildAskMessage({ kind: "explain", selectedText: EN_PASSAGE }).includes("Answer in"), false);
   });
 
-  test("a bare question gets no directive — nothing is pulling it off course", () => {
-    assert.equal(buildAskMessage({ kind: "question", question: "为什么？" }), "为什么？");
+  test("a bare question gets no language directive — nothing is pulling it off course", () => {
+    const msg = buildAskMessage({ kind: "question", question: "为什么？" });
+    assert.ok(msg.startsWith("为什么？"), "the question is sent as asked");
+    assert.equal(/Answer in|matching my question/.test(msg), false, "and nothing tells it what language to use");
   });
 
   test("the passage and question still survive intact", () => {

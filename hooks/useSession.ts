@@ -293,6 +293,27 @@ export function useSession() {
     }));
   }, []);
 
+  // Stamp the number the server gave this ask onto the message that made it —
+  // the question if there is one, otherwise the answer's own bubble, which is
+  // all a bare "explain this" leaves behind.
+  const markTurn = useCallback((annotationId: string, turn: number) => {
+    setSession((s) => ({
+      ...s,
+      annotations: s.annotations.map((a) => {
+        if (a.id !== annotationId || a.messages.length === 0) return a;
+        const msgs = [...a.messages];
+        let at = -1;
+        for (let i = msgs.length - 1; i >= 0; i--) {
+          if (msgs[i].role === "user") { at = i; break; }
+        }
+        if (at === -1) at = msgs.length - 1;
+        if (msgs[at].turn === turn) return a;
+        msgs[at] = { ...msgs[at], turn };
+        return { ...a, messages: msgs };
+      }),
+    }));
+  }, []);
+
   const setAnnotationSessionId = useCallback((annotationId: string, sessionId: string) => {
     setSession((s) => ({
       ...s,
@@ -358,6 +379,7 @@ export function useSession() {
     setAnnotationSessionId,
     appendMessage,
     updateLastAssistantMessage,
+    markTurn,
     replaceMessageFrom,
     saveSession,
     loadSession,

@@ -913,3 +913,4 @@ describe("jumping between a passage and the question that quoted it", () => {
     assert.equal(box.value, QUESTION, "the editor holds the question, not the wrapper");
   });
 });
+

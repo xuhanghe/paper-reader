@@ -195,6 +195,26 @@ export async function appendThread(id: string, entry: ThreadEntry) {
   await appendFile(path.join(dirFor(id), "thread.jsonl"), JSON.stringify(entry) + "\n");
 }
 
+// How many questions this paper's thread already holds. Every ask is numbered
+// with it, so an answer can point back at one of them by number.
+export async function countAsks(id: string): Promise<number> {
+  try {
+    const raw = await readFile(path.join(dirFor(id), "thread.jsonl"), "utf8");
+    let n = 0;
+    for (const line of raw.split("\n")) {
+      if (!line.trim()) continue;
+      try {
+        if ((JSON.parse(line) as ThreadEntry).role === "user") n++;
+      } catch {
+        // a half-written line is not a question
+      }
+    }
+    return n;
+  } catch {
+    return 0;
+  }
+}
+
 export async function readThread(id: string, maxEntries = 40, maxChars = 24000): Promise<ThreadEntry[]> {
   try {
     const raw = await readFile(path.join(dirFor(id), "thread.jsonl"), "utf8");

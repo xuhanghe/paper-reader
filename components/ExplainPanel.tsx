@@ -1,11 +1,12 @@
 "use client";
 import { useRef, useEffect, useLayoutEffect, useMemo, useState } from "react";
-import ReactMarkdown from "react-markdown";
+import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Annotation, Model } from "@/types/session";
 import { isSubmitKey } from "@/lib/keys";
 import { withQuotes, quotePreview, quoteLabel, parseQuotes, addQuote as pushQuote, type Quote, type QuotedPassage } from "@/lib/quotes";
 import { clearMarks, markTextInContainer } from "@/lib/highlight-dom";
+import { parseCitation, citationLabel } from "@/lib/citations";
 
 type Props = {
   annotations: Annotation[];
@@ -21,12 +22,97 @@ type Props = {
   onDelete: (annotationId: string) => void;
   onReExplainImage: (annotationId: string) => void;
   onViewInPdf: (annotationId: string) => void;
+  // Land on a passage the model cited, by page and verbatim text
+  onCitePaper?: (page: number, quote: string) => void;
   annotationRefs: React.MutableRefObject<Record<string, HTMLDivElement | null>>;
   isOpen: boolean;
   onToggle: () => void;
   width?: number;
   modelControls?: React.ReactNode;
 };
+
+// ── Citations the model writes ──────────────────────────────────────
+// The model links what it is drawing on: `paper:12` for a passage, `turn:7`
+// for something already settled in this conversation. Both become jumps;
+// anything else it links to stays an ordinary link.
+//
+// The handlers arrive through a ref rather than as props so this component's
+// identity is stable across renders — recreating it on every streaming chunk
+// would remount every citation in the answer, taking the reader's selection
+// with it.
+// react-markdown drops link protocols it does not recognise — a safe default,
+// and it silently emptied the href of every citation the model wrote. The two
+// private schemes are allowed through by name; everything else still goes
+// through the sanitiser.
+const citationUrlTransform = (url: string): string =>
+  parseCitation(url) ? url : defaultUrlTransform(url);
+
+type CiteHandlers = {
+  paper?: (page: number, quote: string) => void;
+  turn?: (turn: number) => void;
+  resolves?: (turn: number) => boolean;
+};
+
+function textOf(node: React.ReactNode): string {
+  if (node === null || node === undefined || typeof node === "boolean") return "";
+  if (typeof node === "string" || typeof node === "number") return String(node);
+  if (Array.isArray(node)) return node.map(textOf).join("");
+  const el = node as { props?: { children?: React.ReactNode } };
+  return el.props?.children === undefined ? "" : textOf(el.props.children);
+}
+
+function CitationAnchor({
+  href,
+  children,
+  cite,
+}: {
+  href?: string;
+  children?: React.ReactNode;
+  cite: React.MutableRefObject<CiteHandlers>;
+}) {
+  const citation = parseCitation(href);
+  if (!citation) {
+    return (
+      <a href={href} target="_blank" rel="noreferrer" style={{ color: "var(--accent)", textDecoration: "underline" }}>
+        {children}
+      </a>
+    );
+  }
+
+  const raw = textOf(children);
+  const label = citationLabel(raw) || raw;
+  const handlers = cite.current;
+
+  if (citation.kind === "turn") {
+    // A number that points at nothing reads as plain words rather than as a
+    // link that goes nowhere — the model does sometimes invent one
+    if (!handlers.resolves?.(citation.turn) || !handlers.turn) return <span>{label}</span>;
+    return (
+      <button
+        type="button"
+        onClick={() => handlers.turn?.(citation.turn)}
+        className="pr-cite pr-cite-turn"
+        title={`Go back to turn ${citation.turn} of this conversation`}
+      >
+        {label}
+        <span className="pr-cite-tag">↩{citation.turn}</span>
+      </button>
+    );
+  }
+
+  if (!handlers.paper) return <span>{label}</span>;
+  return (
+    <button
+      type="button"
+      onClick={() => handlers.paper?.(citation.page, raw)}
+      className="pr-cite pr-cite-paper"
+      title={`Find this passage on page ${citation.page}`}
+    >
+      {label}
+      <span className="pr-cite-tag">p{citation.page}</span>
+    </button>
+  );
+}
 
 function ImageLightbox({
   src,
@@ -119,7 +205,7 @@ const FONT_SIZES = [12, 13, 14, 15, 16, 17, 18, 20];
 const DEFAULT_FONT_IDX = 2; // 14px
 const COLLAPSE_CHARS = 300;
 
-export function ExplainPanel({ annotations, activeId, model, streamingIds, onFollowUp, onStop, onEditMessage, onAskGeneral, onDelete, onReExplainImage, onViewInPdf, annotationRefs, isOpen, onToggle, width = 460, modelControls }: Props) {
+export function ExplainPanel({ annotations, activeId, model, streamingIds, onFollowUp, onStop, onEditMessage, onAskGeneral, onDelete, onReExplainImage, onViewInPdf, onCitePaper, annotationRefs, isOpen, onToggle, width = 460, modelControls }: Props) {
   const [followUpText, setFollowUpText] = useState<Record<string, string>>({});
   const [generalQuestion, setGeneralQuestion] = useState("");
   const [composerImage, setComposerImage] = useState<string | null>(null);
@@ -395,7 +481,10 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
 
   const flash = (el: HTMLElement) => {
     el.classList.add("pr-quote-flash");
-    setTimeout(() => el.classList.remove("pr-quote-flash"), 1500);
+    const t = setTimeout(() => el.classList.remove("pr-quote-flash"), 1500);
+    // Unref'd where the runtime has it (tests): a pending timer per jump
+    // otherwise keeps the process alive long after the assertion is done
+    (t as unknown as { unref?: () => void }).unref?.();
   };
 
   const expand = (id: string) =>
@@ -433,6 +522,33 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
       annotationRefs.current[id]?.querySelector(`mark.pr-quoted[data-highlight-id="${linkId}"]`) as HTMLElement | null
     );
   };
+
+  // A citation the model wrote: `turn:N` is the ask numbered N, wherever in
+  // the panel it ended up. Numbering is per paper and the conversations are one
+  // workspace, so this crosses cards exactly like a quote does.
+  const goToTurn = (turn: number) => {
+    for (const a of annotations) {
+      const at = a.messages.findIndex((m) => m.turn === turn);
+      if (at === -1) continue;
+      jumpTo(a.id, () => messageRefs.current[`${a.id}:${at}`]);
+      return true;
+    }
+    return false;
+  };
+
+  // Kept current on every render, read at click time. The components map below
+  // is built once so the answer is not remounted as it streams.
+  const citeRef = useRef<CiteHandlers>({});
+  citeRef.current = {
+    paper: onCitePaper,
+    turn: goToTurn,
+    resolves: (n) => annotations.some((a) => a.messages.some((m) => m.turn === n)),
+  };
+  const markdownComponents = useRef({
+    a: (props: { href?: string; children?: React.ReactNode }) => (
+      <CitationAnchor href={props.href} cite={citeRef}>{props.children}</CitationAnchor>
+    ),
+  }).current;
 
   // The marks are not React's, so their clicks are caught by delegation. No
   // dependency list: re-binding each render is cheaper than reasoning about a
@@ -1164,7 +1280,7 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
                         </div>
                       ) : (
                         <div className="prose-paper">
-                          <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                          <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents} urlTransform={citationUrlTransform}>
                             {msg.content || (streamingIds.has(annotation.id) ? "" : "▌")}
                           </ReactMarkdown>
                         </div>

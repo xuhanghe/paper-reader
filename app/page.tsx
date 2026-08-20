@@ -216,6 +216,7 @@ export default function Home() {
     setAnnotationSessionId,
     appendMessage,
     updateLastAssistantMessage,
+    markTurn,
     replaceMessageFrom,
     saveSession,
     loadSession,
@@ -624,7 +625,10 @@ export default function Home() {
             try {
               const event = JSON.parse(line);
               // Capture the provider session id — the fused paper conversation
-              if (!sessionCaptured && event.type === "system" && event.session_id) {
+              if (event.type === "turn" && typeof event.turn === "number") {
+                // What the model will cite this ask as, if it points back at it
+                markTurn(annotationId, event.turn);
+              } else if (!sessionCaptured && event.type === "system" && event.session_id) {
                 setProviderSession(provider, event.session_id);
                 sessionCaptured = true;
               } else if (event.type === "content_block_delta" && event.delta?.type === "text_delta") {
@@ -655,7 +659,7 @@ export default function Home() {
         setStreamingIds((s) => { const next = new Set(s); next.delete(annotationId); return next; });
       }
     },
-    [session.model, session.effort, session.pdfName, session.providerSessions, paperId, customApi, updateLastAssistantMessage, setProviderSession]
+    [session.model, session.effort, session.pdfName, session.providerSessions, paperId, customApi, updateLastAssistantMessage, setProviderSession, markTurn]
   );
 
   const handleViewInPdf = useCallback(
@@ -1364,6 +1368,7 @@ export default function Home() {
           onDelete={handleDelete}
           onReExplainImage={handleReExplainImage}
           onViewInPdf={handleViewInPdf}
+          onCitePaper={(page, quote) => pdfViewerRef.current?.highlightText(page, quote)}
           annotationRefs={annotationRefs}
           isOpen={explainOpen}
           onToggle={() => setExplainOpen((v) => !v)}

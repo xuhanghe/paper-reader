@@ -19,9 +19,11 @@ import {
   figuresDirFor,
   writeFigureImage,
   sessionRelativeFile,
+  countAsks,
 } from "@/lib/session-store";
 import { claudeBin } from "@/lib/bin";
 import { unwrapPartials } from "@/lib/claude-stream";
+import { turnMarker } from "@/lib/citations";
 
 export const runtime = "nodejs";
 
@@ -32,7 +34,7 @@ export const runtime = "nodejs";
 // may also use Zotero MCP), then resume natively. Tool-less custom APIs get the
 // context inline plus a replay of thread.jsonl.
 
-type TeeOpts = { paperId: string; annotationId?: string; kind?: string };
+type TeeOpts = { paperId: string; annotationId?: string; kind?: string; turn?: number };
 
 // Pass the stream through unchanged while accumulating the assistant text,
 // then append it to the paper's thread.jsonl
@@ -58,6 +60,13 @@ function teeToThread(source: ReadableStream, opts: TeeOpts): ReadableStream {
   // `cancel` is in the streams standard and in Node, but not yet in the
   // TypeScript lib types — declared here rather than dropped
   const transformer: Transformer & { cancel?: () => void } = {
+      // The number this ask was given, sent ahead of the answer so the panel
+      // can resolve a `turn:N` citation back to the message it points at
+      start(controller) {
+        if (opts.turn) {
+          controller.enqueue(new TextEncoder().encode(JSON.stringify({ type: "turn", turn: opts.turn }) + "\n"));
+        }
+      },
       transform(chunk, controller) {
         controller.enqueue(chunk);
         carry += decoder.decode(chunk as BufferSource, { stream: true });
@@ -111,6 +120,12 @@ export async function POST(req: Request) {
     message += "\n\nPlease use your web search tool to look up current information online for this question, and cite what you find.";
   }
 
+  // Every ask is numbered, and the number travels on the message itself: on a
+  // resumed session the bootstrap explaining the scheme is thousands of tokens
+  // behind, but the marker is right there in front of the model
+  const turn = (await countAsks(paper_id)) + 1;
+  message = `${turnMarker(turn)} ${message}`;
+
   // Captured figures are stored once as files; the thread references the file
   // so history stays complete without re-sending image bytes on replays
   const figureFile = image_base64 ? await writeFigureImage(paper_id, String(image_base64)) : null;
@@ -151,7 +166,7 @@ export async function POST(req: Request) {
     prompt = `${header}\n\n---\n\n${message}`;
   }
 
-  const teeOpts: TeeOpts = { paperId: paper_id, annotationId: annotation_id, kind };
+  const teeOpts: TeeOpts = { paperId: paper_id, annotationId: annotation_id, kind, turn };
   const base64Data = image_base64 ? String(image_base64).replace(/^data:image\/\w+;base64,/, "") : null;
 
   if (provider === "codex") {
