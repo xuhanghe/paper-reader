@@ -301,6 +301,15 @@ Worth knowing before you rely on them:
   copied from the paper verbatim to be found. A wrong page number is survivable
   — the whole document is searched for the words — but a paraphrase is not, and
   the reader is told so rather than left on a page with nothing lit up.
+- **Marks made before positions were recorded resolve by first text match.**
+  A highlight or question saved by an older version has no stored geometry and
+  no occurrence index, so when its passage repeats on the page it paints on the
+  first copy. Highlights that were synced heal automatically — Zotero has held
+  their exact rectangles all along — but an old question about repeated words
+  stays where the first match is until it is re-asked. Everything created now
+  records its position at selection time. `node scripts/band-audit.mjs` drives
+  a real browser through select/highlight/underline against an authored PDF
+  and verifies every band, with screenshots.
 - **Rewriting a question cannot un-ask it.** The CLI providers keep their own
   history server-side and are resumed by session id, so the model still
   remembers the original wording and reads the edit as a correction. The panel

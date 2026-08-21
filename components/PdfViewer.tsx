@@ -27,7 +27,7 @@ type SelectionRect = { left: number; top: number; width: number; height: number 
 // but a rule drawn under the band's own bottom edge lands wherever the text
 // layer's box happens to end — and pdf.js boxes reach down into the following
 // line, which is how an underline came to sit beneath the wrong sentence.
-type SnappedBand = SelectionRect & { inkBottom?: number };
+type SnappedBand = SelectionRect & { inkBottom?: number; inkFound?: boolean };
 
 // The browser paints ::selection once per element, and pdf.js gives every glyph
 // run its own absolutely positioned span — so a native selection comes out as a
@@ -166,7 +166,7 @@ function snapBandToInk(band: SelectionRect, canvas: HTMLCanvasElement, canvasRec
   // one of CJK, so keep a floor tied to the font's em box and centre it on the
   // glyphs — even bands, still aligned with what's on the page.
   const height = Math.max(inkHeight, band.height * MIN_BAND_RATIO);
-  return { ...band, top: inkTop + inkHeight / 2 - height / 2, height, inkBottom };
+  return { ...band, top: inkTop + inkHeight / 2 - height / 2, height, inkBottom, inkFound: true };
 }
 
 const WHEEL_SENSITIVITY = 0.008;
@@ -642,6 +642,12 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
     eventBus.on("textlayerrendered", (e: { pageNumber: number }) => {
       if (!cancelled) paintPageHighlights(e.pageNumber);
     });
+    // The text layer can finish before the canvas has any ink on it, and a
+    // band snapped against a blank canvas silently keeps the text layer's raw
+    // geometry. Repaint once the pixels exist.
+    eventBus.on("pagerendered", (e: { pageNumber: number }) => {
+      if (!cancelled) paintPageHighlights(e.pageNumber);
+    });
 
     const loadingTask = getDocument(pdfDataUrl);
     loadingTask.promise.then(
@@ -768,9 +774,21 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
           .filter((r) => r.width >= 1 && r.height >= 1)
           .map((r) => ({ left: r.left, top: r.top, width: r.width, height: r.height }))
       )
+    ) as SnappedBand[];
+    // Only geometry that was actually matched to the glyphs is worth freezing
+    // into the record. A selection made while the canvas was still blank would
+    // otherwise store the text layer's raw boxes — the very numbers this
+    // record exists to replace. Without geometry the paint path falls back to
+    // text + ink, which can succeed later, once the pixels exist.
+    if (lines.length === 0 || lines.some((l) => !l.inkFound)) return undefined;
+    // A selection reaching onto another page would convert against this
+    // page's frame; keep the lines that are actually on it
+    const onPage = lines.filter(
+      (l) => l.top + l.height / 2 >= pageRect.top && l.top + l.height / 2 <= pageRect.bottom
     );
+    if (onPage.length !== lines.length) return undefined;
     const rects: number[][] = [];
-    for (const r of lines) {
+    for (const r of onPage) {
       const [ax, ay] = pageView.viewport.convertToPdfPoint(r.left - pageRect.left, r.top + r.height - pageRect.top);
       const [bx, by] = pageView.viewport.convertToPdfPoint(r.left + r.width - pageRect.left, r.top - pageRect.top);
       rects.push([Math.min(ax, bx), Math.min(ay, by), Math.max(ax, bx), Math.max(ay, by)]);

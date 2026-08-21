@@ -499,10 +499,19 @@ export default function Home() {
     return zoteroAnnotations.filter((a) => !mirrored.has(a.key));
   }, [zoteroAnnotations, session.highlights]);
 
-  // Zotero's own PDF highlights painted alongside the user's
+  // Zotero's own PDF highlights painted alongside the user's.
+  //
+  // Highlights made before positions were recorded locally can still be healed
+  // when they were synced: Zotero has held the exact rects all along, so a
+  // record with a zoteroKey and no position adopts the annotation's geometry.
+  // Older ones that never reached Zotero stay on the text-match fallback.
   const allHighlights = useMemo(
     () => [
-      ...(session.highlights || []),
+      ...(session.highlights || []).map((h) => {
+        if (h.position || !h.zoteroKey) return h;
+        const remote = zoteroAnnotations.find((a) => a.key === h.zoteroKey);
+        return remote?.position ? { ...h, position: remote.position } : h;
+      }),
       ...visibleZoteroAnnotations
         .filter((a) => a.text.trim())
         .map((a) => ({
@@ -517,7 +526,7 @@ export default function Home() {
           createdAt: 0,
         })),
     ],
-    [session.highlights, visibleZoteroAnnotations]
+    [session.highlights, visibleZoteroAnnotations, zoteroAnnotations]
   );
   // Passages with a conversation attached, marked in the page itself. Figure
   // captures have no text to mark, and a card whose selection has been cleared
