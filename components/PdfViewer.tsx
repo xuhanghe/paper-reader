@@ -22,6 +22,13 @@ const SELECTION_PAD = 1.5;
 
 type SelectionRect = { left: number; top: number; width: number; height: number };
 
+// A band that has been matched to the glyphs, carrying where the ink actually
+// ended. A wash can be a little taller than the letters without looking wrong,
+// but a rule drawn under the band's own bottom edge lands wherever the text
+// layer's box happens to end — and pdf.js boxes reach down into the following
+// line, which is how an underline came to sit beneath the wrong sentence.
+type SnappedBand = SelectionRect & { inkBottom?: number };
+
 // The browser paints ::selection once per element, and pdf.js gives every glyph
 // run its own absolutely positioned span — so a native selection comes out as a
 // row of mismatched boxes with gaps between them. Merging the range's client
@@ -74,7 +81,7 @@ const FLASH_MS = 1600;
 // Zotero draws its annotations with globalAlpha 0.5 and multiply blending
 const HIGHLIGHT_ALPHA = 0.5;
 
-type HighlightBand = SelectionRect & { id: string; color: string; underline?: boolean };
+type HighlightBand = SelectionRect & { id: string; color: string; underline?: boolean; inkBottom?: number };
 
 // A passage that has a conversation attached to it. Drawn as a rule under the
 // line rather than a wash over it, so it reads as a different kind of mark from
@@ -100,7 +107,7 @@ export type AskedPassage = {
 // for CJK documents — the invisible boxes sit a half-line off the visible text,
 // and anything drawn from them looks detached. Reading the rendered pixels is
 // the only source of truth for where the text actually is.
-function snapBandToInk(band: SelectionRect, canvas: HTMLCanvasElement, canvasRect: DOMRect): SelectionRect {
+function snapBandToInk(band: SelectionRect, canvas: HTMLCanvasElement, canvasRect: DOMRect): SnappedBand {
   const scaleX = canvas.width / canvasRect.width;
   const scaleY = canvas.height / canvasRect.height;
   const x0 = Math.max(0, Math.floor((band.left - canvasRect.left) * scaleX));
@@ -147,14 +154,17 @@ function snapBandToInk(band: SelectionRect, canvas: HTMLCanvasElement, canvasRec
 
   const inkTop = canvasRect.top + (y0 + run.first) / scaleY;
   const inkHeight = (run.last + 1 - run.first) / scaleY;
-  // Ignore implausible reads, e.g. a figure bleeding into the search window
-  if (inkHeight > band.height * 1.8 || inkHeight < band.height * 0.25) return band;
+  const inkBottom = inkTop + inkHeight;
+  // Ignore implausible reads, e.g. a figure bleeding into the search window.
+  // The ink is still the best guess at where the letters stop, so an underline
+  // can use it even when the wash keeps the text layer's own geometry.
+  if (inkHeight > band.height * 1.8 || inkHeight < band.height * 0.25) return { ...band, inkBottom };
 
   // Ink alone would make a line of lowercase latin a much thinner ribbon than
   // one of CJK, so keep a floor tied to the font's em box and centre it on the
   // glyphs — even bands, still aligned with what's on the page.
   const height = Math.max(inkHeight, band.height * MIN_BAND_RATIO);
-  return { ...band, top: inkTop + inkHeight / 2 - height / 2, height };
+  return { ...band, top: inkTop + inkHeight / 2 - height / 2, height, inkBottom };
 }
 
 const WHEEL_SENSITIVITY = 0.008;
@@ -366,7 +376,7 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
           .map((r) => ({ left: r.left, top: r.top, width: r.width, height: r.height }))
       );
       for (const band of merged) {
-        const snapped = canvas && canvasRect ? snapBandToInk(band, canvas, canvasRect) : band;
+        const snapped: SnappedBand = canvas && canvasRect ? snapBandToInk(band, canvas, canvasRect) : band;
         bands.push({
           id: a.id,
           color: a.kind === "cited" ? "var(--quote)" : "var(--accent)",
@@ -375,6 +385,12 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
           top: snapped.top - box.top + container.scrollTop,
           width: snapped.width,
           height: snapped.height,
+          // Where the letters stop, when the pixels could say — the rule is
+          // drawn from this rather than from the band's own bottom edge
+          inkBottom:
+            snapped.inkBottom === undefined
+              ? undefined
+              : snapped.inkBottom - box.top + container.scrollTop,
         });
       }
     }
@@ -1025,7 +1041,7 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
               <div
                 key={`ask-${b.id}-${i}`}
                 className="pr-band pr-asked-rule"
-                style={{ left: b.left, top: b.top + b.height + 1, width: b.width, height: 2, background: b.color }}
+                style={{ left: b.left, top: (b.inkBottom ?? b.top + b.height) + 1, width: b.width, height: 2, background: b.color }}
               />
             ) : (
               <div
