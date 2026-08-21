@@ -8,7 +8,7 @@ import { SelectionPopover } from "./SelectionPopover";
 import { useTextSelection } from "@/hooks/useTextSelection";
 import { useRegionDrag } from "@/hooks/useRegionDrag";
 import { RegionResult } from "@/hooks/useRegionDrag";
-import { markTextInContainer, clearMarks, rangeForText, findIgnoringWhitespace } from "@/lib/highlight-dom";
+import { markTextInContainer, clearMarks, rangeForText, findIgnoringWhitespace, occurrenceAt } from "@/lib/highlight-dom";
 import { highlightTint, DEFAULT_HIGHLIGHT_COLOR } from "@/lib/highlight-colors";
 import { HighlightPopover } from "./HighlightPopover";
 import type { Highlight } from "@/types/session";
@@ -87,6 +87,8 @@ export type AskedPassage = {
   pageNumber?: number;
   label?: string;
   kind?: "asked" | "cited";
+  // Which of the identical passages on the page this is; see Highlight
+  occurrence?: number;
 };
 
 // Snaps a selection band to the glyphs it covers.
@@ -161,11 +163,14 @@ const BUTTON_ZOOM_FACTOR = 1.35;
 
 type Props = {
   pdfDataUrl: string;
-  onTextSelected: (text: string, pageNumber?: number) => void;
-  onAskAboutSelection: (text: string, question: string, pageNumber?: number) => void;
+  onTextSelected: (text: string, pageNumber?: number, occurrence?: number) => void;
+  onAskAboutSelection: (text: string, question: string, pageNumber?: number, occurrence?: number) => void;
   onRegionCaptured: (result: RegionResult) => void;
-  onHighlight?: (text: string, pageNumber?: number, position?: AnnotationPosition, color?: string) => void;
-  onNote?: (text: string, note: string, pageNumber?: number, position?: AnnotationPosition, color?: string) => void;
+  // `occurrence` is which of the identical passages on that page was selected.
+  // Without it a phrase that appears twice — an abstract and a contributions
+  // list saying the same words — is always painted on the first one.
+  onHighlight?: (text: string, pageNumber?: number, position?: AnnotationPosition, color?: string, occurrence?: number) => void;
+  onNote?: (text: string, note: string, pageNumber?: number, position?: AnnotationPosition, color?: string, occurrence?: number) => void;
   onRemoveHighlight?: (id: string) => void;
   onRecolorHighlight?: (id: string, color: string) => void;
   onEditHighlightNote?: (id: string, note: string) => void;
@@ -305,7 +310,7 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
         : a.label
           ? `Asked about: ${a.label}`
           : "You asked about this — click to open the conversation";
-      markTextInContainer(layer, a.text, "pr-asked", title, { id: a.id });
+      markTextInContainer(layer, a.text, "pr-asked", title, { id: a.id, occurrence: a.occurrence });
     }
     for (const h of highlightsRef.current) {
       if (h.pageNumber && h.pageNumber !== pageNumber) continue;
@@ -315,7 +320,7 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
         h.text,
         cls,
         h.note ? `Note: ${h.note} — click to edit` : "Click to recolour or remove",
-        { id: h.id }
+        { id: h.id, occurrence: h.occurrence }
       );
     }
     alignMarksToInk(layer, pageEl);
@@ -653,6 +658,21 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
 
   const selectionPageRef = useRef<number | undefined>(undefined);
   const selectionPositionRef = useRef<AnnotationPosition | undefined>(undefined);
+  const selectionOccurrenceRef = useRef(0);
+
+  // Which of the identical passages on this page the selection sits on,
+  // measured against the page's own text layer while the selection still exists
+  const computeSelectionOccurrence = useCallback((text: string): number => {
+    const sel = window.getSelection();
+    const pageNum = selectionPageRef.current;
+    if (!sel || sel.rangeCount === 0 || !pageNum || !containerRef.current) return 0;
+    const layer = containerRef.current.querySelector(
+      `.page[data-page-number="${pageNum}"] .textLayer`
+    ) as HTMLElement | null;
+    if (!layer) return 0;
+    const range = sel.getRangeAt(0);
+    return occurrenceAt(layer, text, range.startContainer, range.startOffset);
+  }, []);
 
   // Convert the browser selection's client rects to PDF-space coordinates so
   // highlights can be written back to Zotero as real annotations
@@ -681,12 +701,13 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
     if (selection) {
       selectionPageRef.current = getSelectionPageNumber();
       selectionPositionRef.current = computeSelectionPosition();
+      selectionOccurrenceRef.current = computeSelectionOccurrence(selection.text);
     }
-  }, [selection, getSelectionPageNumber, computeSelectionPosition]);
+  }, [selection, getSelectionPageNumber, computeSelectionPosition, computeSelectionOccurrence]);
 
   const handleExplain = useCallback(() => {
     if (selection) {
-      onTextSelected(selection.text, selectionPageRef.current);
+      onTextSelected(selection.text, selectionPageRef.current, selectionOccurrenceRef.current);
       clearSelection();
     }
   }, [selection, onTextSelected, clearSelection]);
@@ -694,7 +715,7 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
   const handleAsk = useCallback(
     (question: string) => {
       if (selection) {
-        onAskAboutSelection(selection.text, question, selectionPageRef.current);
+        onAskAboutSelection(selection.text, question, selectionPageRef.current, selectionOccurrenceRef.current);
         clearSelection();
       }
     },
@@ -704,7 +725,7 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
   const handleHighlight = useCallback(
     (color: string) => {
       if (selection && onHighlight) {
-        onHighlight(selection.text, selectionPageRef.current, selectionPositionRef.current, color);
+        onHighlight(selection.text, selectionPageRef.current, selectionPositionRef.current, color, selectionOccurrenceRef.current);
         clearSelection();
       }
     },
@@ -714,7 +735,7 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
   const handleNote = useCallback(
     (note: string, color: string) => {
       if (selection && onNote) {
-        onNote(selection.text, note, selectionPageRef.current, selectionPositionRef.current, color);
+        onNote(selection.text, note, selectionPageRef.current, selectionPositionRef.current, color, selectionOccurrenceRef.current);
         clearSelection();
       }
     },

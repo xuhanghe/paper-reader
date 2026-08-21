@@ -534,6 +534,7 @@ export default function Home() {
           pageNumber: a.pageNumber,
           label: a.label,
           kind: "asked",
+          occurrence: a.occurrence,
         }))
         .concat(citedPassages),
     [session.annotations, citedPassages]
@@ -838,8 +839,8 @@ export default function Home() {
   );
 
   const handleTextSelected = useCallback(
-    (text: string, pageNumber?: number) => {
-      const id = addAnnotation({ type: "text", selectedText: text, pageNumber, messages: [{ role: "assistant", content: "" }] });
+    (text: string, pageNumber?: number, occurrence = 0) => {
+      const id = addAnnotation({ type: "text", selectedText: text, pageNumber, occurrence, messages: [{ role: "assistant", content: "" }] });
       setActiveAnnotationId(id);
       streamAsk(id, { kind: "explain", selected_text: text, page_number: pageNumber });
     },
@@ -847,11 +848,12 @@ export default function Home() {
   );
 
   const handleAskAboutSelection = useCallback(
-    (text: string, question: string, pageNumber?: number) => {
+    (text: string, question: string, pageNumber?: number, occurrence = 0) => {
       const id = addAnnotation({
         type: "text",
         selectedText: text,
         pageNumber,
+        occurrence,
         messages: [{ role: "user", content: question }, { role: "assistant", content: "" }],
       });
       setActiveAnnotationId(id);
@@ -963,8 +965,8 @@ export default function Home() {
   }, [paperId]);
 
   const handleHighlight = useCallback(
-    (text: string, pageNumber?: number, position?: { pageIndex: number; rects: number[][] }, color = DEFAULT_HIGHLIGHT_COLOR) => {
-      const id = addHighlight({ text, pageNumber, color });
+    (text: string, pageNumber?: number, position?: { pageIndex: number; rects: number[][] }, color = DEFAULT_HIGHLIGHT_COLOR, occurrence = 0) => {
+      const id = addHighlight({ text, pageNumber, color, occurrence });
       highlightUndo.current.push(id);
       if (position) syncHighlightToZotero(id, text, undefined, pageNumber, position, color);
     },
@@ -972,8 +974,8 @@ export default function Home() {
   );
 
   const handleNote = useCallback(
-    (text: string, note: string, pageNumber?: number, position?: { pageIndex: number; rects: number[][] }, color = DEFAULT_HIGHLIGHT_COLOR) => {
-      const id = addHighlight({ text, note, pageNumber, color });
+    (text: string, note: string, pageNumber?: number, position?: { pageIndex: number; rects: number[][] }, color = DEFAULT_HIGHLIGHT_COLOR, occurrence = 0) => {
+      const id = addHighlight({ text, note, pageNumber, color, occurrence });
       highlightUndo.current.push(id);
       if (position) syncHighlightToZotero(id, text, note, pageNumber, position, color);
     },

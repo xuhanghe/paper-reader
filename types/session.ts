@@ -20,6 +20,8 @@ export type Annotation = {
   createdAt: number;
   sessionId?: string;
   pageNumber?: number; // PDF page where the text was selected
+  // Which of the identical passages on that page it was; see Highlight
+  occurrence?: number;
 };
 
 export type ConceptEntry = {
@@ -77,6 +79,10 @@ export type Highlight = {
   createdAt: number;
   source?: "user" | "zotero"; // zotero = mirrored from Zotero's PDF annotations
   color?: string; // Zotero palette hex; defaults to yellow
+  // Which of the identical passages on the page this one is. A phrase often
+  // appears twice — an abstract and a contributions list saying the same words
+  // — and matching by text alone always painted the first.
+  occurrence?: number;
   // Key of the Zotero annotation this highlight was written to. Set once the
   // background sync returns; keeps the highlight visible while Zotero is still
   // syncing it down, and lets edits/removals reach the right annotation.

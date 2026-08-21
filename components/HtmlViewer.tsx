@@ -2,7 +2,7 @@
 import { useRef, useState, useCallback, useEffect, forwardRef, useImperativeHandle } from "react";
 import { SelectionPopover } from "./SelectionPopover";
 import { HighlightPopover } from "./HighlightPopover";
-import { clearMarks, markTextInContainer, rangeForText } from "@/lib/highlight-dom";
+import { clearMarks, markTextInContainer, rangeForText, occurrenceAt } from "@/lib/highlight-dom";
 import type { Highlight } from "@/types/session";
 import type { AnnotationPosition, PdfViewerHandle } from "./PdfViewer";
 
@@ -13,13 +13,13 @@ const FLASH_MS = 1700;
 
 type Props = {
   html: string;
-  onTextSelected: (text: string) => void;
-  onAskAboutSelection: (text: string, question: string) => void;
+  onTextSelected: (text: string, pageNumber?: number, occurrence?: number) => void;
+  onAskAboutSelection: (text: string, question: string, pageNumber?: number, occurrence?: number) => void;
   // Highlights on a snapshot have no PDF page or rects, so these are called
   // without a position — which is exactly what keeps them out of Zotero (see
   // the note on the highlight stylesheet below).
-  onHighlight?: (text: string, pageNumber?: number, position?: AnnotationPosition, color?: string) => void;
-  onNote?: (text: string, note: string, pageNumber?: number, position?: AnnotationPosition, color?: string) => void;
+  onHighlight?: (text: string, pageNumber?: number, position?: AnnotationPosition, color?: string, occurrence?: number) => void;
+  onNote?: (text: string, note: string, pageNumber?: number, position?: AnnotationPosition, color?: string, occurrence?: number) => void;
   onRemoveHighlight?: (id: string) => void;
   onRecolorHighlight?: (id: string, color: string) => void;
   onEditHighlightNote?: (id: string, note: string) => void;
@@ -30,7 +30,7 @@ type Props = {
   reloading?: boolean;
 };
 
-type SelectionInfo = { text: string; rect: DOMRect };
+type SelectionInfo = { text: string; rect: DOMRect; occurrence?: number };
 
 // Highlight styling for the iframe document. The app's own stylesheet does not
 // reach inside it, so the rules travel with the snapshot.
@@ -134,7 +134,7 @@ export const HtmlViewer = forwardRef<PdfViewerHandle, Props>(function HtmlViewer
         h.text,
         ["pr-highlight", h.note ? "pr-has-note" : ""].filter(Boolean).join(" "),
         h.note || undefined,
-        { id: h.id, color: h.color }
+        { id: h.id, color: h.color, occurrence: h.occurrence }
       );
     }
   }, []);
@@ -202,9 +202,13 @@ export const HtmlViewer = forwardRef<PdfViewerHandle, Props>(function HtmlViewer
       const sel = doc.getSelection();
       if (sel && !sel.isCollapsed && sel.toString().trim()) {
         setHighlightMenu(null);
+        const range = sel.getRangeAt(0);
         setSelection({
           text: sel.toString().trim(),
-          rect: toViewport(sel.getRangeAt(0).getBoundingClientRect()),
+          rect: toViewport(range.getBoundingClientRect()),
+          // Which of the identical passages in the page this is, so a phrase
+          // that appears twice is marked where it was selected
+          occurrence: occurrenceAt(doc.body, sel.toString().trim(), range.startContainer, range.startOffset),
         });
         return;
       }
@@ -295,10 +299,10 @@ export const HtmlViewer = forwardRef<PdfViewerHandle, Props>(function HtmlViewer
         <SelectionPopover
           rect={selection.rect}
           selectedText={selection.text}
-          onExplain={() => { onTextSelected(selection.text); clearSelection(); }}
-          onAsk={(q) => { onAskAboutSelection(selection.text, q); clearSelection(); }}
-          onHighlight={onHighlight && ((color) => { onHighlight(selection.text, undefined, undefined, color); clearSelection(); })}
-          onNote={onNote && ((note, color) => { onNote(selection.text, note, undefined, undefined, color); clearSelection(); })}
+          onExplain={() => { onTextSelected(selection.text, undefined, selection.occurrence); clearSelection(); }}
+          onAsk={(q) => { onAskAboutSelection(selection.text, q, undefined, selection.occurrence); clearSelection(); }}
+          onHighlight={onHighlight && ((color) => { onHighlight(selection.text, undefined, undefined, color, selection.occurrence); clearSelection(); })}
+          onNote={onNote && ((note, color) => { onNote(selection.text, note, undefined, undefined, color, selection.occurrence); clearSelection(); })}
           onDismiss={clearSelection}
         />
       )}

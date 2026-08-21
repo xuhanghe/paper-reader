@@ -216,7 +216,10 @@ can be moved, renamed or copied to another machine and the threads keep
 working. Absolute paths exist only transiently, in the prompt handed to a CLI
 that has to open the file.
 
-Highlights are matched to the page by text, ignoring whitespace entirely on both
+Highlights are matched to the page by text plus which occurrence of it was
+selected — a phrase like "operator-level granularities" often appears in both an
+abstract and a contributions list, and matching on text alone always painted the
+first one. Matching ignores whitespace entirely on both
 sides — necessary because a browser selection and a PDF text layer rarely agree
 about it. CJK text gives every character its own span and Chrome inserts line
 breaks where the DOM has none, so `暮易\nIntro` has to match `暮易Intro`. The same
