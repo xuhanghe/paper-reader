@@ -49,7 +49,9 @@ it here and Zotero changes; do the same in Zotero and the reader follows. Delete
 one in Zotero and it disappears here rather than lingering.
 
 Highlights are drawn as smooth per-line bands snapped to the actual ink on the
-page, not to the PDF text layer — which sits several pixels below the glyphs and
+page, not to the PDF text layer — the line a band belongs to is decided by which
+glyphs it overlaps rather than by which is nearest, or a box sitting low would
+attach itself to the sentence below — which sits several pixels below the glyphs and
 made the native selection look ragged and misaligned. Selections use Zotero's own
 `#71ADFD` at the alpha its reader uses, so the two look identical.
 

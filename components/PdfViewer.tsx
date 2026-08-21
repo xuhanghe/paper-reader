@@ -9,6 +9,7 @@ import { useTextSelection } from "@/hooks/useTextSelection";
 import { useRegionDrag } from "@/hooks/useRegionDrag";
 import { RegionResult } from "@/hooks/useRegionDrag";
 import { markTextInContainer, clearMarks, rangeForText, findIgnoringWhitespace, occurrenceAt } from "@/lib/highlight-dom";
+import { chooseInkRun } from "@/lib/ink-bands";
 import { highlightTint, DEFAULT_HIGHLIGHT_COLOR } from "@/lib/highlight-colors";
 import { HighlightPopover } from "./HighlightPopover";
 import type { Highlight } from "@/types/session";
@@ -137,12 +138,12 @@ function snapBandToInk(band: SelectionRect, canvas: HTMLCanvasElement, canvasRec
   // No ink (blank area, or light text on dark) — keep the text-layer geometry
   if (runs.length === 0) return band;
 
-  // The window can reach into neighbouring lines, so take the run this band
-  // actually belongs to: the one whose centre is nearest the band's
-  const bandCentre = (band.top + band.height / 2 - canvasRect.top) * scaleY - y0;
-  const run = runs.reduce((best, r) =>
-    Math.abs((r.first + r.last) / 2 - bandCentre) < Math.abs((best.first + best.last) / 2 - bandCentre) ? r : best
-  );
+  // The window reaches into neighbouring lines, so take the run this band
+  // actually belongs to — see lib/ink-bands.ts for why overlap decides it
+  const bandTop = (band.top - canvasRect.top) * scaleY - y0;
+  const bandBottom = (band.top + band.height - canvasRect.top) * scaleY - y0;
+  const run = chooseInkRun(runs, bandTop, bandBottom);
+  if (!run) return band;
 
   const inkTop = canvasRect.top + (y0 + run.first) / scaleY;
   const inkHeight = (run.last + 1 - run.first) / scaleY;
