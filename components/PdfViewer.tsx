@@ -250,56 +250,6 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
   const askedRef = useRef<AskedPassage[]>(askedPassages);
   askedRef.current = askedPassages;
 
-  // Highlights are painted inside the text layer, so they inherit its
-  // misalignment with the rendered glyphs (see snapBandToInk). Nudging each
-  // mark onto its line's ink moves both the tint and its click target.
-  const alignMarksToInk = useCallback((layer: HTMLElement, pageEl: Element) => {
-    const canvas = pageEl.querySelector("canvas") as HTMLCanvasElement | null;
-    const marks = Array.from(layer.querySelectorAll("mark.pr-highlight, mark.pr-asked")) as HTMLElement[];
-    if (!canvas || marks.length === 0) return;
-    const canvasRect = canvas.getBoundingClientRect();
-    if (canvasRect.width === 0) return;
-
-    // One measurement per line, shared by every mark sitting on it
-    const lines: { rect: SelectionRect; marks: HTMLElement[] }[] = [];
-    for (const mark of marks) {
-      // A passage that is both highlighted and asked about is wrapped twice.
-      // Only the outer mark is nudged — shifting the inner one as well would
-      // move it by the offset a second time.
-      if (mark.parentElement?.closest("mark.pr-highlight, mark.pr-asked")) continue;
-      const r = mark.getBoundingClientRect();
-      if (r.width < 1 || r.height < 1) continue;
-      const line = lines.find(
-        (l) =>
-          Math.abs(r.top + r.height / 2 - (l.rect.top + l.rect.height / 2)) <
-          Math.min(r.height, l.rect.height) * 0.5
-      );
-      if (!line) {
-        lines.push({ rect: { left: r.left, top: r.top, width: r.width, height: r.height }, marks: [mark] });
-        continue;
-      }
-      const left = Math.min(line.rect.left, r.left);
-      const top = Math.min(line.rect.top, r.top);
-      line.rect = {
-        left,
-        top,
-        width: Math.max(line.rect.left + line.rect.width, r.right) - left,
-        height: Math.max(line.rect.top + line.rect.height, r.bottom) - top,
-      };
-      line.marks.push(mark);
-    }
-
-    for (const line of lines) {
-      const snapped = snapBandToInk(line.rect, canvas, canvasRect);
-      const shift = snapped.top + snapped.height / 2 - (line.rect.top + line.rect.height / 2);
-      if (Math.abs(shift) < 0.5) continue;
-      for (const mark of line.marks) {
-        mark.style.position = "relative";
-        mark.style.top = `${shift.toFixed(1)}px`;
-      }
-    }
-  }, []);
-
   // Highlights are drawn as bands, exactly like the selection — the <mark>
   // elements stay in the text layer only to carry ids and take clicks.
   const [highlightBands, setHighlightBands] = useState<Record<number, HighlightBand[]>>({});
@@ -334,18 +284,22 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
         { id: h.id, occurrence: h.occurrence }
       );
     }
-    alignMarksToInk(layer, pageEl);
-
-    // Everything marked on this page, measured by one piece of code.
+    // Everything marked on this page, measured once, from raw geometry.
     //
     // A highlight and a passage with a conversation attached differ in how they
     // are painted — a wash across the words, or a rule under them — and in
-    // nothing else. Measuring them separately let the two drift apart: the
-    // wash could sit on the right line while the rule sat on the next one, with
-    // no way to tell which of the two paths was wrong. One pass, one geometry.
+    // nothing else. The marks themselves are invisible; they carry ids and take
+    // clicks. Each line's text-layer rect is snapped to the ink exactly once,
+    // and that one decision moves the marks and places the band together.
+    //
+    // It used to be two passes: nudge the marks onto the ink, then measure the
+    // nudged marks and snap again. A wrong choice in the first pass put the
+    // marks squarely on the wrong line's ink, so the second pass confirmed it —
+    // the mistake was self-certifying, and everything drawn sat a line low.
     const canvas = pageEl.querySelector("canvas") as HTMLCanvasElement | null;
     const canvasRect = canvas?.getBoundingClientRect();
     const box = container.getBoundingClientRect();
+    const debug = typeof localStorage !== "undefined" && !!localStorage.getItem("pr-debug-bands");
 
     const marked = [
       ...highlightsRef.current.map((h) => ({
@@ -362,20 +316,65 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
       })),
     ];
 
-    const bands: HighlightBand[] = [];
+    // Measure first, all of it, before any mark moves — every rect below is
+    // the text layer's own geometry
+    type Line = { rect: SelectionRect; marks: HTMLElement[] };
+    const measured: { item: (typeof marked)[number]; lines: Line[] }[] = [];
     for (const item of marked) {
       const marks = Array.from(
         layer.querySelectorAll(`mark.${item.selector}[data-highlight-id="${CSS.escape(item.id)}"]`)
       ) as HTMLElement[];
       if (marks.length === 0) continue;
-      const merged = mergeIntoLines(
-        marks
-          .map((m) => m.getBoundingClientRect())
-          .filter((r) => r.width > 0.5 && r.height > 0.5)
-          .map((r) => ({ left: r.left, top: r.top, width: r.width, height: r.height }))
-      );
-      for (const band of merged) {
-        const snapped: SnappedBand = canvas && canvasRect ? snapBandToInk(band, canvas, canvasRect) : band;
+      const lines: Line[] = [];
+      for (const mark of marks) {
+        const r = mark.getBoundingClientRect();
+        if (r.width < 0.5 || r.height < 0.5) continue;
+        // A passage both highlighted and asked about is wrapped twice; the
+        // inner mark rides along with its parent, so only the outer is nudged
+        const nested = !!mark.parentElement?.closest("mark.pr-highlight, mark.pr-asked");
+        const line = lines.find(
+          (l) =>
+            Math.abs(r.top + r.height / 2 - (l.rect.top + l.rect.height / 2)) <
+            Math.min(r.height, l.rect.height) * 0.5
+        );
+        if (!line) {
+          lines.push({
+            rect: { left: r.left, top: r.top, width: r.width, height: r.height },
+            marks: nested ? [] : [mark],
+          });
+          continue;
+        }
+        const left = Math.min(line.rect.left, r.left);
+        const top = Math.min(line.rect.top, r.top);
+        line.rect = {
+          left,
+          top,
+          width: Math.max(line.rect.left + line.rect.width, r.right) - left,
+          height: Math.max(line.rect.top + line.rect.height, r.bottom) - top,
+        };
+        if (!nested) line.marks.push(mark);
+      }
+      measured.push({ item, lines });
+    }
+
+    // Then decide and apply — one snap per line, shared by marks and band
+    const bands: HighlightBand[] = [];
+    for (const { item, lines } of measured) {
+      for (const line of lines) {
+        const snapped: SnappedBand = canvas && canvasRect ? snapBandToInk(line.rect, canvas, canvasRect) : line.rect;
+        const shift = snapped.top + snapped.height / 2 - (line.rect.top + line.rect.height / 2);
+        if (debug) {
+          console.log(
+            `[pr-band] ${item.underline ? "rule" : "wash"} ${item.id.slice(0, 8)}`,
+            { rawTop: +line.rect.top.toFixed(1), rawH: +line.rect.height.toFixed(1), shift: +shift.toFixed(1), inkBottom: snapped.inkBottom && +snapped.inkBottom.toFixed(1) }
+          );
+        }
+        if (Math.abs(shift) >= 0.5) {
+          for (const mark of line.marks) {
+            mark.style.position = "relative";
+            mark.style.top = `${shift.toFixed(1)}px`;
+          }
+        }
         bands.push({
           id: item.id,
           color: item.color,
@@ -395,7 +394,7 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
       }
     }
     setHighlightBands((prev) => ({ ...prev, [pageNumber]: bands }));
-  }, [alignMarksToInk]);
+  }, []);
 
   // Clicking an existing highlight opens its recolour / remove menu and points
   // the Notes panel at the same entry

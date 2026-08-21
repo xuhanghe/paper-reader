@@ -3,45 +3,48 @@
 // Highlights are drawn onto the page canvas rather than onto pdf.js's text
 // layer, because the two do not agree about where the text is: pdf.js positions
 // its invisible spans with the browser's fallback font metrics while the canvas
-// is drawn with the PDF's embedded fonts, so the boxes routinely sit a half-line
-// off the glyphs. The rendered pixels are the only source of truth, so a band is
-// snapped to the ink it covers — and this is the part that decides which ink.
+// is drawn with the PDF's embedded fonts. The rendered pixels are the only
+// source of truth, so a band is snapped to the ink it covers — and this is the
+// part that decides which ink.
 
 export type InkRun = { first: number; last: number };
 
-// The search window reaches a whole band height above the box and half a height
-// below, so it almost always holds two or three lines of text. Choosing the run
-// whose centre is nearest the box's centre is not enough on its own: a box that
-// sits low — which is exactly the case this snapping exists to correct — is
-// often nearer the centre of the line below than of its own, and the band then
-// lands on the wrong line. Under a thin underline that reads as the mark being
-// attached to the following sentence.
+// The fact everything here leans on: when the text layer is wrong, it is wrong
+// DOWNWARD. Fallback fonts carry taller ascents, so pdf.js's boxes slide below
+// the glyphs they stand for — which is why the search window reaches a whole
+// band height above the box and only half below. It follows that of the lines
+// a box touches, the TOPMOST is the one it belongs to.
 //
-// Overlap decides it first. A run sharing no pixels with the box is not this
-// line, whatever its centre says. Only when nothing overlaps at all does
-// nearest-centre apply, and then only within a line height — beyond that the
-// box is better trusted as it is than moved onto a line it may not belong to.
+// Choosing by amount of overlap got exactly the pathological boxes wrong: a box
+// half a line low covers the next line's ink more than its own, so the biggest
+// overlap — like the nearest centre before it — moved the mark down a line.
+//
+// A run has to be met meaningfully, not grazed: a box's bottom padding
+// routinely dips into the ascenders of the line below, and that contact must
+// not count as touching.
+const MEANINGFUL_OVERLAP = 0.15;
+
 export function chooseInkRun(runs: InkRun[], top: number, bottom: number): InkRun | null {
   if (runs.length === 0) return null;
 
-  let best: InkRun | null = null;
-  let bestOverlap = 0;
-  for (const run of runs) {
+  const height = Math.max(1, bottom - top);
+  const touched = runs.filter((run) => {
     const overlap = Math.min(bottom, run.last + 1) - Math.max(top, run.first);
-    if (overlap > bestOverlap) {
-      best = run;
-      bestOverlap = overlap;
-    }
+    const runHeight = run.last + 1 - run.first;
+    return overlap >= Math.min(runHeight, height) * MEANINGFUL_OVERLAP;
+  });
+  if (touched.length > 0) {
+    return touched.reduce((a, b) => (b.first < a.first ? b : a));
   }
-  if (best) return best;
 
+  // The box floats in blank space, glyphs half a line away — the very case the
+  // snapping exists for. Take the nearest line, but only within a line height;
+  // beyond that the text layer's own geometry is the safer answer.
   const centre = (top + bottom) / 2;
   const centreOf = (run: InkRun) => (run.first + run.last + 1) / 2;
   const nearest = runs.reduce((a, b) =>
     Math.abs(centreOf(b) - centre) < Math.abs(centreOf(a) - centre) ? b : a
   );
-  // "Close enough" is a line height — the box's own height is the wrong ruler,
-  // since a box that has drifted off the glyphs is often a thin one
-  const reach = Math.max(bottom - top, nearest.last + 1 - nearest.first);
+  const reach = Math.max(height, nearest.last + 1 - nearest.first);
   return Math.abs(centreOf(nearest) - centre) <= reach ? nearest : null;
 }

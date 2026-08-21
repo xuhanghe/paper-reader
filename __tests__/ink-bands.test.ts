@@ -20,19 +20,31 @@ describe("choosing the line a band belongs to", () => {
     assert.deepEqual(chooseInkRun(runs, 20, 30), THIS_LINE);
   });
 
-  test("a box sitting low still takes the line it overlaps, not the nearer one", () => {
+  test("a box sitting low still takes its own line, not the nearer one", () => {
     // pdf.js places the box with fallback metrics, so it sits below the glyphs.
-    // Its centre (30) is nearer the line below's centre (45) than its own (25),
-    // and nearest-centre alone therefore moved the mark down a line.
+    // Its centre (30) is nearer the line below's centre (45) than its own (25).
     assert.deepEqual(chooseInkRun(runs, 25, 35), THIS_LINE);
+  });
+
+  test("a box half a line low takes the line it came from, not the one it covers more", () => {
+    // The regression this file exists for, round two: this box overlaps its own
+    // line by 2 rows and the line below by 6. Biggest-overlap moved the mark
+    // down a line — the topmost touched line is the right one, because when
+    // the text layer errs, it errs downward.
+    assert.deepEqual(chooseInkRun(runs, 28, 46), THIS_LINE);
+  });
+
+  test("bottom padding grazing the line below does not steal the mark", () => {
+    // A correct box routinely dips a row into the next line's ascenders
+    assert.deepEqual(chooseInkRun(runs, 19, 41), THIS_LINE);
   });
 
   test("a box sitting high does the same in the other direction", () => {
     assert.deepEqual(chooseInkRun(runs, 15, 25), THIS_LINE);
   });
 
-  test("the run it shares most with wins when it straddles two", () => {
-    assert.deepEqual(chooseInkRun(runs, 27, 47), LINE_BELOW);
+  test("a box entirely on one line, touching no other, takes that line", () => {
+    assert.deepEqual(chooseInkRun(runs, 40, 50), LINE_BELOW);
   });
 
   test("a box on blank paper falls back to the nearest line", () => {
