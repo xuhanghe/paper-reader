@@ -336,37 +336,36 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
     }
     alignMarksToInk(layer, pageEl);
 
-    // One band per line of each highlight, measured from the aligned marks
+    // Everything marked on this page, measured by one piece of code.
+    //
+    // A highlight and a passage with a conversation attached differ in how they
+    // are painted — a wash across the words, or a rule under them — and in
+    // nothing else. Measuring them separately let the two drift apart: the
+    // wash could sit on the right line while the rule sat on the next one, with
+    // no way to tell which of the two paths was wrong. One pass, one geometry.
     const canvas = pageEl.querySelector("canvas") as HTMLCanvasElement | null;
     const canvasRect = canvas?.getBoundingClientRect();
     const box = container.getBoundingClientRect();
+
+    const marked = [
+      ...highlightsRef.current.map((h) => ({
+        id: h.id,
+        selector: "pr-highlight",
+        color: highlightTint(h.color || DEFAULT_HIGHLIGHT_COLOR, HIGHLIGHT_ALPHA),
+        underline: false,
+      })),
+      ...askedRef.current.map((a) => ({
+        id: a.id,
+        selector: "pr-asked",
+        color: a.kind === "cited" ? "var(--quote)" : "var(--accent)",
+        underline: true,
+      })),
+    ];
+
     const bands: HighlightBand[] = [];
-    for (const h of highlightsRef.current) {
+    for (const item of marked) {
       const marks = Array.from(
-        layer.querySelectorAll(`mark.pr-highlight[data-highlight-id="${CSS.escape(h.id)}"]`)
-      ) as HTMLElement[];
-      if (marks.length === 0) continue;
-      const merged = mergeIntoLines(
-        marks
-          .map((m) => m.getBoundingClientRect())
-          .filter((r) => r.width > 0.5 && r.height > 0.5)
-          .map((r) => ({ left: r.left, top: r.top, width: r.width, height: r.height }))
-      );
-      for (const band of merged) {
-        const snapped = canvas && canvasRect ? snapBandToInk(band, canvas, canvasRect) : band;
-        bands.push({
-          id: h.id,
-          color: highlightTint(h.color || DEFAULT_HIGHLIGHT_COLOR, HIGHLIGHT_ALPHA),
-          left: snapped.left - box.left + container.scrollLeft,
-          top: snapped.top - box.top + container.scrollTop,
-          width: snapped.width,
-          height: snapped.height,
-        });
-      }
-    }
-    for (const a of askedRef.current) {
-      const marks = Array.from(
-        layer.querySelectorAll(`mark.pr-asked[data-highlight-id="${CSS.escape(a.id)}"]`)
+        layer.querySelectorAll(`mark.${item.selector}[data-highlight-id="${CSS.escape(item.id)}"]`)
       ) as HTMLElement[];
       if (marks.length === 0) continue;
       const merged = mergeIntoLines(
@@ -378,15 +377,16 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
       for (const band of merged) {
         const snapped: SnappedBand = canvas && canvasRect ? snapBandToInk(band, canvas, canvasRect) : band;
         bands.push({
-          id: a.id,
-          color: a.kind === "cited" ? "var(--quote)" : "var(--accent)",
-          underline: true,
+          id: item.id,
+          color: item.color,
+          underline: item.underline,
           left: snapped.left - box.left + container.scrollLeft,
           top: snapped.top - box.top + container.scrollTop,
           width: snapped.width,
           height: snapped.height,
-          // Where the letters stop, when the pixels could say — the rule is
-          // drawn from this rather than from the band's own bottom edge
+          // Where the letters stop, when the pixels could say. The wash can be
+          // a little taller than the glyphs without looking wrong; a rule
+          // cannot, so it is drawn from this rather than from the band's edge.
           inkBottom:
             snapped.inkBottom === undefined
               ? undefined
@@ -1036,6 +1036,8 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
           onMouseUp={handleContainerMouseUp}
         >
           <div className="pdfViewer" />
+          {/* One band, two ways of painting it: a rule under the words, or a
+              wash across them. Nothing else differs. */}
           {Object.values(highlightBands).flat().map((b, i) =>
             b.underline ? (
               <div
