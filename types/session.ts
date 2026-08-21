@@ -1,3 +1,9 @@
+// Where a passage sits on its page, in PDF-space rectangles — the format
+// Zotero stores annotations in, and zoom-independent. Recorded at selection
+// time, when the position is known exactly, so painting never has to re-derive
+// it from the text layer's unreliable geometry.
+export type PdfRects = { pageIndex: number; rects: number[][] };
+
 export type AnnotationType = "text" | "image";
 
 export type Message = {
@@ -22,6 +28,7 @@ export type Annotation = {
   pageNumber?: number; // PDF page where the text was selected
   // Which of the identical passages on that page it was; see Highlight
   occurrence?: number;
+  position?: PdfRects; // where it sits, recorded when it was selected
 };
 
 export type ConceptEntry = {
@@ -83,6 +90,10 @@ export type Highlight = {
   // appears twice — an abstract and a contributions list saying the same words
   // — and matching by text alone always painted the first.
   occurrence?: number;
+  // Where it sits, recorded at selection time (or carried by the Zotero
+  // annotation it mirrors). With this present, painting uses the stored
+  // geometry; text matching only places the invisible click targets.
+  position?: PdfRects;
   // Key of the Zotero annotation this highlight was written to. Set once the
   // background sync returns; keeps the highlight visible while Zotero is still
   // syncing it down, and lets edits/removals reach the right annotation.

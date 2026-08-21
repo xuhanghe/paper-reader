@@ -9,7 +9,7 @@ import { useTextSelection } from "@/hooks/useTextSelection";
 import { useRegionDrag } from "@/hooks/useRegionDrag";
 import { RegionResult } from "@/hooks/useRegionDrag";
 import { markTextInContainer, clearMarks, rangeForText, findIgnoringWhitespace, occurrenceAt } from "@/lib/highlight-dom";
-import { chooseInkRun } from "@/lib/ink-bands";
+import { chooseInkRun, nearestStoredLine } from "@/lib/ink-bands";
 import { highlightTint, DEFAULT_HIGHLIGHT_COLOR } from "@/lib/highlight-colors";
 import { HighlightPopover } from "./HighlightPopover";
 import type { Highlight } from "@/types/session";
@@ -97,6 +97,8 @@ export type AskedPassage = {
   kind?: "asked" | "cited";
   // Which of the identical passages on the page this is; see Highlight
   occurrence?: number;
+  // Where it sits, recorded when it was selected; see Highlight
+  position?: AnnotationPosition;
 };
 
 // Snaps a selection band to the glyphs it covers.
@@ -174,8 +176,8 @@ const BUTTON_ZOOM_FACTOR = 1.35;
 
 type Props = {
   pdfDataUrl: string;
-  onTextSelected: (text: string, pageNumber?: number, occurrence?: number) => void;
-  onAskAboutSelection: (text: string, question: string, pageNumber?: number, occurrence?: number) => void;
+  onTextSelected: (text: string, pageNumber?: number, occurrence?: number, position?: AnnotationPosition) => void;
+  onAskAboutSelection: (text: string, question: string, pageNumber?: number, occurrence?: number, position?: AnnotationPosition) => void;
   onRegionCaptured: (result: RegionResult) => void;
   // `occurrence` is which of the identical passages on that page was selected.
   // Without it a phrase that appears twice — an abstract and a contributions
@@ -301,18 +303,44 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
     const box = container.getBoundingClientRect();
     const debug = typeof localStorage !== "undefined" && !!localStorage.getItem("pr-debug-bands");
 
+    // Stored geometry, when a record carries it: the position was written down
+    // at selection time (or came with the Zotero annotation), in PDF space.
+    // Converted through the current viewport it is exact at any zoom, and the
+    // text layer has no say in where the band goes.
+    const pageView = viewerRef.current?.getPageView(pageNumber - 1) as
+      | { viewport?: { convertToViewportPoint: (x: number, y: number) => number[] }; div?: HTMLElement }
+      | undefined;
+    const wrapperRect = pageView?.div?.querySelector(".canvasWrapper")?.getBoundingClientRect();
+    const storedLinesFor = (position?: AnnotationPosition): SelectionRect[] | null => {
+      if (!position || position.pageIndex !== pageNumber - 1) return null;
+      if (!pageView?.viewport || !wrapperRect) return null;
+      const rects = position.rects.map(([x1, y1, x2, y2]) => {
+        const [ax, ay] = pageView.viewport!.convertToViewportPoint(x1, y1);
+        const [bx, by] = pageView.viewport!.convertToViewportPoint(x2, y2);
+        return {
+          left: wrapperRect.left + Math.min(ax, bx),
+          top: wrapperRect.top + Math.min(ay, by),
+          width: Math.abs(bx - ax),
+          height: Math.abs(by - ay),
+        };
+      });
+      return rects.length ? mergeIntoLines(rects) : null;
+    };
+
     const marked = [
       ...highlightsRef.current.map((h) => ({
         id: h.id,
         selector: "pr-highlight",
         color: highlightTint(h.color || DEFAULT_HIGHLIGHT_COLOR, HIGHLIGHT_ALPHA),
         underline: false,
+        stored: storedLinesFor(h.position),
       })),
       ...askedRef.current.map((a) => ({
         id: a.id,
         selector: "pr-asked",
         color: a.kind === "cited" ? "var(--quote)" : "var(--accent)",
         underline: true,
+        stored: storedLinesFor(a.position),
       })),
     ];
 
@@ -324,7 +352,9 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
       const marks = Array.from(
         layer.querySelectorAll(`mark.${item.selector}[data-highlight-id="${CSS.escape(item.id)}"]`)
       ) as HTMLElement[];
-      if (marks.length === 0) continue;
+      // With stored geometry the band does not need the text at all, so a
+      // failed text match no longer makes the highlight vanish
+      if (marks.length === 0 && !item.stored) continue;
       const lines: Line[] = [];
       for (const mark of marks) {
         const r = mark.getBoundingClientRect();
@@ -360,8 +390,34 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
     // Then decide and apply — one snap per line, shared by marks and band
     const bands: HighlightBand[] = [];
     for (const { item, lines } of measured) {
+      // The record knows where it sits but the text could not be matched —
+      // paint the geometry alone; there are just no click targets to nudge
+      if (lines.length === 0 && item.stored) {
+        for (const r of item.stored) {
+          bands.push({
+            id: item.id,
+            color: item.color,
+            underline: item.underline,
+            left: r.left - box.left + container.scrollLeft,
+            top: r.top - box.top + container.scrollTop,
+            width: r.width,
+            height: r.height,
+            inkBottom: r.top + r.height - box.top + container.scrollTop,
+          });
+        }
+        continue;
+      }
       for (const line of lines) {
-        const snapped: SnappedBand = canvas && canvasRect ? snapBandToInk(line.rect, canvas, canvasRect) : line.rect;
+        // A stored line wins over reading the ink: it is where this passage
+        // actually was, written down while the selection existed
+        const stored = item.stored
+          ? nearestStoredLine(item.stored, line.rect.top + line.rect.height / 2, line.rect.height * 1.5)
+          : null;
+        const snapped: SnappedBand = stored
+          ? { ...stored, inkBottom: stored.top + stored.height }
+          : canvas && canvasRect
+            ? snapBandToInk(line.rect, canvas, canvasRect)
+            : line.rect;
         const shift = snapped.top + snapped.height / 2 - (line.rect.top + line.rect.height / 2);
         if (debug) {
           console.log(
@@ -703,15 +759,24 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
     const wrapper = pageView?.div?.querySelector(".canvasWrapper");
     if (!pageView?.viewport || !wrapper) return undefined;
     const pageRect = wrapper.getBoundingClientRect();
+    // Store what the reader saw during the drag — the per-line bands, snapped
+    // to the ink — not the raw text-layer boxes, which carry the very offset
+    // this record exists to avoid re-deriving
+    const lines = snapBands(
+      mergeIntoLines(
+        Array.from(sel.getRangeAt(0).getClientRects())
+          .filter((r) => r.width >= 1 && r.height >= 1)
+          .map((r) => ({ left: r.left, top: r.top, width: r.width, height: r.height }))
+      )
+    );
     const rects: number[][] = [];
-    for (const r of Array.from(sel.getRangeAt(0).getClientRects())) {
-      if (r.width < 1 || r.height < 1) continue;
-      const [ax, ay] = pageView.viewport.convertToPdfPoint(r.left - pageRect.left, r.bottom - pageRect.top);
-      const [bx, by] = pageView.viewport.convertToPdfPoint(r.right - pageRect.left, r.top - pageRect.top);
+    for (const r of lines) {
+      const [ax, ay] = pageView.viewport.convertToPdfPoint(r.left - pageRect.left, r.top + r.height - pageRect.top);
+      const [bx, by] = pageView.viewport.convertToPdfPoint(r.left + r.width - pageRect.left, r.top - pageRect.top);
       rects.push([Math.min(ax, bx), Math.min(ay, by), Math.max(ax, bx), Math.max(ay, by)]);
     }
     return rects.length ? { pageIndex: pageNum - 1, rects } : undefined;
-  }, []);
+  }, [snapBands]);
 
   useEffect(() => {
     if (selection) {
@@ -723,7 +788,7 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
 
   const handleExplain = useCallback(() => {
     if (selection) {
-      onTextSelected(selection.text, selectionPageRef.current, selectionOccurrenceRef.current);
+      onTextSelected(selection.text, selectionPageRef.current, selectionOccurrenceRef.current, selectionPositionRef.current);
       clearSelection();
     }
   }, [selection, onTextSelected, clearSelection]);
@@ -731,7 +796,7 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
   const handleAsk = useCallback(
     (question: string) => {
       if (selection) {
-        onAskAboutSelection(selection.text, question, selectionPageRef.current, selectionOccurrenceRef.current);
+        onAskAboutSelection(selection.text, question, selectionPageRef.current, selectionOccurrenceRef.current, selectionPositionRef.current);
         clearSelection();
       }
     },

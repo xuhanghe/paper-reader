@@ -218,7 +218,12 @@ can be moved, renamed or copied to another machine and the threads keep
 working. Absolute paths exist only transiently, in the prompt handed to a CLI
 that has to open the file.
 
-Highlights are matched to the page by text plus which occurrence of it was
+A highlight records where it sits as it is made — the ink-snapped bands you saw
+while selecting, converted to PDF-space rectangles, the same format Zotero
+stores — and is painted from that record at any zoom. Text matching still
+places the invisible click targets, and remains the fallback for records made
+before positions existed and for citations the model writes. Highlights are
+matched to the page by text plus which occurrence of it was
 selected — a phrase like "operator-level granularities" often appears in both an
 abstract and a contributions list, and matching on text alone always painted the
 first one. Matching ignores whitespace entirely on both

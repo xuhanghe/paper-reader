@@ -82,9 +82,18 @@ export async function GET(req: NextRequest) {
           .filter((c) => c.data.annotationText?.trim() || c.data.annotationComment?.trim())
           .map((c) => {
             let page: number | undefined;
+            let position: { pageIndex: number; rects: number[][] } | undefined;
             try {
               const pos = JSON.parse(c.data.annotationPosition || "{}");
-              if (typeof pos.pageIndex === "number") page = pos.pageIndex + 1;
+              if (typeof pos.pageIndex === "number") {
+                page = pos.pageIndex + 1;
+                // Zotero's own rects say exactly where the annotation sits —
+                // the reader paints from them instead of re-deriving the spot
+                // from text matching
+                if (Array.isArray(pos.rects) && pos.rects.length) {
+                  position = { pageIndex: pos.pageIndex, rects: pos.rects };
+                }
+              }
             } catch {
               // position unavailable — jump will fall back to text search
             }
@@ -93,6 +102,7 @@ export async function GET(req: NextRequest) {
               text: c.data.annotationText || "",
               comment: c.data.annotationComment || "",
               page,
+              position,
               type: c.data.annotationType || "highlight",
               color: c.data.annotationColor || undefined,
             };

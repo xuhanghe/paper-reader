@@ -48,3 +48,19 @@ export function chooseInkRun(runs: InkRun[], top: number, bottom: number): InkRu
   const reach = Math.max(height, nearest.last + 1 - nearest.first);
   return Math.abs(centreOf(nearest) - centre) <= reach ? nearest : null;
 }
+
+// A measured mark-line paired with the stored line it stands for. Stored
+// geometry is per line already (selection rects come one per line), so the
+// nearest stored line within `reach` of the measured centre is the one this
+// line's band should take. Nothing nearby means the stored record does not
+// cover this line — the caller falls back to reading the ink.
+export type Box = { left: number; top: number; width: number; height: number };
+
+export function nearestStoredLine(stored: Box[], centre: number, reach: number): Box | null {
+  let best: Box | null = null;
+  for (const line of stored) {
+    const d = Math.abs(line.top + line.height / 2 - centre);
+    if (d <= reach && (!best || d < Math.abs(best.top + best.height / 2 - centre))) best = line;
+  }
+  return best;
+}

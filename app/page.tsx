@@ -2,6 +2,7 @@
 import { useRef, useState, useCallback, useEffect, useMemo, useSyncExternalStore } from "react";
 import { extractZoteroItemText } from "@/lib/extract-text";
 import { isStale } from "@/lib/takeaways";
+import type { PdfRects } from "@/types/session";
 import { emptyNav, record as recordSpot, back as navBack, forward as navForward, type Spot } from "@/lib/nav-history";
 import dynamic from "next/dynamic";
 import { useSession, sessionIdFor } from "@/hooks/useSession";
@@ -405,7 +406,7 @@ export default function Home() {
     },
     [visibleTabs, paperId, openTab, clearPaper]
   );
-  type ZoteroAnnotation = { key: string; text: string; comment: string; page?: number; type: string; color?: string };
+  type ZoteroAnnotation = { key: string; text: string; comment: string; page?: number; position?: PdfRects; type: string; color?: string };
   const [zoteroNotesState, setZoteroNotesState] = useState<{
     forKey: string;
     notes: { key: string; html: string }[];
@@ -508,6 +509,8 @@ export default function Home() {
           id: `zotero-${a.key}`,
           text: a.text,
           pageNumber: a.page,
+          // Zotero's own rects — painted directly, never re-derived from text
+          position: a.position,
           note: a.comment || undefined,
           source: "zotero" as const,
           color: a.color,
@@ -535,6 +538,7 @@ export default function Home() {
           label: a.label,
           kind: "asked",
           occurrence: a.occurrence,
+          position: a.position,
         }))
         .concat(citedPassages),
     [session.annotations, citedPassages]
@@ -839,8 +843,8 @@ export default function Home() {
   );
 
   const handleTextSelected = useCallback(
-    (text: string, pageNumber?: number, occurrence = 0) => {
-      const id = addAnnotation({ type: "text", selectedText: text, pageNumber, occurrence, messages: [{ role: "assistant", content: "" }] });
+    (text: string, pageNumber?: number, occurrence = 0, position?: PdfRects) => {
+      const id = addAnnotation({ type: "text", selectedText: text, pageNumber, occurrence, position, messages: [{ role: "assistant", content: "" }] });
       setActiveAnnotationId(id);
       streamAsk(id, { kind: "explain", selected_text: text, page_number: pageNumber });
     },
@@ -848,12 +852,13 @@ export default function Home() {
   );
 
   const handleAskAboutSelection = useCallback(
-    (text: string, question: string, pageNumber?: number, occurrence = 0) => {
+    (text: string, question: string, pageNumber?: number, occurrence = 0, position?: PdfRects) => {
       const id = addAnnotation({
         type: "text",
         selectedText: text,
         pageNumber,
         occurrence,
+        position,
         messages: [{ role: "user", content: question }, { role: "assistant", content: "" }],
       });
       setActiveAnnotationId(id);
@@ -966,7 +971,7 @@ export default function Home() {
 
   const handleHighlight = useCallback(
     (text: string, pageNumber?: number, position?: { pageIndex: number; rects: number[][] }, color = DEFAULT_HIGHLIGHT_COLOR, occurrence = 0) => {
-      const id = addHighlight({ text, pageNumber, color, occurrence });
+      const id = addHighlight({ text, pageNumber, color, occurrence, position });
       highlightUndo.current.push(id);
       if (position) syncHighlightToZotero(id, text, undefined, pageNumber, position, color);
     },
@@ -975,7 +980,7 @@ export default function Home() {
 
   const handleNote = useCallback(
     (text: string, note: string, pageNumber?: number, position?: { pageIndex: number; rects: number[][] }, color = DEFAULT_HIGHLIGHT_COLOR, occurrence = 0) => {
-      const id = addHighlight({ text, note, pageNumber, color, occurrence });
+      const id = addHighlight({ text, note, pageNumber, color, occurrence, position });
       highlightUndo.current.push(id);
       if (position) syncHighlightToZotero(id, text, note, pageNumber, position, color);
     },

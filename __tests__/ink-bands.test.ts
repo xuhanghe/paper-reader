@@ -1,6 +1,6 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
-import { chooseInkRun } from "../lib/ink-bands.js";
+import { chooseInkRun, nearestStoredLine } from "../lib/ink-bands.js";
 
 // Rows in the search window. A line of text is an inked run; the window holds
 // two or three of them, because it reaches a band height above the box and half
@@ -65,5 +65,31 @@ describe("choosing the line a band belongs to", () => {
 
   test("one line in the window is that line, if it is close", () => {
     assert.deepEqual(chooseInkRun([THIS_LINE], 22, 32), THIS_LINE);
+  });
+});
+
+// Stored geometry pairing: a record that knows where it sits provides one box
+// per line; each measured mark-line takes the nearest stored line. Nothing
+// nearby means the record does not cover this line, and the caller reads the
+// ink instead.
+describe("pairing a mark-line with its stored line", () => {
+  const stored = [
+    { left: 10, top: 20, width: 200, height: 10 },
+    { left: 10, top: 40, width: 180, height: 10 },
+  ];
+
+  test("a line takes the stored line it sits on", () => {
+    assert.deepEqual(nearestStoredLine(stored, 25, 15), stored[0]);
+    assert.deepEqual(nearestStoredLine(stored, 45, 15), stored[1]);
+  });
+
+  test("a mark-line sitting low still pairs with its own stored line", () => {
+    // The text-layer box drifts down; the stored line does not move
+    assert.deepEqual(nearestStoredLine(stored, 33, 15), stored[0]);
+  });
+
+  test("a line the record does not cover pairs with nothing", () => {
+    assert.equal(nearestStoredLine(stored, 90, 15), null);
+    assert.equal(nearestStoredLine([], 25, 15), null);
   });
 });
