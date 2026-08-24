@@ -9,7 +9,8 @@ import { useTextSelection } from "@/hooks/useTextSelection";
 import { useRegionDrag } from "@/hooks/useRegionDrag";
 import { RegionResult } from "@/hooks/useRegionDrag";
 import { markTextInContainer, clearMarks, rangeForText, findIgnoringWhitespace, occurrenceAt } from "@/lib/highlight-dom";
-import { chooseInkRun, nearestStoredLine } from "@/lib/ink-bands";
+import { chooseInkRun, nearestStoredLine, type InkRun } from "@/lib/ink-bands";
+import { verticalNudge, horizontalNudge } from "@/lib/text-layer-calibration";
 import { highlightTint, DEFAULT_HIGHLIGHT_COLOR } from "@/lib/highlight-colors";
 import { HighlightPopover } from "./HighlightPopover";
 import type { Highlight } from "@/types/session";
@@ -252,6 +253,125 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
   const askedRef = useRef<AskedPassage[]>(askedPassages);
   askedRef.current = askedPassages;
 
+  // ── Text-layer calibration ──────────────────────────────────────
+  // Some PDFs' text layers ride off the printed glyphs (old Type 1 fonts,
+  // metrics pdf.js has to guess), and the error is per-span — one span half a
+  // line low while its neighbour sits high. The browser hit-tests against the
+  // layer, so selection, copy and clicks all lie with it: sweeping the upper
+  // half of a printed line selects the line above. Each span is measured
+  // against the rendered ink and nudged onto it, vertically and horizontally,
+  // before anything is painted. Spans of a metrically clean PDF measure ~0 and
+  // are left untouched.
+  const paintPageRef = useRef<((n: number) => void) | null>(null);
+
+  const calibrateTextLayer = useCallback((layer: HTMLElement, pageEl: Element, pageNumber: number) => {
+    const canvas = pageEl.querySelector("canvas") as HTMLCanvasElement | null;
+    if (!canvas) return;
+    const key = String(viewerRef.current?.currentScale ?? 1);
+    if (layer.dataset.prCalibrated === key) return;
+    // Embedded fonts still loading means the span geometry is about to change
+    // under us — measure once they settle
+    if (typeof document !== "undefined" && document.fonts && document.fonts.status !== "loaded") {
+      document.fonts.ready.then(() => {
+        delete layer.dataset.prCalibrated;
+        paintPageRef.current?.(pageNumber);
+      });
+      return;
+    }
+    const canvasRect = canvas.getBoundingClientRect();
+    if (canvasRect.width === 0) return;
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    if (!ctx) return;
+    let image: ImageData;
+    try {
+      image = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    } catch {
+      return; // tainted or unfinished canvas — nothing to measure against
+    }
+    layer.dataset.prCalibrated = key;
+
+    const W = image.width;
+    const data = image.data;
+    const inkAt = (row: number, col: number) => {
+      const at = (row * W + col) * 4;
+      return 0.299 * data[at] + 0.587 * data[at + 1] + 0.114 * data[at + 2] < INK_LUMA;
+    };
+    const scaleX = canvas.width / canvasRect.width;
+    const scaleY = canvas.height / canvasRect.height;
+
+    // pdf.js positions spans in % of the layer (older versions used px);
+    // a nudge in css px is converted to whichever unit the span speaks
+    const layerRect = layer.getBoundingClientRect();
+    const shiftBy = (el: HTMLElement, prop: "top" | "left", deltaPx: number, base: number) => {
+      const value = el.style[prop];
+      if (value.endsWith("px")) el.style[prop] = `${(parseFloat(value) + deltaPx).toFixed(2)}px`;
+      else if (value.endsWith("%")) el.style[prop] = `${(parseFloat(value) + (deltaPx / base) * 100).toFixed(4)}%`;
+    };
+    const adjustable = (v: string) => v.endsWith("px") || v.endsWith("%");
+
+    let nudged = 0;
+    const magnitudes: number[] = [];
+    for (const span of Array.from(layer.querySelectorAll("span")) as HTMLElement[]) {
+      if (!(span.textContent || "").trim()) continue;
+      if (!adjustable(span.style.top) || !adjustable(span.style.left)) continue;
+      const r = span.getBoundingClientRect();
+      if (r.width < 8 || r.height < 4) continue;
+      const x0 = Math.max(0, Math.floor((r.left - canvasRect.left) * scaleX));
+      const x1 = Math.min(canvas.width, Math.ceil((r.right - canvasRect.left) * scaleX));
+      const yTop = (r.top - canvasRect.top) * scaleY;
+      const yBot = (r.bottom - canvasRect.top) * scaleY;
+      const h = yBot - yTop;
+      const y0 = Math.max(0, Math.floor(yTop - h * 0.8));
+      const y1 = Math.min(canvas.height, Math.ceil(yBot + h * 0.8));
+      if (x1 - x0 < 8 || y1 - y0 < 4) continue;
+
+      const runs: InkRun[] = [];
+      for (let row = y0; row < y1; row++) {
+        let ink = 0;
+        for (let col = x0; col < x1; col++) if (inkAt(row, col)) ink++;
+        const inked = ink > (x1 - x0) * INK_ROW_SHARE;
+        const open = runs[runs.length - 1];
+        if (inked && open && open.last === row - 1) open.last = row;
+        else if (inked) runs.push({ first: row, last: row });
+      }
+      const dyCanvas = verticalNudge(runs, yTop, yBot, h * 0.55);
+      if (dyCanvas === null) continue;
+
+      // The run it belongs to, for the horizontal extent of its own line
+      const centre = (yTop + yBot) / 2 + dyCanvas;
+      const own = runs.reduce((best, run) =>
+        Math.abs((run.first + run.last + 1) / 2 - centre) < Math.abs((best.first + best.last + 1) / 2 - centre) ? run : best
+      );
+      const hx0 = Math.max(0, Math.floor(x0 - h));
+      const hx1 = Math.min(canvas.width, Math.ceil(x1 + h));
+      let inkLeft: number | null = null;
+      let inkRight: number | null = null;
+      for (let col = hx0; col < hx1; col++) {
+        let hit = false;
+        for (let row = own.first; row <= own.last; row++) if (inkAt(row, col)) { hit = true; break; }
+        if (hit) {
+          if (inkLeft === null) inkLeft = col;
+          inkRight = col + 1;
+        }
+      }
+      const dxCanvas = horizontalNudge(x0, x1, inkLeft, inkRight, h);
+
+      const dy = dyCanvas / scaleY;
+      const dx = dxCanvas === null ? 0 : dxCanvas / scaleX;
+      if (Math.abs(dy) < 1 && Math.abs(dx) < 1) continue;
+      if (Math.abs(dy) >= 1) shiftBy(span, "top", dy, layerRect.height);
+      if (Math.abs(dx) >= 1) shiftBy(span, "left", dx, layerRect.width);
+      nudged++;
+      magnitudes.push(Math.max(Math.abs(dy), Math.abs(dx)));
+    }
+    if (nudged > 3) {
+      const median = magnitudes.sort((a, b) => a - b)[Math.floor(magnitudes.length / 2)].toFixed(1);
+      console.info(
+        `[paper-reader] page ${pageNumber}: aligned ${nudged} text spans onto their glyphs (median ${median}px) — this PDF's selectable text sits off its print`
+      );
+    }
+  }, []);
+
   // Highlights are drawn as bands, exactly like the selection — the <mark>
   // elements stay in the text layer only to carry ids and take clicks.
   const [highlightBands, setHighlightBands] = useState<Record<number, HighlightBand[]>>({});
@@ -261,6 +381,9 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
     const pageEl = container?.querySelector(`.page[data-page-number="${pageNumber}"]`);
     const layer = pageEl?.querySelector(".textLayer") as HTMLElement | null;
     if (!container || !pageEl || !layer) return;
+    // Before anything is measured or painted: the marks, occurrences and
+    // stored geometry all assume the layer sits on its glyphs
+    calibrateTextLayer(layer, pageEl, pageNumber);
     clearMarks(layer, "pr-highlight");
     clearMarks(layer, "pr-asked");
     for (const a of askedRef.current) {
@@ -450,7 +573,11 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
       }
     }
     setHighlightBands((prev) => ({ ...prev, [pageNumber]: bands }));
-  }, []);
+  }, [calibrateTextLayer]);
+
+  useEffect(() => {
+    paintPageRef.current = paintPageHighlights;
+  });
 
   // Clicking an existing highlight opens its recolour / remove menu and points
   // the Notes panel at the same entry

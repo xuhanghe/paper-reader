@@ -48,6 +48,15 @@ of that highlight and it lives in Zotero — recolour it, edit its note or delet
 it here and Zotero changes; do the same in Zotero and the reader follows. Delete
 one in Zotero and it disappears here rather than lingering.
 
+Some PDFs' invisible text layers sit off the printed glyphs entirely — old
+Type 1 LaTeX fonts, positioned with metrics pdf.js has to guess, each span off
+by its own amount in its own direction. The browser hit-tests against that
+layer, so selection, copy and clicks all lie with it: sweeping a printed line
+selects the line above. The reader measures every span against the rendered
+ink when a page appears and nudges it onto its glyphs, vertically and
+horizontally; a clean layer measures ~0 and is untouched, and a console line
+reports when a page needed correcting.
+
 Highlights are drawn as smooth per-line bands snapped to the actual ink on the
 page, not to the PDF text layer — the line a band belongs to is decided by which
 glyphs it overlaps rather than by which is nearest, or a box sitting low would
