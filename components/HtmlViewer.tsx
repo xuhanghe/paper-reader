@@ -3,6 +3,7 @@ import { useRef, useState, useCallback, useEffect, forwardRef, useImperativeHand
 import { SelectionPopover } from "./SelectionPopover";
 import { HighlightPopover } from "./HighlightPopover";
 import { clearMarks, markTextInContainer, rangeForText, occurrenceAt } from "@/lib/highlight-dom";
+import { isHighlightDeleteKey, isTextEditingTarget } from "@/lib/keys";
 import type { Highlight } from "@/types/session";
 import type { AnnotationPosition, PdfViewerHandle } from "./PdfViewer";
 
@@ -102,6 +103,27 @@ export const HtmlViewer = forwardRef<PdfViewerHandle, Props>(function HtmlViewer
   useEffect(() => {
     clickRef.current = onHighlightClick;
   }, [onHighlightClick]);
+
+  // Keyboard events inside the snapshot stay in its iframe, so listen on both
+  // documents while a saved highlight is selected.
+  useEffect(() => {
+    if (!highlightMenu || !onRemoveHighlight) return;
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!isHighlightDeleteKey(event) || isTextEditingTarget(event.target)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const id = highlightMenu.id;
+      setHighlightMenu(null);
+      onRemoveHighlight(id);
+    };
+
+    const documents = [document, iframeRef.current?.contentDocument].filter(
+      (candidate): candidate is Document => Boolean(candidate)
+    );
+    documents.forEach((candidate) => candidate.addEventListener("keydown", onKeyDown));
+    return () => documents.forEach((candidate) => candidate.removeEventListener("keydown", onKeyDown));
+  }, [highlightMenu, onRemoveHighlight]);
 
   const applyZoom = useCallback((z: number) => {
     const clamped = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, z));

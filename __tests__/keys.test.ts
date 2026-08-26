@@ -2,7 +2,12 @@ import { test, describe, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { JSDOM } from "jsdom";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
-import { isSubmitKey, __resetImeStateForTests } from "../lib/keys.js";
+import {
+  isHighlightDeleteKey,
+  isSubmitKey,
+  isTextEditingTarget,
+  __resetImeStateForTests,
+} from "../lib/keys.js";
 
 // Typing English with a Chinese IME active still opens a composition: the
 // letters sit in the IME buffer and Enter commits them. Submitting on that
@@ -85,5 +90,34 @@ describe("isSubmitKey — the keystroke that ends a composition", () => {
     fire("compositionend");
     await new Promise((r) => setTimeout(r, 120));
     assert.equal(isSubmitKey(key()), true);
+  });
+});
+
+describe("isHighlightDeleteKey", () => {
+  test("accepts Delete and the Mac delete key reported as Backspace", () => {
+    assert.equal(isHighlightDeleteKey({ key: "Delete" }), true);
+    assert.equal(isHighlightDeleteKey({ key: "Backspace" }), true);
+  });
+
+  test("does not claim unrelated keys or modified browser shortcuts", () => {
+    assert.equal(isHighlightDeleteKey({ key: "Enter" }), false);
+    assert.equal(isHighlightDeleteKey({ key: "Backspace", metaKey: true }), false);
+    assert.equal(isHighlightDeleteKey({ key: "Delete", ctrlKey: true }), false);
+    assert.equal(isHighlightDeleteKey({ key: "Delete", shiftKey: true }), false);
+  });
+
+  test("does not delete while an IME is composing", () => {
+    assert.equal(isHighlightDeleteKey({ key: "Backspace", isComposing: true }), false);
+  });
+
+  test("recognizes fields and editable regions without depending on their browser realm", () => {
+    dom.window.document.body.innerHTML = `
+      <textarea id="note"></textarea>
+      <div contenteditable="true"><span id="editable-child">draft</span></div>
+      <button id="reader">reader</button>
+    `;
+    assert.equal(isTextEditingTarget(dom.window.document.querySelector("#note")), true);
+    assert.equal(isTextEditingTarget(dom.window.document.querySelector("#editable-child")), true);
+    assert.equal(isTextEditingTarget(dom.window.document.querySelector("#reader")), false);
   });
 });

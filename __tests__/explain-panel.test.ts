@@ -46,6 +46,20 @@ function render(annotation: Annotation, streaming: boolean): string {
   return renderPanel([annotation], streaming ? annotation.id : undefined, annotation.id);
 }
 
+describe("responsive explain toolbar", () => {
+  test("keeps narrow-panel controls in independently wrapping groups", () => {
+    const html = renderPanel([
+      thread([{ role: "assistant", content: "first" }], "toolbar-a", "first"),
+      thread([{ role: "assistant", content: "second" }], "toolbar-b", "second"),
+    ]);
+    assert.match(html, /pr-explain-panel/);
+    assert.match(html, /pr-explain-toolbar/);
+    assert.match(html, /pr-explain-models/);
+    assert.match(html, /pr-explain-toggle/);
+    assert.match(html, /pr-collapse-all-label/);
+  });
+});
+
 const FOLLOW_UP = "Ask a follow-up";
 const countFollowUps = (html: string) => html.split(FOLLOW_UP).length - 1;
 

@@ -995,27 +995,29 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
   );
 
   const toolbar = (
-    <div className="shrink-0 flex items-center gap-1 px-3 py-1.5" style={{ background: "var(--paper)", borderBottom: "1px solid var(--border)" }}>
-      <span className="text-[10px] uppercase tracking-widest mr-1" style={{ color: "var(--ink-faint)" }}>Text</span>
-      <button
-        onClick={() => setFontIdx((i) => Math.max(0, i - 1))}
-        disabled={!canDecrease}
-        className="btn-icon w-7 h-7 text-base leading-none"
-        title="Smaller text (Ctrl+scroll)"
-      >−</button>
-      <button
-        onClick={() => setFontIdx(DEFAULT_FONT_IDX)}
-        className="btn-icon px-2 py-0.5 text-xs min-w-[44px] text-center tabular-nums"
-        title="Reset text size"
-      >
-        {fontSize}px
-      </button>
-      <button
-        onClick={() => setFontIdx((i) => Math.min(FONT_SIZES.length - 1, i + 1))}
-        disabled={!canIncrease}
-        className="btn-icon w-7 h-7 text-base leading-none"
-        title="Larger text (Ctrl+scroll)"
-      >+</button>
+    <div className="pr-explain-toolbar shrink-0 flex flex-wrap items-center gap-1 px-3 py-1.5" style={{ background: "var(--paper)", borderBottom: "1px solid var(--border)" }}>
+      <span className="inline-flex shrink-0 items-center gap-1">
+        <span className="text-[10px] uppercase tracking-widest mr-1" style={{ color: "var(--ink-faint)" }}>Text</span>
+        <button
+          onClick={() => setFontIdx((i) => Math.max(0, i - 1))}
+          disabled={!canDecrease}
+          className="btn-icon w-7 h-7 text-base leading-none"
+          title="Smaller text (Ctrl+scroll)"
+        >−</button>
+        <button
+          onClick={() => setFontIdx(DEFAULT_FONT_IDX)}
+          className="btn-icon px-2 py-0.5 text-xs min-w-[44px] text-center tabular-nums"
+          title="Reset text size"
+        >
+          {fontSize}px
+        </button>
+        <button
+          onClick={() => setFontIdx((i) => Math.min(FONT_SIZES.length - 1, i + 1))}
+          disabled={!canIncrease}
+          className="btn-icon w-7 h-7 text-base leading-none"
+          title="Larger text (Ctrl+scroll)"
+        >+</button>
+      </span>
       {(onGoBack || onGoForward) && (
         // Undo a jump, and redo it. Kept beside the conversations because that
         // is where most jumps are taken from, and both panes move together.
@@ -1043,24 +1045,24 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
       {annotations.length > 1 && (
         <button
           onClick={toggleAll}
-          className="btn-icon px-2 py-0.5 text-[11px] ml-1"
+          className="btn-icon px-2 py-0.5 text-[11px] ml-1 whitespace-nowrap"
           title={allCollapsed ? "Expand every conversation" : "Collapse every conversation"}
         >
-          {allCollapsed ? "⇕ expand all" : "⇕ collapse all"}
+          <span>⇕</span><span className="pr-collapse-all-label"> {allCollapsed ? "expand all" : "collapse all"}</span>
         </button>
       )}
-      <span className="ml-auto inline-flex items-center gap-1">
+      <span className="pr-explain-models ml-auto inline-flex shrink-0 max-w-full items-center justify-end gap-1">
         {modelControls}
-        <button onClick={onToggle} className="btn-icon w-6 h-6 text-xs" title="Collapse panel">
-          ›
-        </button>
       </span>
+      <button onClick={onToggle} className="pr-explain-toggle btn-icon shrink-0 w-6 h-6 text-xs" title="Collapse panel">
+        ›
+      </button>
     </div>
   );
 
   if (annotations.length === 0) {
     return (
-      <div className="flex flex-col overflow-hidden" style={{ background: "var(--paper)", width: `${width}px`, minWidth: 250 }}>
+      <div className="pr-explain-panel flex flex-col overflow-hidden" style={{ background: "var(--paper)", width: `${width}px`, minWidth: 250 }}>
         {toolbar}
         <div className="flex-1 flex flex-col items-center justify-center gap-3 p-8">
           <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" style={{ color: "var(--ink-faint)" }}>
@@ -1082,7 +1084,7 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
   }
 
   return (
-    <div className="flex flex-col overflow-hidden" style={{ background: "var(--paper)", width: `${width}px`, minWidth: 250 }}>
+    <div className="pr-explain-panel flex flex-col overflow-hidden" style={{ background: "var(--paper)", width: `${width}px`, minWidth: 250 }}>
       {toolbar}
 
       {lightboxState && (

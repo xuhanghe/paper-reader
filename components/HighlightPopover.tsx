@@ -70,7 +70,7 @@ export function HighlightPopover({ rect, color, note, onRecolor, onEditNote, onR
           onClick={onRemove}
           className="text-xs px-1.5 py-0.5 rounded transition-colors"
           style={{ color: "#F87171" }}
-          title="Remove this highlight"
+          title="Remove this highlight (Delete or Backspace)"
         >
           🗑 Remove
         </button>

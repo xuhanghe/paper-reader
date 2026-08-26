@@ -1,6 +1,6 @@
 "use client";
 import { useRef, useState, useCallback, useEffect, forwardRef, useImperativeHandle } from "react";
-import { getDocument, GlobalWorkerOptions } from "pdfjs-dist";
+import { AnnotationMode, getDocument, GlobalWorkerOptions } from "pdfjs-dist";
 import type { PDFDocumentProxy } from "pdfjs-dist";
 import { EventBus, PDFViewer as PdfJsViewer, PDFLinkService, PDFFindController } from "pdfjs-dist/web/pdf_viewer.mjs";
 import "pdfjs-dist/web/pdf_viewer.css";
@@ -9,16 +9,32 @@ import { useTextSelection } from "@/hooks/useTextSelection";
 import { useRegionDrag } from "@/hooks/useRegionDrag";
 import { RegionResult } from "@/hooks/useRegionDrag";
 import { markTextInContainer, clearMarks, rangeForText, findIgnoringWhitespace, occurrenceAt } from "@/lib/highlight-dom";
-import { chooseInkRun, nearestStoredLine, type InkRun } from "@/lib/ink-bands";
+import { chooseInkRun, mergeIntoLines, nearestInkRun, nearestStoredLine, relativeToPage, type InkRun } from "@/lib/ink-bands";
+import { logicalSelectionBands } from "@/lib/selection-geometry";
+import { alignRectsToZoteroLines, type PdfTextItem, type PdfTextStyle } from "@/lib/zotero-selection-geometry";
+import {
+  buildPdfSelectionModel,
+  hitTestPdfSelection,
+  pdfSelectionRange,
+  type PdfSelectionModel,
+  type PdfSelectionRange,
+} from "@/lib/pdf-selection-model";
+import { alignReferenceLink, referenceRectFractions } from "@/lib/pdf-reference-geometry";
 import { verticalNudge, horizontalNudge } from "@/lib/text-layer-calibration";
 import { highlightTint, DEFAULT_HIGHLIGHT_COLOR } from "@/lib/highlight-colors";
+import { isHighlightDeleteKey, isTextEditingTarget } from "@/lib/keys";
+import { nextZoomFrameScale, wheelDeltaPixels, wheelZoomTarget } from "@/lib/pdf-zoom";
 import { HighlightPopover } from "./HighlightPopover";
 import type { Highlight } from "@/types/session";
 
+type PageTextContent = {
+  items: Array<PdfTextItem | { type: string; id: string }>;
+  styles: Record<string, PdfTextStyle>;
+};
+
 GlobalWorkerOptions.workerSrc = new URL("pdfjs-dist/build/pdf.worker.min.mjs", import.meta.url).toString();
 
-// A selection band grows this many pixels beyond the glyph boxes, so lines of
-// mixed font sizes still read as one even ribbon
+// Viewport-space padding used only by the brief jump-to-passage flash.
 const SELECTION_PAD = 1.5;
 
 type SelectionRect = { left: number; top: number; width: number; height: number };
@@ -30,44 +46,6 @@ type SelectionRect = { left: number; top: number; width: number; height: number 
 // line, which is how an underline came to sit beneath the wrong sentence.
 type SnappedBand = SelectionRect & { inkBottom?: number; inkFound?: boolean };
 
-// The browser paints ::selection once per element, and pdf.js gives every glyph
-// run its own absolutely positioned span — so a native selection comes out as a
-// row of mismatched boxes with gaps between them. Merging the range's client
-// rects into one box per line gives the smooth ribbon Zotero's reader draws.
-//
-// Two things have to be handled or the merge runs away: pdf.js keeps a
-// page-sized `.endOfContent` div inside the text layer, which lands in the
-// range as one enormous rect, and a band's tolerance has to stay pinned to the
-// line it started on rather than growing as the band does.
-function mergeIntoLines(rects: SelectionRect[]): SelectionRect[] {
-  if (rects.length === 0) return [];
-
-  // Drop structural rects (endOfContent, whole-page boxes) by height
-  const heights = rects.map((r) => r.height).sort((a, b) => a - b);
-  const median = heights[Math.floor(heights.length / 2)];
-  const lines = rects
-    .filter((r) => r.height <= median * 2.5)
-    .sort((a, b) => a.top - b.top || a.left - b.left);
-
-  const bands: (SelectionRect & { centre: number; lineHeight: number })[] = [];
-  for (const r of lines) {
-    const centre = r.top + r.height / 2;
-    const band = bands[bands.length - 1];
-    // Compare against the band's founding line, not its grown bounds
-    if (!band || Math.abs(centre - band.centre) > Math.min(r.height, band.lineHeight) * 0.5) {
-      bands.push({ ...r, centre, lineHeight: r.height });
-      continue;
-    }
-    const left = Math.min(band.left, r.left);
-    const top = Math.min(band.top, r.top);
-    band.left = left;
-    band.top = top;
-    band.width = Math.max(band.left + band.width, r.left + r.width) - left;
-    band.height = Math.max(band.top + band.height, r.top + r.height) - top;
-  }
-  return bands.map(({ left, top, width, height }) => ({ left, top, width, height }));
-}
-
 // A pixel counts as ink below this luminance
 const INK_LUMA = 150;
 // A row is part of a glyph line once this share of it is ink
@@ -75,14 +53,172 @@ const INK_ROW_SHARE = 0.015;
 // How far above/below a text-layer box to look for the glyphs it stands for
 const INK_SEARCH_ABOVE = 1.0;
 const INK_SEARCH_BELOW = 0.5;
-// Floor on band height, as a share of the text-layer box (i.e. the font size)
-const MIN_BAND_RATIO = 0.82;
+// Floor on band height, as a share of the text-layer box (i.e. the font size).
+// Raster ink is thinner than the typographic glyph box; retaining almost all
+// of the box makes Zotero's stored rectangle cover ascenders and descenders.
+const MIN_BAND_RATIO = 0.96;
 // How long a jumped-to passage stays lit
 const FLASH_MS = 1600;
 // Zotero draws its annotations with globalAlpha 0.5 and multiply blending
 const HIGHLIGHT_ALPHA = 0.5;
 
 type HighlightBand = SelectionRect & { id: string; color: string; underline?: boolean; inkBottom?: number };
+
+type ReferenceLinkBand = SelectionRect & {
+  id: string;
+  destination?: string | unknown[];
+  url?: string;
+  label: string;
+  reference: boolean;
+};
+
+type PdfLinkAnnotation = {
+  id: string;
+  subtype: string;
+  rect: number[];
+  dest?: string | unknown[];
+  url?: string;
+  overlaidText?: string;
+};
+
+type ReferencePreviewData = {
+  imageUrl: string;
+  pageNumber: number;
+};
+
+type ReferencePreviewState = {
+  anchor: DOMRect;
+  destination: string;
+  label: string;
+  loading: boolean;
+  data?: ReferencePreviewData;
+  error?: string;
+};
+
+// Persistent annotations live inside the PDF page itself, in fractions of its
+// width/height. PDF.js can CSS-scale the page immediately and redraw it later;
+// the annotation and canvas therefore move as one object with no pixel-space
+// repaint race during zoom.
+function renderPageBands(wrapper: HTMLElement, bands: HighlightBand[]) {
+  let overlay = Array.from(wrapper.children).find((el) => el.classList.contains("pr-page-bands")) as
+    | HTMLDivElement
+    | undefined;
+  if (!overlay) {
+    overlay = document.createElement("div");
+    overlay.className = "pr-page-bands";
+    overlay.setAttribute("aria-hidden", "true");
+    wrapper.appendChild(overlay);
+  }
+
+  const fragment = document.createDocumentFragment();
+  for (const band of bands) {
+    const el = document.createElement("div");
+    el.dataset.highlightId = band.id;
+    el.className = band.underline ? "pr-band pr-asked-rule" : "pr-band";
+    const pad = band.underline ? 0 : band.height * 0.16;
+    const top = band.underline
+      ? (band.inkBottom ?? band.top + band.height) + band.height * 0.1
+      : band.top - pad;
+    const height = band.underline ? band.height * 0.14 : band.height + pad * 2;
+    Object.assign(el.style, {
+      left: `${band.left * 100}%`,
+      top: `${top * 100}%`,
+      width: `${band.width * 100}%`,
+      height: `${height * 100}%`,
+      background: band.color,
+    });
+    fragment.appendChild(el);
+  }
+  overlay.replaceChildren(fragment);
+}
+
+// The live browser selection belongs to the PDF page for the same reason a
+// saved annotation does. Keeping it in page-relative coordinates means CSS
+// zoom scales the canvas and ribbon as one object; no viewport-pixel repaint
+// can race PDF.js's delayed canvas/text-layer rebuild.
+function renderPageSelection(wrapper: HTMLElement, bands: SelectionRect[]) {
+  let overlay = Array.from(wrapper.children).find((el) => el.classList.contains("pr-page-selection")) as
+    | HTMLDivElement
+    | undefined;
+  if (!overlay) {
+    overlay = document.createElement("div");
+    overlay.className = "pr-page-selection";
+    overlay.setAttribute("aria-hidden", "true");
+    wrapper.appendChild(overlay);
+  }
+
+  const fragment = document.createDocumentFragment();
+  for (const band of bands) {
+    const el = document.createElement("div");
+    el.className = "pr-band pr-selection";
+    const pad = band.height * 0.14;
+    Object.assign(el.style, {
+      left: `${band.left * 100}%`,
+      top: `${(band.top - pad) * 100}%`,
+      width: `${band.width * 100}%`,
+      height: `${(band.height + pad * 2) * 100}%`,
+    });
+    fragment.appendChild(el);
+  }
+  overlay.replaceChildren(fragment);
+}
+
+function renderPageReferenceLinks(
+  wrapper: HTMLElement,
+  bands: ReferenceLinkBand[],
+  onEnter: (band: ReferenceLinkBand, anchor: DOMRect) => void,
+  onLeave: () => void,
+  onOpen: (band: ReferenceLinkBand) => void
+) {
+  let overlay = Array.from(wrapper.children).find((el) => el.classList.contains("pr-page-reference-links")) as
+    | HTMLDivElement
+    | undefined;
+  if (!overlay) {
+    overlay = document.createElement("div");
+    overlay.className = "pr-page-reference-links";
+    overlay.setAttribute("aria-label", "References on this page");
+    wrapper.appendChild(overlay);
+  }
+
+  const fragment = document.createDocumentFragment();
+  for (const band of bands) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "pr-reference-link";
+    button.dataset.annotationId = band.id;
+    if (typeof band.destination === "string") button.dataset.destination = band.destination;
+    button.setAttribute(
+      "aria-label",
+      band.reference ? `Preview reference ${band.label || "citation"}` : `Open PDF link ${band.label || ""}`
+    );
+    button.title = band.reference ? `Preview ${band.label || "reference"}` : `Open ${band.label || "link"}`;
+    Object.assign(button.style, {
+      left: `${band.left * 100}%`,
+      top: `${band.top * 100}%`,
+      width: `${band.width * 100}%`,
+      height: `${band.height * 100}%`,
+    });
+    if (band.reference) {
+      button.addEventListener("pointerenter", () => onEnter(band, button.getBoundingClientRect()));
+      button.addEventListener("pointerleave", onLeave);
+      button.addEventListener("focus", () => onEnter(band, button.getBoundingClientRect()));
+      button.addEventListener("blur", onLeave);
+    }
+    button.addEventListener("mousedown", (event) => {
+      // This target sits above the PDF text layer. Do not let its click begin a
+      // text selection in the viewer underneath it.
+      event.preventDefault();
+      event.stopPropagation();
+    });
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      onOpen(band);
+    });
+    fragment.appendChild(button);
+  }
+  overlay.replaceChildren(fragment);
+}
 
 // A passage that has a conversation attached to it. Drawn as a rule under the
 // line rather than a wash over it, so it reads as a different kind of mark from
@@ -110,7 +246,12 @@ export type AskedPassage = {
 // for CJK documents — the invisible boxes sit a half-line off the visible text,
 // and anything drawn from them looks detached. Reading the rendered pixels is
 // the only source of truth for where the text actually is.
-function snapBandToInk(band: SelectionRect, canvas: HTMLCanvasElement, canvasRect: DOMRect): SnappedBand {
+function snapBandToInk(
+  band: SelectionRect,
+  canvas: HTMLCanvasElement,
+  canvasRect: DOMRect,
+  calibratedSelection = false
+): SnappedBand {
   const scaleX = canvas.width / canvasRect.width;
   const scaleY = canvas.height / canvasRect.height;
   const x0 = Math.max(0, Math.floor((band.left - canvasRect.left) * scaleX));
@@ -152,7 +293,12 @@ function snapBandToInk(band: SelectionRect, canvas: HTMLCanvasElement, canvasRec
   // actually belongs to — see lib/ink-bands.ts for why overlap decides it
   const bandTop = (band.top - canvasRect.top) * scaleY - y0;
   const bandBottom = (band.top + band.height - canvasRect.top) * scaleY - y0;
-  const run = chooseInkRun(runs, bandTop, bandBottom);
+  // A fresh selection comes from spans already calibrated onto the page, so
+  // nearest centre preserves its line. Legacy text matches can still carry the
+  // old downward drift and retain the directional chooseInkRun fallback.
+  const run = calibratedSelection
+    ? nearestInkRun(runs, bandTop, bandBottom)
+    : chooseInkRun(runs, bandTop, bandBottom);
   if (!run) return band;
 
   const inkTop = canvasRect.top + (y0 + run.first) / scaleY;
@@ -170,10 +316,13 @@ function snapBandToInk(band: SelectionRect, canvas: HTMLCanvasElement, canvasRec
   return { ...band, top: inkTop + inkHeight / 2 - height / 2, height, inkBottom, inkFound: true };
 }
 
-const WHEEL_SENSITIVITY = 0.008;
 // Zoom gestures CSS-scale instantly; pages redraw at full resolution after this pause
 const DRAWING_DELAY_MS = 250;
-const BUTTON_ZOOM_FACTOR = 1.35;
+const BUTTON_ZOOM_FACTOR = 1.2;
+// These are PDF.js's own scale limits. Keeping the animation target inside the
+// same range prevents it from chasing a value the viewer can never reach.
+const PDF_MIN_SCALE = 0.1;
+const PDF_MAX_SCALE = 10;
 
 type Props = {
   pdfDataUrl: string;
@@ -202,6 +351,98 @@ type Props = {
 
 // Zotero-compatible annotation position: PDF-space rects on a zero-based page
 export type AnnotationPosition = { pageIndex: number; rects: number[][] };
+
+type SelectionPageEntry = {
+  pageNumber: number;
+  layer: HTMLElement;
+  spans: Array<HTMLElement | null>;
+  model: PdfSelectionModel;
+};
+
+type ActivePdfSelection = {
+  entry: SelectionPageEntry;
+  anchorBoundary: number;
+  focusBoundary: number;
+};
+
+type ControlledPdfSelection = {
+  pageNumber: number;
+  position: AnnotationPosition;
+  range: PdfSelectionRange;
+  text: string;
+};
+
+type PdfPageView = {
+  viewport?: {
+    width: number;
+    height: number;
+    convertToPdfPoint: (x: number, y: number) => number[];
+    convertToViewportPoint: (x: number, y: number) => number[];
+  };
+  div?: HTMLElement;
+  _textHighlighter?: {
+    textDivs?: HTMLElement[];
+    textContentItemsStr?: string[];
+  };
+};
+
+function textPointAtOffset(root: HTMLElement, wantedOffset: number): [Node, number] | null {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  let remaining = wantedOffset;
+  let last: Text | null = null;
+  while (walker.nextNode()) {
+    const node = walker.currentNode as Text;
+    last = node;
+    if (remaining <= node.data.length) return [node, remaining];
+    remaining -= node.data.length;
+  }
+  return last ? [last, last.data.length] : null;
+}
+
+function itemBoundaryFractions(span: HTMLElement | null, text: string): number[] | undefined {
+  if (!span?.isConnected || !text) return undefined;
+  const offsets = [0];
+  let offset = 0;
+  for (const character of text) {
+    offset += character.length;
+    offsets.push(offset);
+  }
+  const start = textPointAtOffset(span, 0);
+  if (!start) return undefined;
+  const widths: number[] = [];
+  for (const endOffset of offsets) {
+    const end = textPointAtOffset(span, endOffset);
+    if (!end) return undefined;
+    const range = document.createRange();
+    range.setStart(start[0], start[1]);
+    range.setEnd(end[0], end[1]);
+    widths.push(range.getBoundingClientRect().width);
+  }
+  return widths[widths.length - 1] > 0 ? widths : undefined;
+}
+
+function selectionBoundaryPoint(entry: SelectionPageEntry, boundary: number): [Node, number] | null {
+  const characters = entry.model.characters;
+  if (!characters.length) return null;
+  const bounded = Math.min(characters.length, Math.max(0, boundary));
+
+  // An insertion point normally belongs to the character on its right. If
+  // that PDF item has no DOM span (empty/unattached items are legal), walk to
+  // the nearest connected item without changing the PDF boundary itself.
+  for (let index = bounded; index < characters.length; index++) {
+    const character = characters[index];
+    const span = entry.spans[character.itemIndex];
+    const point = span && textPointAtOffset(span, character.startOffset);
+    if (point) return point;
+  }
+  for (let index = Math.min(bounded - 1, characters.length - 1); index >= 0; index--) {
+    const character = characters[index];
+    const span = entry.spans[character.itemIndex];
+    const point = span && textPointAtOffset(span, character.endOffset);
+    if (point) return point;
+  }
+  return null;
+}
 
 export type PdfViewerHandle = {
   // Resolves true when the passage was found and lit up, false when only the
@@ -232,16 +473,39 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
 ) {
   const containerRef = useRef<HTMLDivElement>(null);
   const viewerRef = useRef<PdfJsViewer | null>(null);
+  const linkServiceRef = useRef<PDFLinkService | null>(null);
   const eventBusRef = useRef<EventBus | null>(null);
   const pdfDocRef = useRef<PDFDocumentProxy | null>(null);
+  const textContentCacheRef = useRef<Map<number, Promise<PageTextContent>>>(new Map());
+  const selectionPageCacheRef = useRef<Map<number, SelectionPageEntry>>(new Map());
+  const referenceModelCacheRef = useRef<Map<number, Promise<PdfSelectionModel>>>(new Map());
+  const linkAnnotationCacheRef = useRef<Map<number, Promise<PdfLinkAnnotation[]>>>(new Map());
+  const referencePreviewCacheRef = useRef<Map<string, Promise<ReferencePreviewData | null>>>(new Map());
+  const selectionPreparationJobsRef = useRef<Map<number, () => void>>(new Map());
+  const referenceHoverTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const hoveredReferenceRef = useRef<string | null>(null);
+  const activePdfSelectionRef = useRef<ActivePdfSelection | null>(null);
+  const controlledPdfSelectionRef = useRef<ControlledPdfSelection | null>(null);
+  const zoomPercentRef = useRef<HTMLButtonElement>(null);
+  const zoomFrameRef = useRef(0);
+  const zoomTargetScaleRef = useRef<number | null>(null);
+  const zoomOriginRef = useRef<[number, number] | undefined>(undefined);
+  const zoomLabelCommitTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const selectionPaintFrameRef = useRef(0);
 
   const [numPages, setNumPages] = useState(0);
   const [displayScale, setDisplayScale] = useState(1);
   const [captureMode, setCaptureMode] = useState(false);
   const [loadError, setLoadError] = useState(false);
   const [highlightMenu, setHighlightMenu] = useState<{ id: string; rect: DOMRect } | null>(null);
+  const [referencePreview, setReferencePreview] = useState<ReferencePreviewState | null>(null);
 
-  const { selection, handleMouseUp, clearSelection } = useTextSelection(containerRef);
+  const {
+    selection,
+    setSelectionInfo,
+    handleMouseUp: handleNativeMouseUp,
+    clearSelection: clearNativeSelection,
+  } = useTextSelection(containerRef);
   const { isDragging, dragRegion, onMouseDown, onMouseMove, onMouseUp } = useRegionDrag(
     useRef<HTMLCanvasElement>(null)
   );
@@ -262,7 +526,7 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
   // against the rendered ink and nudged onto it, vertically and horizontally,
   // before anything is painted. Spans of a metrically clean PDF measure ~0 and
   // are left untouched.
-  const paintPageRef = useRef<((n: number) => void) | null>(null);
+  const paintPageRef = useRef<((n: number, allowCalibration?: boolean) => void) | null>(null);
 
   const calibrateTextLayer = useCallback((layer: HTMLElement, pageEl: Element, pageNumber: number) => {
     const canvas = pageEl.querySelector("canvas") as HTMLCanvasElement | null;
@@ -274,7 +538,7 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
     if (typeof document !== "undefined" && document.fonts && document.fonts.status !== "loaded") {
       document.fonts.ready.then(() => {
         delete layer.dataset.prCalibrated;
-        paintPageRef.current?.(pageNumber);
+        paintPageRef.current?.(pageNumber, true);
       });
       return;
     }
@@ -288,7 +552,6 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
     } catch {
       return; // tainted or unfinished canvas — nothing to measure against
     }
-    layer.dataset.prCalibrated = key;
 
     const W = image.width;
     const data = image.data;
@@ -309,9 +572,25 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
     };
     const adjustable = (v: string) => v.endsWith("px") || v.endsWith("%");
 
+    // PDF.js reuses the same spans when the scale changes. Always measure a
+    // zoom level from PDF.js's original coordinates, not from the correction
+    // applied at the previous scale, or small rounding errors accumulate until
+    // the selectable layer and its highlights drift away from the page.
+    const spans = Array.from(layer.querySelectorAll("span")) as HTMLElement[];
+    for (const span of spans) {
+      if (span.dataset.prOriginalTop === undefined) {
+        span.dataset.prOriginalTop = span.style.top;
+        span.dataset.prOriginalLeft = span.style.left;
+      } else {
+        span.style.top = span.dataset.prOriginalTop;
+        span.style.left = span.dataset.prOriginalLeft ?? span.style.left;
+      }
+    }
+
+    let sawInk = false;
     let nudged = 0;
     const magnitudes: number[] = [];
-    for (const span of Array.from(layer.querySelectorAll("span")) as HTMLElement[]) {
+    for (const span of spans) {
       if (!(span.textContent || "").trim()) continue;
       if (!adjustable(span.style.top) || !adjustable(span.style.left)) continue;
       const r = span.getBoundingClientRect();
@@ -334,6 +613,7 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
         if (inked && open && open.last === row - 1) open.last = row;
         else if (inked) runs.push({ first: row, last: row });
       }
+      if (runs.length > 0) sawInk = true;
       const dyCanvas = verticalNudge(runs, yTop, yBot, h * 0.55);
       if (dyCanvas === null) continue;
 
@@ -364,6 +644,11 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
       nudged++;
       magnitudes.push(Math.max(Math.abs(dy), Math.abs(dx)));
     }
+    // textlayerrendered may beat pagerendered during zoom. A blank canvas is
+    // not a successful calibration: leave the key unset so the later canvas
+    // event gets a real attempt instead of accepting zero corrections forever.
+    if (sawInk) layer.dataset.prCalibrated = key;
+    else delete layer.dataset.prCalibrated;
     if (nudged > 3) {
       const median = magnitudes.sort((a, b) => a - b)[Math.floor(magnitudes.length / 2)].toFixed(1);
       console.info(
@@ -372,22 +657,39 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
     }
   }, []);
 
-  // Highlights are drawn as bands, exactly like the selection — the <mark>
-  // elements stay in the text layer only to carry ids and take clicks.
-  const [highlightBands, setHighlightBands] = useState<Record<number, HighlightBand[]>>({});
-
-  const paintPageHighlights = useCallback((pageNumber: number) => {
+  const paintPageHighlights = useCallback((pageNumber: number, allowCalibration = false) => {
     const container = containerRef.current;
     const pageEl = container?.querySelector(`.page[data-page-number="${pageNumber}"]`);
     const layer = pageEl?.querySelector(".textLayer") as HTMLElement | null;
     if (!container || !pageEl || !layer) return;
-    // Before anything is measured or painted: the marks, occurrences and
-    // stored geometry all assume the layer sits on its glyphs
-    calibrateTextLayer(layer, pageEl, pageNumber);
+    // During delayed zoom PDF.js hides and reuses the text layer. Its marks
+    // have zero-sized client rects in that window; repainting from them would
+    // replace valid bands with an empty page and leave the highlight missing.
+    if (layer.hidden) return;
+    const pageHighlights = highlightsRef.current.filter(
+      (highlight) => !highlight.pageNumber || highlight.pageNumber === pageNumber
+    );
+    const pageAsked = askedRef.current.filter(
+      (passage) => !passage.pageNumber || passage.pageNumber === pageNumber
+    );
+    const wrapper = pageEl.querySelector(".canvasWrapper") as HTMLElement | null;
+    if (pageHighlights.length === 0 && pageAsked.length === 0) {
+      clearMarks(layer, "pr-highlight");
+      clearMarks(layer, "pr-asked");
+      if (wrapper) renderPageBands(wrapper, []);
+      return;
+    }
+
+    // Stored PDF rectangles need neither raster inspection nor calibrated DOM
+    // metrics. The expensive full-canvas pass is reserved for old records that
+    // have no PDF position, and only after the page canvas has finished.
+    const needsLegacyCalibration = [...pageHighlights, ...pageAsked].some((item) => !item.position);
+    if (allowCalibration && needsLegacyCalibration) {
+      calibrateTextLayer(layer, pageEl, pageNumber);
+    }
     clearMarks(layer, "pr-highlight");
     clearMarks(layer, "pr-asked");
-    for (const a of askedRef.current) {
-      if (a.pageNumber && a.pageNumber !== pageNumber) continue;
+    for (const a of pageAsked) {
       const cited = a.kind === "cited";
       const title = cited
         ? a.label
@@ -398,8 +700,7 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
           : "You asked about this — click to open the conversation";
       markTextInContainer(layer, a.text, "pr-asked", title, { id: a.id, occurrence: a.occurrence });
     }
-    for (const h of highlightsRef.current) {
-      if (h.pageNumber && h.pageNumber !== pageNumber) continue;
+    for (const h of pageHighlights) {
       const cls = ["pr-highlight", h.note ? "pr-has-note" : ""].filter(Boolean).join(" ");
       markTextInContainer(
         layer,
@@ -423,7 +724,6 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
     // the mistake was self-certifying, and everything drawn sat a line low.
     const canvas = pageEl.querySelector("canvas") as HTMLCanvasElement | null;
     const canvasRect = canvas?.getBoundingClientRect();
-    const box = container.getBoundingClientRect();
     const debug = typeof localStorage !== "undefined" && !!localStorage.getItem("pr-debug-bands");
 
     // Stored geometry, when a record carries it: the position was written down
@@ -431,34 +731,44 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
     // Converted through the current viewport it is exact at any zoom, and the
     // text layer has no say in where the band goes.
     const pageView = viewerRef.current?.getPageView(pageNumber - 1) as
-      | { viewport?: { convertToViewportPoint: (x: number, y: number) => number[] }; div?: HTMLElement }
+      | { viewport?: { width: number; height: number; convertToViewportPoint: (x: number, y: number) => number[] }; div?: HTMLElement }
       | undefined;
-    const wrapperRect = pageView?.div?.querySelector(".canvasWrapper")?.getBoundingClientRect();
-    const storedLinesFor = (position?: AnnotationPosition): SelectionRect[] | null => {
+    const pageWrapper = pageView?.div?.querySelector(".canvasWrapper") as HTMLElement | null;
+    const wrapperRect = pageWrapper?.getBoundingClientRect();
+    type StoredLines = { client: SelectionRect[]; relative: SelectionRect[] };
+    const storedLinesFor = (position?: AnnotationPosition): StoredLines | null => {
       if (!position || position.pageIndex !== pageNumber - 1) return null;
-      if (!pageView?.viewport || !wrapperRect) return null;
-      const rects = position.rects.map(([x1, y1, x2, y2]) => {
+      const viewport = pageView?.viewport;
+      if (!viewport || !wrapperRect || viewport.width <= 0 || viewport.height <= 0) return null;
+      const relative = mergeIntoLines(position.rects.map(([x1, y1, x2, y2]) => {
         const [ax, ay] = pageView.viewport!.convertToViewportPoint(x1, y1);
         const [bx, by] = pageView.viewport!.convertToViewportPoint(x2, y2);
         return {
-          left: wrapperRect.left + Math.min(ax, bx),
-          top: wrapperRect.top + Math.min(ay, by),
-          width: Math.abs(bx - ax),
-          height: Math.abs(by - ay),
+          left: Math.min(ax, bx) / viewport.width,
+          top: Math.min(ay, by) / viewport.height,
+          width: Math.abs(bx - ax) / viewport.width,
+          height: Math.abs(by - ay) / viewport.height,
         };
-      });
-      return rects.length ? mergeIntoLines(rects) : null;
+      }));
+      if (relative.length === 0) return null;
+      const client = relative.map((r) => ({
+        left: wrapperRect.left + r.left * wrapperRect.width,
+        top: wrapperRect.top + r.top * wrapperRect.height,
+        width: r.width * wrapperRect.width,
+        height: r.height * wrapperRect.height,
+      }));
+      return { client, relative };
     };
 
     const marked = [
-      ...highlightsRef.current.map((h) => ({
+      ...pageHighlights.map((h) => ({
         id: h.id,
         selector: "pr-highlight",
         color: highlightTint(h.color || DEFAULT_HIGHLIGHT_COLOR, HIGHLIGHT_ALPHA),
         underline: false,
         stored: storedLinesFor(h.position),
       })),
-      ...askedRef.current.map((a) => ({
+      ...pageAsked.map((a) => ({
         id: a.id,
         selector: "pr-asked",
         color: a.kind === "cited" ? "var(--quote)" : "var(--accent)",
@@ -472,6 +782,9 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
     type Line = { rect: SelectionRect; marks: HTMLElement[] };
     const measured: { item: (typeof marked)[number]; lines: Line[] }[] = [];
     for (const item of marked) {
+      // A legacy text-only record needs raster calibration. Do not make it
+      // compete with the page's first paint; the pagerendered pass handles it.
+      if (!item.stored && !allowCalibration) continue;
       const marks = Array.from(
         layer.querySelectorAll(`mark.${item.selector}[data-highlight-id="${CSS.escape(item.id)}"]`)
       ) as HTMLElement[];
@@ -480,99 +793,129 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
       if (marks.length === 0 && !item.stored) continue;
       const lines: Line[] = [];
       for (const mark of marks) {
-        const r = mark.getBoundingClientRect();
-        if (r.width < 0.5 || r.height < 0.5) continue;
+        const measuredRects: SelectionRect[] = item.stored
+          ? (() => {
+              const r = mark.getBoundingClientRect();
+              return [{ left: r.left, top: r.top, width: r.width, height: r.height }];
+            })()
+          : (() => {
+              const range = document.createRange();
+              range.selectNodeContents(mark);
+              return logicalSelectionBands(range, layer);
+            })();
         // A passage both highlighted and asked about is wrapped twice; the
         // inner mark rides along with its parent, so only the outer is nudged
         const nested = !!mark.parentElement?.closest("mark.pr-highlight, mark.pr-asked");
-        const line = lines.find(
-          (l) =>
-            Math.abs(r.top + r.height / 2 - (l.rect.top + l.rect.height / 2)) <
-            Math.min(r.height, l.rect.height) * 0.5
-        );
-        if (!line) {
-          lines.push({
-            rect: { left: r.left, top: r.top, width: r.width, height: r.height },
-            marks: nested ? [] : [mark],
-          });
-          continue;
+        for (const r of measuredRects) {
+          if (r.width < 0.5 || r.height < 0.5) continue;
+          const line = lines.find(
+            (l) =>
+              Math.abs(r.top + r.height / 2 - (l.rect.top + l.rect.height / 2)) <
+              Math.min(r.height, l.rect.height) * 0.5
+          );
+          if (!line) {
+            lines.push({ rect: r, marks: nested ? [] : [mark] });
+            continue;
+          }
+          const left = Math.min(line.rect.left, r.left);
+          const top = Math.min(line.rect.top, r.top);
+          line.rect = {
+            left,
+            top,
+            width: Math.max(line.rect.left + line.rect.width, r.left + r.width) - left,
+            height: Math.max(line.rect.top + line.rect.height, r.top + r.height) - top,
+          };
+          if (!nested && !line.marks.includes(mark)) line.marks.push(mark);
         }
-        const left = Math.min(line.rect.left, r.left);
-        const top = Math.min(line.rect.top, r.top);
-        line.rect = {
-          left,
-          top,
-          width: Math.max(line.rect.left + line.rect.width, r.right) - left,
-          height: Math.max(line.rect.top + line.rect.height, r.bottom) - top,
-        };
-        if (!nested) line.marks.push(mark);
       }
       measured.push({ item, lines });
     }
 
-    // Then decide and apply — one snap per line, shared by marks and band
+    // Then decide and apply. Stored PDF rectangles are the complete visual
+    // record, so every stored line is painted exactly once; measured marks only
+    // provide invisible click targets. For legacy records without rectangles,
+    // the text layer + ink remains the fallback.
     const bands: HighlightBand[] = [];
     for (const { item, lines } of measured) {
-      // The record knows where it sits but the text could not be matched —
-      // paint the geometry alone; there are just no click targets to nudge
-      if (lines.length === 0 && item.stored) {
-        for (const r of item.stored) {
+      if (item.stored) {
+        // Keep click targets on the stored line when the text match is nearby,
+        // but never let a missing or partial text match drop stored rectangles.
+        for (const line of lines) {
+          const stored = nearestStoredLine(
+            item.stored.client,
+            line.rect.top + line.rect.height / 2,
+            line.rect.height * 1.5
+          );
+          if (!stored) continue;
+          const shift = stored.top + stored.height / 2 - (line.rect.top + line.rect.height / 2);
+          if (Math.abs(shift) >= 0.5) {
+            for (const mark of line.marks) {
+              mark.style.position = "relative";
+              mark.style.top = `${shift.toFixed(1)}px`;
+            }
+          }
+        }
+        for (const r of item.stored.relative) {
           bands.push({
             id: item.id,
             color: item.color,
             underline: item.underline,
-            left: r.left - box.left + container.scrollLeft,
-            top: r.top - box.top + container.scrollTop,
-            width: r.width,
-            height: r.height,
-            inkBottom: r.top + r.height - box.top + container.scrollTop,
+            ...r,
+            inkBottom: r.top + r.height,
           });
         }
         continue;
       }
+
       for (const line of lines) {
-        // A stored line wins over reading the ink: it is where this passage
-        // actually was, written down while the selection existed
-        const stored = item.stored
-          ? nearestStoredLine(item.stored, line.rect.top + line.rect.height / 2, line.rect.height * 1.5)
-          : null;
-        const snapped: SnappedBand = stored
-          ? { ...stored, inkBottom: stored.top + stored.height }
-          : canvas && canvasRect
-            ? snapBandToInk(line.rect, canvas, canvasRect)
-            : line.rect;
-        const shift = snapped.top + snapped.height / 2 - (line.rect.top + line.rect.height / 2);
+        const snapped: SnappedBand = canvas && canvasRect
+          ? snapBandToInk(line.rect, canvas, canvasRect, true)
+          : line.rect;
+        const displayRect = line.marks[0]?.getBoundingClientRect();
+        const shift = displayRect
+          ? snapped.top + snapped.height / 2 - (displayRect.top + displayRect.height / 2)
+          : 0;
         if (debug) {
           console.log(
             `[pr-band] ${item.underline ? "rule" : "wash"} ${item.id.slice(0, 8)}`,
             { rawTop: +line.rect.top.toFixed(1), rawH: +line.rect.height.toFixed(1), shift: +shift.toFixed(1), inkBottom: snapped.inkBottom && +snapped.inkBottom.toFixed(1) }
           );
         }
-        if (Math.abs(shift) >= 0.5) {
-          for (const mark of line.marks) {
-            mark.style.position = "relative";
-            mark.style.top = `${shift.toFixed(1)}px`;
-          }
+        for (const mark of line.marks) {
+          const r = mark.getBoundingClientRect();
+          const markShift = snapped.top + snapped.height / 2 - (r.top + r.height / 2);
+          if (Math.abs(markShift) < 0.5) continue;
+          mark.style.position = "relative";
+          mark.style.top = `${markShift.toFixed(1)}px`;
         }
+        if (!wrapperRect || wrapperRect.width <= 0 || wrapperRect.height <= 0) continue;
+        const relative = relativeToPage(snapped, {
+          left: wrapperRect.left,
+          top: wrapperRect.top,
+          width: wrapperRect.width,
+          height: wrapperRect.height,
+        });
         bands.push({
           id: item.id,
           color: item.color,
           underline: item.underline,
-          left: snapped.left - box.left + container.scrollLeft,
-          top: snapped.top - box.top + container.scrollTop,
-          width: snapped.width,
-          height: snapped.height,
+          ...relative,
           // Where the letters stop, when the pixels could say. The wash can be
           // a little taller than the glyphs without looking wrong; a rule
           // cannot, so it is drawn from this rather than from the band's edge.
           inkBottom:
             snapped.inkBottom === undefined
               ? undefined
-              : snapped.inkBottom - box.top + container.scrollTop,
+              : (snapped.inkBottom - wrapperRect.top) / wrapperRect.height,
         });
       }
     }
-    setHighlightBands((prev) => ({ ...prev, [pageNumber]: bands }));
+    // Keep the previous page-relative overlay during the short CSS-only zoom
+    // window. A legacy text-only annotation needs the finished canvas to be
+    // recalibrated; replacing it with an incomplete set here causes a flash.
+    if (pageWrapper && (allowCalibration || !needsLegacyCalibration)) {
+      renderPageBands(pageWrapper, bands);
+    }
   }, [calibrateTextLayer]);
 
   useEffect(() => {
@@ -632,39 +975,65 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
     return () => el.removeEventListener("mouseup", onMouseUp);
   }, []);
 
-  // Re-paint all currently rendered pages when highlights change
+  // The popover is also the selection indicator for a saved highlight. Keep
+  // the keyboard action global so it works after selecting text in the PDF,
+  // but never steal Delete/Backspace from an editor or form control.
   useEffect(() => {
+    if (!highlightMenu || !onRemoveHighlight) return;
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!isHighlightDeleteKey(event)) return;
+      if (isTextEditingTarget(event.target)) return;
+
+      event.preventDefault();
+      event.stopPropagation();
+      const id = highlightMenu.id;
+      setHighlightMenu(null);
+      onRemoveHighlight(id);
+    };
+
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [highlightMenu, onRemoveHighlight]);
+
+  const repaintRenderedPages = useCallback(() => {
     containerRef.current?.querySelectorAll(".page[data-page-number]").forEach((page) => {
-      paintPageHighlights(parseInt(page.getAttribute("data-page-number")!));
+      paintPageHighlights(parseInt(page.getAttribute("data-page-number")!), true);
     });
-  }, [highlights, askedPassages, paintPageHighlights]);
+  }, [paintPageHighlights]);
+
+  // Repaint all currently rendered pages when highlights change.
+  useEffect(() => {
+    repaintRenderedPages();
+  }, [highlights, askedPassages, repaintRenderedPages]);
 
   // ── Selection ribbon ────────────────────────────────────────────
-  // Drawn by us instead of ::selection (see mergeIntoLines). Coordinates are
-  // relative to the scroll container's content, so the bands scroll with the
-  // pages; they're recomputed on zoom, which moves everything.
-  const [selectionRects, setSelectionRects] = useState<SelectionRect[]>([]);
-
   // Bands pulsed briefly after jumping to a passage — the same visual language
   // as the selection, so the reader only ever shows one kind of highlight
   const [flashRects, setFlashRects] = useState<SelectionRect[]>([]);
   const flashTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   // Snap viewport-space bands onto the glyphs of whichever page they fall on
-  const snapBands = useCallback((bands: SelectionRect[]): SelectionRect[] => {
+  const snapBands = useCallback((bands: SelectionRect[], logicalSelection = false): SelectionRect[] => {
     const container = containerRef.current;
     if (!container) return bands;
-    const canvases = Array.from(container.querySelectorAll(".page canvas")).map((c) => ({
-      canvas: c as HTMLCanvasElement,
-      rect: c.getBoundingClientRect(),
-    }));
+    const scaleKey = String(viewerRef.current?.currentScale ?? 1);
+    const canvases = Array.from(container.querySelectorAll(".page")).flatMap((page) => {
+      const canvas = page.querySelector("canvas") as HTMLCanvasElement | null;
+      const layer = page.querySelector(".textLayer") as HTMLElement | null;
+      return canvas
+        ? [{ canvas, rect: canvas.getBoundingClientRect(), calibrated: layer?.dataset.prCalibrated === scaleKey }]
+        : [];
+    });
     return bands.map((band) => {
       const cy = band.top + band.height / 2;
       const cx = band.left + band.width / 2;
       const page = canvases.find(
         ({ rect }) => cy >= rect.top && cy <= rect.bottom && cx >= rect.left && cx <= rect.right
       );
-      return page ? snapBandToInk(band, page.canvas, page.rect) : band;
+      return page
+        ? snapBandToInk(band, page.canvas, page.rect, logicalSelection || page.calibrated)
+        : band;
     });
   }, []);
 
@@ -697,56 +1066,361 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
 
   useEffect(() => () => clearTimeout(flashTimer.current), []);
 
+  const getPageTextContent = useCallback((pageNumber: number): Promise<PageTextContent> | null => {
+    const doc = pdfDocRef.current;
+    if (!doc) return null;
+    let pending = textContentCacheRef.current.get(pageNumber);
+    if (!pending) {
+      pending = doc.getPage(pageNumber).then(async (page) => (
+        await page.getTextContent({ includeMarkedContent: true, disableNormalization: true }) as PageTextContent
+      ));
+      textContentCacheRef.current.set(pageNumber, pending);
+    }
+    return pending;
+  }, []);
+
+  const prepareSelectionPage = useCallback(async (pageNumber: number): Promise<SelectionPageEntry | null> => {
+    const viewer = viewerRef.current;
+    const pageView = viewer?.getPageView(pageNumber - 1) as PdfPageView | undefined;
+    const layer = pageView?.div?.querySelector(".textLayer") as HTMLElement | null;
+    if (!pageView || !layer || layer.hidden) return null;
+
+    const cached = selectionPageCacheRef.current.get(pageNumber);
+    if (cached?.layer === layer) return cached;
+    const pending = getPageTextContent(pageNumber);
+    if (!pending) return null;
+
+    try {
+      const content = await pending;
+      const items = content.items.filter((item) => "str" in item) as PdfTextItem[];
+      const highlighter = pageView._textHighlighter;
+      const divs = highlighter?.textDivs;
+      const strings = highlighter?.textContentItemsStr;
+      if (!divs || divs.length !== items.length || !strings || strings.length !== items.length) return null;
+      if (strings.some((text, index) => text !== items[index].str)) return null;
+
+      const spans = divs.map((div) => div?.isConnected ? div : null);
+      const fractions = items.map((item, index) => itemBoundaryFractions(spans[index], item.str));
+      const entry: SelectionPageEntry = {
+        pageNumber,
+        layer,
+        spans,
+        model: buildPdfSelectionModel(items, content.styles as Record<string, PdfTextStyle>, fractions),
+      };
+      selectionPageCacheRef.current.set(pageNumber, entry);
+      layer.dataset.prSelectionReady = String(entry.model.characters.length);
+      return entry;
+    } catch {
+      textContentCacheRef.current.delete(pageNumber);
+      selectionPageCacheRef.current.delete(pageNumber);
+      return null;
+    }
+  }, [getPageTextContent]);
+
+  const scheduleSelectionPreparation = useCallback((pageNumber: number) => {
+    selectionPreparationJobsRef.current.get(pageNumber)?.();
+    selectionPreparationJobsRef.current.delete(pageNumber);
+    // Fast scrolling can render many transient pages. Keep at most the two
+    // newest idle jobs so stopping after a long fling does not unleash a queue
+    // of character-measurement passes for pages that are already off-screen.
+    while (selectionPreparationJobsRef.current.size >= 2) {
+      const oldestPage = selectionPreparationJobsRef.current.keys().next().value as number | undefined;
+      if (oldestPage === undefined) break;
+      selectionPreparationJobsRef.current.get(oldestPage)?.();
+      selectionPreparationJobsRef.current.delete(oldestPage);
+    }
+    const run = () => {
+      selectionPreparationJobsRef.current.delete(pageNumber);
+      void prepareSelectionPage(pageNumber);
+    };
+    if (typeof window.requestIdleCallback === "function") {
+      const id = window.requestIdleCallback(run);
+      selectionPreparationJobsRef.current.set(pageNumber, () => window.cancelIdleCallback(id));
+    } else {
+      const id = window.setTimeout(run, 80);
+      selectionPreparationJobsRef.current.set(pageNumber, () => window.clearTimeout(id));
+    }
+  }, [prepareSelectionPage]);
+
+  const getReferenceModel = useCallback((pageNumber: number): Promise<PdfSelectionModel> | null => {
+    let pending = referenceModelCacheRef.current.get(pageNumber);
+    if (pending) return pending;
+    const contentPromise = getPageTextContent(pageNumber);
+    if (!contentPromise) return null;
+    pending = contentPromise.then((content) => {
+      const items = content.items.filter((item) => "str" in item) as PdfTextItem[];
+      return buildPdfSelectionModel(items, content.styles as Record<string, PdfTextStyle>);
+    }).catch((error) => {
+      referenceModelCacheRef.current.delete(pageNumber);
+      throw error;
+    });
+    referenceModelCacheRef.current.set(pageNumber, pending);
+    return pending;
+  }, [getPageTextContent]);
+
+  const loadReferencePreview = useCallback((destination: string): Promise<ReferencePreviewData | null> => {
+    const doc = pdfDocRef.current;
+    if (!doc) return Promise.resolve(null);
+    let pending = referencePreviewCacheRef.current.get(destination);
+    if (pending) return pending;
+
+    pending = (async () => {
+      const explicit = await doc.getDestination(destination) as unknown[] | null;
+      if (!explicit?.length || pdfDocRef.current !== doc) return null;
+      const target = explicit[0];
+      const pageIndex = typeof target === "number"
+        ? target
+        : await doc.getPageIndex(target as Parameters<PDFDocumentProxy["getPageIndex"]>[0]);
+      const page = await doc.getPage(pageIndex + 1);
+      const scale = 1.8;
+      const viewport = page.getViewport({ scale });
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.ceil(viewport.width);
+      canvas.height = Math.ceil(viewport.height);
+      const context = canvas.getContext("2d");
+      if (!context) return null;
+      await page.render({
+        canvasContext: context,
+        viewport,
+        canvas,
+        annotationMode: AnnotationMode.DISABLE,
+      }).promise;
+      if (pdfDocRef.current !== doc) return null;
+
+      const kind = (explicit[1] as { name?: string } | undefined)?.name;
+      const pdfTop = typeof (kind === "XYZ" ? explicit[3] : explicit[2]) === "number"
+        ? Number(kind === "XYZ" ? explicit[3] : explicit[2])
+        : page.view[3];
+      const [, destinationY] = viewport.convertToViewportPoint(page.view[0], pdfTop);
+      // Bibliography entries occupy the central text block. Include a few
+      // neighbours, like Zotero, so a grouped citation remains understandable.
+      const cropX = Math.max(0, Math.floor(viewport.width * 0.075));
+      const cropWidth = Math.min(canvas.width - cropX, Math.ceil(viewport.width * 0.85));
+      const cropHeight = Math.min(canvas.height, Math.ceil(220 * scale));
+      const cropY = Math.max(0, Math.min(canvas.height - cropHeight, Math.floor(destinationY - 24 * scale)));
+      const crop = document.createElement("canvas");
+      crop.width = cropWidth;
+      crop.height = cropHeight;
+      const cropContext = crop.getContext("2d");
+      if (!cropContext) return null;
+      cropContext.fillStyle = "#fff";
+      cropContext.fillRect(0, 0, crop.width, crop.height);
+      cropContext.drawImage(canvas, cropX, cropY, cropWidth, cropHeight, 0, 0, cropWidth, cropHeight);
+      return { imageUrl: crop.toDataURL("image/jpeg", 0.9), pageNumber: pageIndex + 1 };
+    })().catch(() => null);
+    referencePreviewCacheRef.current.set(destination, pending);
+    return pending;
+  }, []);
+
+  const endReferenceHover = useCallback(() => {
+    clearTimeout(referenceHoverTimerRef.current);
+    hoveredReferenceRef.current = null;
+    setReferencePreview(null);
+  }, []);
+
+  const beginReferenceHover = useCallback((band: ReferenceLinkBand, anchor: DOMRect) => {
+    if (typeof band.destination !== "string") return;
+    const destination = band.destination;
+    clearTimeout(referenceHoverTimerRef.current);
+    hoveredReferenceRef.current = destination;
+    referenceHoverTimerRef.current = setTimeout(() => {
+      if (hoveredReferenceRef.current !== destination) return;
+      setReferencePreview({
+        anchor,
+        destination,
+        label: band.label,
+        loading: true,
+      });
+      void loadReferencePreview(destination).then((data) => {
+        if (hoveredReferenceRef.current !== destination) return;
+        setReferencePreview({
+          anchor,
+          destination,
+          label: band.label,
+          loading: false,
+          data: data ?? undefined,
+          error: data ? undefined : "Reference preview unavailable",
+        });
+      });
+    }, 140);
+  }, [loadReferencePreview]);
+
+  const openPdfLink = useCallback((band: ReferenceLinkBand) => {
+    endReferenceHover();
+    if (band.url) {
+      window.open(band.url, "_blank", "noopener,noreferrer");
+    } else if (band.destination) {
+      void linkServiceRef.current?.goToDestination(band.destination);
+    }
+  }, [endReferenceHover]);
+
+  const paintReferenceLinks = useCallback(async (pageNumber: number) => {
+    const doc = pdfDocRef.current;
+    const viewer = viewerRef.current;
+    if (!doc || !viewer) return;
+    const pageView = viewer.getPageView(pageNumber - 1) as PdfPageView | undefined;
+    const wrapper = pageView?.div?.querySelector(".canvasWrapper") as HTMLElement | null;
+    const viewport = pageView?.viewport;
+    if (!pageView?.div || !wrapper || !viewport) return;
+
+    let annotationsPromise = linkAnnotationCacheRef.current.get(pageNumber);
+    if (!annotationsPromise) {
+      annotationsPromise = doc.getPage(pageNumber).then(async (page) => (
+        await page.getAnnotations({ intent: "display" }) as PdfLinkAnnotation[]
+      ));
+      linkAnnotationCacheRef.current.set(pageNumber, annotationsPromise);
+    }
+    const annotations = await annotationsPromise;
+    if (pdfDocRef.current !== doc || !wrapper.isConnected) return;
+
+    const links = annotations.filter(
+      (annotation) => annotation.subtype === "Link" && Boolean(annotation.dest || annotation.url)
+    );
+    const needsReferenceGeometry = links.some(
+      (annotation) => typeof annotation.dest === "string" && annotation.dest.startsWith("cite.")
+    );
+    const modelPromise = needsReferenceGeometry ? getReferenceModel(pageNumber) : null;
+    const model = modelPromise ? await modelPromise : null;
+    if (pdfDocRef.current !== doc || !wrapper.isConnected) return;
+    const bands: ReferenceLinkBand[] = [];
+    for (const annotation of links) {
+      const reference = typeof annotation.dest === "string" && annotation.dest.startsWith("cite.");
+      const aligned = reference && model
+        ? alignReferenceLink(model, annotation.rect, annotation.overlaidText)
+        : null;
+      // Hyperref's inline x bounds are accurate; the broken part is its line.
+      // Preserve those exact horizontal bounds and repair only the vertical
+      // line from the lightweight PDF model. This avoids DOM character
+      // measurement without making the hover target less precise.
+      const rect = aligned
+        ? [annotation.rect[0], aligned.rect[1], annotation.rect[2], aligned.rect[3]]
+        : annotation.rect;
+      if (rect.length < 4) continue;
+      const fractions = referenceRectFractions(
+        [rect[0], rect[1], rect[2], rect[3]],
+        viewport
+      );
+      bands.push({
+        id: annotation.id,
+        destination: annotation.dest,
+        url: annotation.url,
+        label: aligned?.label ?? annotation.overlaidText?.trim() ?? "",
+        reference,
+        ...fractions,
+      });
+    }
+    renderPageReferenceLinks(wrapper, bands, beginReferenceHover, endReferenceHover, openPdfLink);
+  }, [getReferenceModel, beginReferenceHover, endReferenceHover, openPdfLink]);
+
+  useEffect(() => () => {
+    clearTimeout(referenceHoverTimerRef.current);
+  }, []);
+
   const paintSelection = useCallback(() => {
     const container = containerRef.current;
+    const clear = () => container?.querySelectorAll(".pr-page-selection").forEach((overlay) => overlay.remove());
+    const controlled = controlledPdfSelectionRef.current;
+    if (container && controlled) {
+      clear();
+      const pageView = viewerRef.current?.getPageView(controlled.pageNumber - 1) as PdfPageView | undefined;
+      const wrapper = pageView?.div?.querySelector(".canvasWrapper") as HTMLElement | null;
+      const viewport = pageView?.viewport;
+      if (!wrapper || !viewport || viewport.width <= 0 || viewport.height <= 0) return;
+      const bands = controlled.position.rects.map((rect) => {
+        const [ax, ay] = viewport.convertToViewportPoint(rect[0], rect[1]);
+        const [bx, by] = viewport.convertToViewportPoint(rect[2], rect[3]);
+        return {
+          left: Math.min(ax, bx) / viewport.width,
+          top: Math.min(ay, by) / viewport.height,
+          width: Math.abs(bx - ax) / viewport.width,
+          height: Math.abs(by - ay) / viewport.height,
+        };
+      });
+      renderPageSelection(wrapper, bands);
+      return;
+    }
+
     const sel = window.getSelection();
     if (!container || !sel || sel.isCollapsed || sel.rangeCount === 0) {
-      setSelectionRects([]);
+      clear();
       return;
     }
     const anchor = sel.anchorNode;
     const node = anchor instanceof Element ? anchor : anchor?.parentElement;
     if (!node || !container.contains(node)) {
-      setSelectionRects([]);
+      clear();
       return;
     }
 
-    // Merge in viewport coordinates, where the page canvases can be consulted,
-    // then translate into the scroll container's content space to render
-    const bands = mergeIntoLines(
-      Array.from(sel.getRangeAt(0).getClientRects())
-        .filter((r) => r.width > 0.5 && r.height > 0.5)
-        .map((r) => ({ left: r.left, top: r.top, width: r.width, height: r.height }))
-    );
-    setSelectionRects(toContentSpace(snapBands(bands)));
-  }, [snapBands, toContentSpace]);
+    // Measure every intersected text span from PDF.js's logical coordinates,
+    // snap only within that line, then freeze the result as fractions of its
+    // page. The page and ribbon now share one zoom coordinate system.
+    const range = sel.getRangeAt(0);
+    const bands = snapBands(logicalSelectionBands(range, container), true);
+    clear();
+    const pages = Array.from(container.querySelectorAll(".page .canvasWrapper")).map((wrapper) => ({
+      wrapper: wrapper as HTMLElement,
+      rect: wrapper.getBoundingClientRect(),
+      bands: [] as SelectionRect[],
+    }));
+    for (const band of bands) {
+      const cx = band.left + band.width / 2;
+      const cy = band.top + band.height / 2;
+      const page = pages.find(({ rect }) => cx >= rect.left && cx <= rect.right && cy >= rect.top && cy <= rect.bottom);
+      if (!page || page.rect.width <= 0 || page.rect.height <= 0) continue;
+      page.bands.push(relativeToPage(band, page.rect));
+    }
+    for (const page of pages) if (page.bands.length > 0) renderPageSelection(page.wrapper, page.bands);
+  }, [snapBands]);
+
+  const scheduleSelectionPaint = useCallback(() => {
+    cancelAnimationFrame(selectionPaintFrameRef.current);
+    selectionPaintFrameRef.current = requestAnimationFrame(() => {
+      selectionPaintFrameRef.current = 0;
+      paintSelection();
+    });
+  }, [paintSelection]);
 
   // selectionchange fires on every mousemove of a drag; one paint per frame
   useEffect(() => {
-    let frame = 0;
-    const schedule = () => {
-      cancelAnimationFrame(frame);
-      frame = requestAnimationFrame(paintSelection);
-    };
-    document.addEventListener("selectionchange", schedule);
+    document.addEventListener("selectionchange", scheduleSelectionPaint);
     return () => {
-      cancelAnimationFrame(frame);
-      document.removeEventListener("selectionchange", schedule);
+      cancelAnimationFrame(selectionPaintFrameRef.current);
+      document.removeEventListener("selectionchange", scheduleSelectionPaint);
     };
-  }, [paintSelection]);
+  }, [scheduleSelectionPaint]);
 
   // ── Viewer lifecycle ────────────────────────────────────────────
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
+    const textContentCache = textContentCacheRef.current;
+    const selectionPageCache = selectionPageCacheRef.current;
+    const referenceModelCache = referenceModelCacheRef.current;
+    const linkAnnotationCache = linkAnnotationCacheRef.current;
+    const referencePreviewCache = referencePreviewCacheRef.current;
+    const selectionPreparationJobs = selectionPreparationJobsRef.current;
     let cancelled = false;
-    setHighlightBands({}); // bands belong to the outgoing document
+    container.querySelectorAll(".pr-page-bands").forEach((overlay) => overlay.remove());
+    container.querySelectorAll(".pr-page-reference-links").forEach((overlay) => overlay.remove());
+    endReferenceHover();
 
     const eventBus = new EventBus();
     const linkService = new PDFLinkService({ eventBus });
     const findController = new PDFFindController({ eventBus, linkService });
-    const viewer = new PdfJsViewer({ container, eventBus, linkService, findController });
+    // PDF link borders are producer-supplied annotation appearances and can be
+    // painted directly into the page canvas (CSS cannot remove that copy). The
+    // custom link layer above preserves navigation and reference previews, so
+    // omit every raw annotation appearance from both canvas and DOM layers.
+    const viewer = new PdfJsViewer({
+      container,
+      eventBus,
+      linkService,
+      findController,
+      annotationMode: AnnotationMode.DISABLE,
+    });
     linkService.setViewer(viewer);
+    linkServiceRef.current = linkService;
     eventBusRef.current = eventBus;
     viewerRef.current = viewer;
 
@@ -754,26 +1428,47 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
       // Skip if the container has been unmounted/detached (fast paper switch,
       // dev remount) — pdf.js would try to scroll a detached element.
       if (cancelled || !container.isConnected) return;
+      cancelAnimationFrame(zoomFrameRef.current);
+      zoomFrameRef.current = 0;
+      zoomTargetScaleRef.current = null;
       viewer.currentScaleValue = "page-width";
     });
     eventBus.on("scalechanging", (e: { scale: number }) => {
       if (cancelled) return;
-      setDisplayScale(e.scale);
-      // Pages just moved under the bands. The selection can be redrawn at once;
-      // highlight bands are cleared and come back with the next text layer,
-      // rather than sitting at stale positions through the zoom animation.
-      requestAnimationFrame(paintSelection);
-      setHighlightBands({});
+      // Updating one text node avoids rerendering this large client component
+      // for every animation frame of a pinch gesture.
+      if (zoomPercentRef.current) zoomPercentRef.current.textContent = `${Math.round(e.scale * 100)}%`;
+      clearTimeout(zoomLabelCommitTimerRef.current);
+      zoomLabelCommitTimerRef.current = setTimeout(() => {
+        if (!cancelled) setDisplayScale(e.scale);
+      }, 120);
+      // Saved annotations and the live selection are both page-relative; the
+      // page itself scales them together with the canvas.
     });
     // Text layers rebuild on zoom/virtualization — re-paint highlights each time
     eventBus.on("textlayerrendered", (e: { pageNumber: number }) => {
-      if (!cancelled) paintPageHighlights(e.pageNumber);
+      if (!cancelled) {
+        paintPageHighlights(e.pageNumber);
+        scheduleSelectionPreparation(e.pageNumber);
+        void paintReferenceLinks(e.pageNumber);
+        scheduleSelectionPaint();
+      }
     });
     // The text layer can finish before the canvas has any ink on it, and a
     // band snapped against a blank canvas silently keeps the text layer's raw
     // geometry. Repaint once the pixels exist.
     eventBus.on("pagerendered", (e: { pageNumber: number }) => {
-      if (!cancelled) paintPageHighlights(e.pageNumber);
+      if (!cancelled) {
+        const needsCanvasAlignment = [...highlightsRef.current, ...askedRef.current].some(
+          (item) => (!item.pageNumber || item.pageNumber === e.pageNumber) && !item.position
+        );
+        if (needsCanvasAlignment) paintPageHighlights(e.pageNumber, true);
+        const pageView = viewer.getPageView(e.pageNumber - 1) as PdfPageView | undefined;
+        if (!pageView?.div?.querySelector(".pr-page-reference-links")) {
+          void paintReferenceLinks(e.pageNumber);
+        }
+        scheduleSelectionPaint();
+      }
     });
 
     const loadingTask = getDocument(pdfDataUrl);
@@ -781,6 +1476,11 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
       (pdf) => {
         if (cancelled) return;
         pdfDocRef.current = pdf;
+        textContentCache.clear();
+        selectionPageCache.clear();
+        referenceModelCache.clear();
+        linkAnnotationCache.clear();
+        referencePreviewCache.clear();
         viewer.setDocument(pdf);
         linkService.setDocument(pdf);
         setNumPages(pdf.numPages);
@@ -802,20 +1502,34 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
       }
       loadingTask.destroy().catch(() => {});
       pdfDocRef.current = null;
+      textContentCache.clear();
+      selectionPageCache.clear();
+      referenceModelCache.clear();
+      linkAnnotationCache.clear();
+      referencePreviewCache.clear();
+      selectionPreparationJobs.forEach((cancel) => cancel());
+      selectionPreparationJobs.clear();
+      cancelAnimationFrame(zoomFrameRef.current);
+      zoomFrameRef.current = 0;
+      zoomTargetScaleRef.current = null;
+      clearTimeout(zoomLabelCommitTimerRef.current);
+      cancelAnimationFrame(selectionPaintFrameRef.current);
+      endReferenceHover();
+      activePdfSelectionRef.current = null;
+      controlledPdfSelectionRef.current = null;
       viewerRef.current = null;
+      linkServiceRef.current = null;
       eventBusRef.current = null;
     };
-  }, [pdfDataUrl, paintPageHighlights, paintSelection]);
+  }, [pdfDataUrl, paintPageHighlights, scheduleSelectionPaint, scheduleSelectionPreparation, paintReferenceLinks, endReferenceHover]);
 
   // ── Zoom ────────────────────────────────────────────────────────
-  // pdf.js re-anchors the scroll to the current page on every scale change,
-  // which cancels any panning done mid-gesture. We suppress that by doing the
-  // cursor-anchored scroll maths ourselves right after the scale is applied,
-  // so pinch-zooming and two-finger panning work at the same time.
-  const zoomBy = useCallback((factor: number, origin?: [number, number]) => {
+  // Apply one inexpensive CSS-first PDF.js scale step. The high-resolution
+  // canvas redraw remains delayed until no more steps arrive.
+  const applyZoomFactor = useCallback((factor: number, origin?: [number, number]) => {
     const viewer = viewerRef.current;
     const el = containerRef.current;
-    if (!viewer || !el) return;
+    if (!viewer || !el || !Number.isFinite(factor) || factor <= 0) return;
 
     const rect = el.getBoundingClientRect();
     const ox = origin ? origin[0] - rect.left : rect.width / 2;
@@ -833,25 +1547,85 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
     }
   }, []);
 
+  // PDF.js rounds every requested scale to two decimals. Driving it directly
+  // from tiny trackpad events therefore drops motion, while a mouse-wheel tick
+  // can jump several dozen percent. Hold an exact target and approach it once
+  // per animation frame in bounded steps: both input types become continuous.
+  const stepZoomAnimation = useCallback(function stepZoomAnimationFrame() {
+    zoomFrameRef.current = 0;
+    const viewer = viewerRef.current;
+    const target = zoomTargetScaleRef.current;
+    if (!viewer || target === null) return;
+
+    const before = viewer.currentScale;
+    const next = nextZoomFrameScale(before, target);
+    applyZoomFactor(next / before, zoomOriginRef.current);
+    const after = viewer.currentScale;
+
+    // If PDF.js rounded away a sub-percent step, retain the exact target so the
+    // next trackpad event accumulates onto it instead of losing that movement.
+    if (after === before) return;
+    const remaining = Math.abs(Math.log(target / after));
+    if (remaining <= 0.0025) {
+      zoomTargetScaleRef.current = null;
+      return;
+    }
+    zoomFrameRef.current = requestAnimationFrame(stepZoomAnimationFrame);
+  }, [applyZoomFactor]);
+
+  const queueZoomTarget = useCallback((requested: number, origin?: [number, number]) => {
+    const viewer = viewerRef.current;
+    if (!viewer || !Number.isFinite(requested)) return;
+    // Never let a burst of wheel events build a long animation backlog. The
+    // target advances again as the viewer catches up on following frames.
+    const current = viewer.currentScale;
+    const nearby = Math.max(current / 1.45, Math.min(current * 1.45, requested));
+    zoomTargetScaleRef.current = Math.max(PDF_MIN_SCALE, Math.min(PDF_MAX_SCALE, nearby));
+    zoomOriginRef.current = origin;
+    if (!zoomFrameRef.current) {
+      zoomFrameRef.current = requestAnimationFrame(stepZoomAnimation);
+    }
+  }, [stepZoomAnimation]);
+
+  const zoomBy = useCallback((factor: number, origin?: [number, number]) => {
+    const viewer = viewerRef.current;
+    if (!viewer) return;
+    const base = zoomTargetScaleRef.current ?? viewer.currentScale;
+    queueZoomTarget(base * factor, origin);
+  }, [queueZoomTarget]);
+
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
     const onWheel = (e: WheelEvent) => {
       if (!e.ctrlKey && !e.metaKey) return;
       e.preventDefault();
-      zoomBy(Math.exp(-e.deltaY * WHEEL_SENSITIVITY), [e.clientX, e.clientY]);
+      const viewer = viewerRef.current;
+      if (!viewer) return;
+      const base = zoomTargetScaleRef.current ?? viewer.currentScale;
+      const delta = wheelDeltaPixels(e.deltaY, e.deltaMode, el.clientHeight);
+      queueZoomTarget(wheelZoomTarget(base, delta), [e.clientX, e.clientY]);
     };
     el.addEventListener("wheel", onWheel, { passive: false });
-    return () => el.removeEventListener("wheel", onWheel);
-  }, [zoomBy]);
+    return () => {
+      el.removeEventListener("wheel", onWheel);
+      cancelAnimationFrame(zoomFrameRef.current);
+      zoomFrameRef.current = 0;
+    };
+  }, [queueZoomTarget]);
 
   const zoomReset = useCallback(() => {
+    cancelAnimationFrame(zoomFrameRef.current);
+    zoomFrameRef.current = 0;
+    zoomTargetScaleRef.current = null;
+    zoomOriginRef.current = undefined;
     const viewer = viewerRef.current;
     if (viewer) viewer.currentScaleValue = "page-width";
   }, []);
 
   // ── Selection → explain / ask ───────────────────────────────────
   const getSelectionPageNumber = useCallback((): number | undefined => {
+    if (controlledPdfSelectionRef.current) return controlledPdfSelectionRef.current.pageNumber;
     const sel = window.getSelection();
     if (!sel || sel.isCollapsed) return undefined;
     const node = sel.anchorNode;
@@ -863,7 +1637,18 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
 
   const selectionPageRef = useRef<number | undefined>(undefined);
   const selectionPositionRef = useRef<AnnotationPosition | undefined>(undefined);
+  const selectionPositionPromiseRef = useRef<Promise<AnnotationPosition | undefined> | null>(null);
   const selectionOccurrenceRef = useRef(0);
+
+  const clearSelection = useCallback(() => {
+    activePdfSelectionRef.current = null;
+    controlledPdfSelectionRef.current = null;
+    selectionPageRef.current = undefined;
+    selectionPositionRef.current = undefined;
+    selectionPositionPromiseRef.current = null;
+    containerRef.current?.querySelectorAll(".pr-page-selection").forEach((overlay) => overlay.remove());
+    clearNativeSelection();
+  }, [clearNativeSelection]);
 
   // Which of the identical passages on this page the selection sits on,
   // measured against the page's own text layer while the selection still exists
@@ -882,6 +1667,7 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
   // Convert the browser selection's client rects to PDF-space coordinates so
   // highlights can be written back to Zotero as real annotations
   const computeSelectionPosition = useCallback((): AnnotationPosition | undefined => {
+    if (controlledPdfSelectionRef.current) return controlledPdfSelectionRef.current.position;
     const sel = window.getSelection();
     const pageNum = selectionPageRef.current;
     const viewer = viewerRef.current;
@@ -892,22 +1678,17 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
     const wrapper = pageView?.div?.querySelector(".canvasWrapper");
     if (!pageView?.viewport || !wrapper) return undefined;
     const pageRect = wrapper.getBoundingClientRect();
-    // Store what the reader saw during the drag — the per-line bands, snapped
-    // to the ink — not the raw text-layer boxes, which carry the very offset
-    // this record exists to avoid re-deriving
-    const lines = snapBands(
-      mergeIntoLines(
-        Array.from(sel.getRangeAt(0).getClientRects())
-          .filter((r) => r.width >= 1 && r.height >= 1)
-          .map((r) => ({ left: r.left, top: r.top, width: r.width, height: r.height }))
-      )
-    ) as SnappedBand[];
-    // Only geometry that was actually matched to the glyphs is worth freezing
-    // into the record. A selection made while the canvas was still blank would
-    // otherwise store the text layer's raw boxes — the very numbers this
-    // record exists to replace. Without geometry the paint path falls back to
-    // text + ink, which can succeed later, once the pixels exist.
-    if (lines.length === 0 || lines.some((l) => !l.inkFound)) return undefined;
+    const layer = pageView.div?.querySelector(".textLayer") as HTMLElement | null;
+    if (!layer) return undefined;
+    // Freeze the line the PDF says was selected, not the display-time nudge
+    // applied to its invisible span. Ink may tighten that line's band, but the
+    // sub-line guard in nearestInkRun prevents it from becoming a neighbour.
+    const lines = snapBands(logicalSelectionBands(sel.getRangeAt(0), layer), true) as SnappedBand[];
+    // Ink-tightened geometry is preferable, but the original PDF.js span is a
+    // stable logical PDF position even when the canvas is blank or the ink is
+    // ambiguous. Always store it: omitting position would make this highlight
+    // a zoom-dependent legacy record reconstructed from display calibration.
+    if (lines.length === 0) return undefined;
     // A selection reaching onto another page would convert against this
     // page's frame; keep the lines that are actually on it
     const onPage = lines.filter(
@@ -923,49 +1704,101 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
     return rects.length ? { pageIndex: pageNum - 1, rects } : undefined;
   }, [snapBands]);
 
+  // Zotero derives highlight bands from PDF character boxes. Refine the
+  // synchronous Range position with the same line geometry before an action is
+  // saved; this removes browser-font metrics from the exported annotation.
+  const alignSelectionPosition = useCallback(async (
+    position: AnnotationPosition | undefined
+  ): Promise<AnnotationPosition | undefined> => {
+    if (!pdfDocRef.current || !position) return position;
+    const pageNumber = position.pageIndex + 1;
+    const contentPromise = getPageTextContent(pageNumber);
+    if (!contentPromise) return position;
+    try {
+      const content = await contentPromise;
+      const items = content.items.filter((item) => "str" in item) as PdfTextItem[];
+      return {
+        ...position,
+        rects: alignRectsToZoteroLines(
+          position.rects,
+          items,
+          content.styles as Record<string, PdfTextStyle>
+        ),
+      };
+    } catch {
+      textContentCacheRef.current.delete(pageNumber);
+      return position;
+    }
+  }, [getPageTextContent]);
+
   useEffect(() => {
     if (selection) {
-      selectionPageRef.current = getSelectionPageNumber();
-      selectionPositionRef.current = computeSelectionPosition();
+      const controlled = controlledPdfSelectionRef.current;
+      selectionPageRef.current = controlled?.pageNumber ?? getSelectionPageNumber();
+      if (controlled) {
+        selectionPositionRef.current = controlled.position;
+        selectionPositionPromiseRef.current = Promise.resolve(controlled.position);
+        selectionOccurrenceRef.current = computeSelectionOccurrence(selection.text);
+        return;
+      }
+      const position = computeSelectionPosition();
+      selectionPositionRef.current = position;
+      const pending = alignSelectionPosition(position);
+      selectionPositionPromiseRef.current = pending;
+      void pending.then((aligned) => {
+        if (selectionPositionPromiseRef.current === pending) selectionPositionRef.current = aligned;
+      });
       selectionOccurrenceRef.current = computeSelectionOccurrence(selection.text);
+    } else {
+      selectionPositionPromiseRef.current = null;
     }
-  }, [selection, getSelectionPageNumber, computeSelectionPosition, computeSelectionOccurrence]);
+  }, [selection, getSelectionPageNumber, computeSelectionPosition, computeSelectionOccurrence, alignSelectionPosition]);
 
-  const handleExplain = useCallback(() => {
+  const resolvedSelectionPosition = useCallback(async () => {
+    return selectionPositionPromiseRef.current
+      ? await selectionPositionPromiseRef.current
+      : selectionPositionRef.current;
+  }, []);
+
+  const handleExplain = useCallback(async () => {
     if (selection) {
-      onTextSelected(selection.text, selectionPageRef.current, selectionOccurrenceRef.current, selectionPositionRef.current);
+      const position = await resolvedSelectionPosition();
+      onTextSelected(selection.text, selectionPageRef.current, selectionOccurrenceRef.current, position);
       clearSelection();
     }
-  }, [selection, onTextSelected, clearSelection]);
+  }, [selection, onTextSelected, clearSelection, resolvedSelectionPosition]);
 
   const handleAsk = useCallback(
-    (question: string) => {
+    async (question: string) => {
       if (selection) {
-        onAskAboutSelection(selection.text, question, selectionPageRef.current, selectionOccurrenceRef.current, selectionPositionRef.current);
+        const position = await resolvedSelectionPosition();
+        onAskAboutSelection(selection.text, question, selectionPageRef.current, selectionOccurrenceRef.current, position);
         clearSelection();
       }
     },
-    [selection, onAskAboutSelection, clearSelection]
+    [selection, onAskAboutSelection, clearSelection, resolvedSelectionPosition]
   );
 
   const handleHighlight = useCallback(
-    (color: string) => {
+    async (color: string) => {
       if (selection && onHighlight) {
-        onHighlight(selection.text, selectionPageRef.current, selectionPositionRef.current, color, selectionOccurrenceRef.current);
+        const position = await resolvedSelectionPosition();
+        onHighlight(selection.text, selectionPageRef.current, position, color, selectionOccurrenceRef.current);
         clearSelection();
       }
     },
-    [selection, onHighlight, clearSelection]
+    [selection, onHighlight, clearSelection, resolvedSelectionPosition]
   );
 
   const handleNote = useCallback(
-    (note: string, color: string) => {
+    async (note: string, color: string) => {
       if (selection && onNote) {
-        onNote(selection.text, note, selectionPageRef.current, selectionPositionRef.current, color, selectionOccurrenceRef.current);
+        const position = await resolvedSelectionPosition();
+        onNote(selection.text, note, selectionPageRef.current, position, color, selectionOccurrenceRef.current);
         clearSelection();
       }
     },
-    [selection, onNote, clearSelection]
+    [selection, onNote, clearSelection, resolvedSelectionPosition]
   );
 
   // ── Figure region capture ───────────────────────────────────────
@@ -978,17 +1811,136 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
     return canvas && wrapper ? { canvas, wrapper } : null;
   }, []);
 
+  const pdfPointForMouse = useCallback((entry: SelectionPageEntry, e: React.MouseEvent): [number, number] | null => {
+    const pageView = viewerRef.current?.getPageView(entry.pageNumber - 1) as PdfPageView | undefined;
+    const wrapper = pageView?.div?.querySelector(".canvasWrapper") as HTMLElement | null;
+    if (!pageView?.viewport || !wrapper) return null;
+    const box = wrapper.getBoundingClientRect();
+    if (box.width <= 0 || box.height <= 0) return null;
+    // convertToPdfPoint expects viewport pixels. During PDF.js's CSS-first zoom
+    // the wrapper may already have its new size while the viewport is awaiting
+    // redraw, so normalize through both dimensions rather than assuming 1 CSS
+    // pixel is always 1 viewport unit.
+    return pageView.viewport.convertToPdfPoint(
+      ((e.clientX - box.left) / box.width) * pageView.viewport.width,
+      ((e.clientY - box.top) / box.height) * pageView.viewport.height
+    ) as [number, number];
+  }, []);
+
+  const clientRectForPosition = useCallback((position: AnnotationPosition): DOMRect | null => {
+    const pageView = viewerRef.current?.getPageView(position.pageIndex) as PdfPageView | undefined;
+    const wrapper = pageView?.div?.querySelector(".canvasWrapper") as HTMLElement | null;
+    const viewport = pageView?.viewport;
+    if (!wrapper || !viewport || !position.rects.length) return null;
+    const box = wrapper.getBoundingClientRect();
+    const clientRects = position.rects.map((rect) => {
+      const [ax, ay] = viewport.convertToViewportPoint(rect[0], rect[1]);
+      const [bx, by] = viewport.convertToViewportPoint(rect[2], rect[3]);
+      const left = box.left + (Math.min(ax, bx) / viewport.width) * box.width;
+      const top = box.top + (Math.min(ay, by) / viewport.height) * box.height;
+      const right = box.left + (Math.max(ax, bx) / viewport.width) * box.width;
+      const bottom = box.top + (Math.max(ay, by) / viewport.height) * box.height;
+      return { left, top, right, bottom };
+    });
+    const left = Math.min(...clientRects.map((rect) => rect.left));
+    const top = Math.min(...clientRects.map((rect) => rect.top));
+    const right = Math.max(...clientRects.map((rect) => rect.right));
+    const bottom = Math.max(...clientRects.map((rect) => rect.bottom));
+    return new DOMRect(left, top, right - left, bottom - top);
+  }, []);
+
+  const updatePdfSelection = useCallback((active: ActivePdfSelection): ControlledPdfSelection | null => {
+    const selected = pdfSelectionRange(active.entry.model, active.anchorBoundary, active.focusBoundary);
+    if (!selected) {
+      controlledPdfSelectionRef.current = null;
+      const point = selectionBoundaryPoint(active.entry, active.anchorBoundary);
+      const domSelection = window.getSelection();
+      if (point && domSelection) {
+        const range = document.createRange();
+        range.setStart(point[0], point[1]);
+        range.collapse(true);
+        domSelection.removeAllRanges();
+        domSelection.addRange(range);
+      }
+      paintSelection();
+      return null;
+    }
+
+    const anchor = selectionBoundaryPoint(active.entry, active.anchorBoundary);
+    const focus = selectionBoundaryPoint(active.entry, active.focusBoundary);
+    const domSelection = window.getSelection();
+    if (anchor && focus && domSelection) {
+      try {
+        domSelection.setBaseAndExtent(anchor[0], anchor[1], focus[0], focus[1]);
+      } catch {
+        const range = document.createRange();
+        const forward = active.anchorBoundary <= active.focusBoundary;
+        range.setStart(...(forward ? anchor : focus));
+        range.setEnd(...(forward ? focus : anchor));
+        domSelection.removeAllRanges();
+        domSelection.addRange(range);
+      }
+    }
+
+    const text = domSelection?.toString().trim() || selected.text.trim();
+    if (!text) return null;
+    const controlled: ControlledPdfSelection = {
+      pageNumber: active.entry.pageNumber,
+      position: { pageIndex: active.entry.pageNumber - 1, rects: selected.rects },
+      range: selected,
+      text,
+    };
+    controlledPdfSelectionRef.current = controlled;
+    active.entry.layer.dataset.prSelectionText = text;
+    active.entry.layer.dataset.prSelectionRects = JSON.stringify(selected.rects);
+    paintSelection();
+    return controlled;
+  }, [paintSelection]);
+
   const handleContainerMouseDown = useCallback((e: React.MouseEvent) => {
     const parts = findPageParts(e.target);
     if (!parts) return;
-    if (captureMode) e.preventDefault();
-    onMouseDown(e, parts.canvas, parts.wrapper, captureMode);
-    dragPageRef.current = parts.wrapper;
-  }, [findPageParts, onMouseDown, captureMode]);
+    if (captureMode || e.altKey) {
+      e.preventDefault();
+      onMouseDown(e, parts.canvas, parts.wrapper, captureMode);
+      dragPageRef.current = parts.wrapper;
+      return;
+    }
+    if (e.button !== 0) return;
+
+    const page = parts.wrapper.closest(".page");
+    const pageNumber = Number(page?.getAttribute("data-page-number"));
+    const entry = pageNumber ? selectionPageCacheRef.current.get(pageNumber) : undefined;
+    if (!entry || !entry.layer.isConnected) {
+      if (pageNumber) void prepareSelectionPage(pageNumber);
+      return; // native browser selection remains the safe loading fallback
+    }
+    const point = pdfPointForMouse(entry, e);
+    const hit = point && hitTestPdfSelection(entry.model, point[0], point[1], 0.8);
+    if (!hit) return;
+
+    e.preventDefault();
+    clearSelection();
+    setHighlightMenu(null);
+    const active = { entry, anchorBoundary: hit.boundary, focusBoundary: hit.boundary };
+    activePdfSelectionRef.current = active;
+    updatePdfSelection(active);
+  }, [findPageParts, captureMode, onMouseDown, prepareSelectionPage, pdfPointForMouse, clearSelection, updatePdfSelection]);
 
   const handleContainerMouseMove = useCallback((e: React.MouseEvent) => {
-    if (isDragging && dragPageRef.current) onMouseMove(e, dragPageRef.current);
-  }, [isDragging, onMouseMove]);
+    if (isDragging && dragPageRef.current) {
+      onMouseMove(e, dragPageRef.current);
+      return;
+    }
+    const active = activePdfSelectionRef.current;
+    if (!active) return;
+    const point = pdfPointForMouse(active.entry, e);
+    const hit = point && hitTestPdfSelection(active.entry.model, point[0], point[1], 4);
+    if (!hit) return;
+    e.preventDefault();
+    active.focusBoundary = hit.boundary;
+    updatePdfSelection(active);
+  }, [isDragging, onMouseMove, pdfPointForMouse, updatePdfSelection]);
 
   const handleContainerMouseUp = useCallback((e: React.MouseEvent) => {
     if (isDragging && dragPageRef.current) {
@@ -1003,8 +1955,32 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
       dragPageRef.current = null;
       return;
     }
-    handleMouseUp();
-  }, [isDragging, onMouseUp, onRegionCaptured, handleMouseUp]);
+    const active = activePdfSelectionRef.current;
+    if (active) {
+      const point = pdfPointForMouse(active.entry, e);
+      const hit = point && hitTestPdfSelection(active.entry.model, point[0], point[1], 4);
+      if (hit) active.focusBoundary = hit.boundary;
+      const controlled = updatePdfSelection(active);
+      activePdfSelectionRef.current = null;
+      if (!controlled) {
+        clearSelection();
+        return;
+      }
+      const rect = clientRectForPosition(controlled.position);
+      if (!rect) {
+        clearSelection();
+        return;
+      }
+      e.preventDefault();
+      selectionPageRef.current = controlled.pageNumber;
+      selectionPositionRef.current = controlled.position;
+      selectionPositionPromiseRef.current = Promise.resolve(controlled.position);
+      selectionOccurrenceRef.current = computeSelectionOccurrence(controlled.text);
+      setSelectionInfo({ text: controlled.text, rect });
+      return;
+    }
+    handleNativeMouseUp();
+  }, [isDragging, onMouseUp, onRegionCaptured, pdfPointForMouse, updatePdfSelection, clientRectForPosition, clearSelection, computeSelectionOccurrence, setSelectionInfo, handleNativeMouseUp]);
 
   // Viewport position of the drag rectangle (dragRegion is page-relative)
   const dragRect = (() => {
@@ -1146,7 +2122,7 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
       <div className="shrink-0 flex items-center gap-2 px-3 py-1.5" style={{ background: "var(--paper)", borderBottom: "1px solid var(--border)" }}>
         <span className="pill-group">
         <button onClick={() => zoomBy(1 / BUTTON_ZOOM_FACTOR)} className="btn-icon w-6 h-6 text-base leading-none" title="Zoom out (⌘/Ctrl+scroll or pinch)">−</button>
-        <button onClick={zoomReset} className="btn-icon px-2 py-0.5 text-xs min-w-[44px] text-center tabular-nums" title="Fit page width">
+        <button ref={zoomPercentRef} onClick={zoomReset} className="btn-icon px-2 py-0.5 text-xs min-w-[44px] text-center tabular-nums" title="Fit page width">
           {Math.round(displayScale * 100)}%
         </button>
         <button onClick={() => zoomBy(BUTTON_ZOOM_FACTOR)} className="btn-icon w-6 h-6 text-base leading-none" title="Zoom in (⌘/Ctrl+scroll or pinch)">+</button>
@@ -1190,6 +2166,37 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
 
       {/* Viewer */}
       <div className="flex-1 relative" style={{ background: "var(--parchment)" }}>
+        {referencePreview && (() => {
+          const width = Math.min(680, window.innerWidth - 24);
+          const expectedHeight = referencePreview.data ? Math.min(390, window.innerHeight * 0.52) : 190;
+          const left = Math.max(12, Math.min(referencePreview.anchor.left, window.innerWidth - width - 12));
+          const below = referencePreview.anchor.bottom + 10;
+          const top = below + expectedHeight <= window.innerHeight - 12
+            ? below
+            : Math.max(12, referencePreview.anchor.top - expectedHeight - 10);
+          return (
+            <div
+              className="pr-reference-preview"
+              role="tooltip"
+              style={{ position: "fixed", left, top, width, zIndex: 80 }}
+            >
+              <div className="pr-reference-preview-label">
+                <span>{referencePreview.label || "Reference"}</span>
+                {referencePreview.data && <span>Bibliography page {referencePreview.data.pageNumber}</span>}
+              </div>
+              {referencePreview.loading ? (
+                <div className="pr-reference-preview-loading">Loading reference…</div>
+              ) : referencePreview.data ? (
+                // The image is a local, in-memory crop rendered from the open PDF.
+                // eslint-disable-next-line @next/next/no-img-element
+                <img src={referencePreview.data.imageUrl} alt={`Bibliography around ${referencePreview.label || "this reference"}`} />
+              ) : (
+                <div className="pr-reference-preview-loading">{referencePreview.error}</div>
+              )}
+            </div>
+          );
+        })()}
+
         {highlightMenu && (() => {
           const h = highlights.find((x) => x.id === highlightMenu.id);
           return (
@@ -1245,35 +2252,6 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
           onMouseUp={handleContainerMouseUp}
         >
           <div className="pdfViewer" />
-          {/* One band, two ways of painting it: a rule under the words, or a
-              wash across them. Nothing else differs. */}
-          {Object.values(highlightBands).flat().map((b, i) =>
-            b.underline ? (
-              <div
-                key={`ask-${b.id}-${i}`}
-                className="pr-band pr-asked-rule"
-                style={{ left: b.left, top: (b.inkBottom ?? b.top + b.height) + 1, width: b.width, height: 2, background: b.color }}
-              />
-            ) : (
-              <div
-                key={`hl-${b.id}-${i}`}
-                className="pr-band"
-                style={{ left: b.left, top: b.top - SELECTION_PAD, width: b.width, height: b.height + SELECTION_PAD * 2, background: b.color }}
-              />
-            )
-          )}
-          {selectionRects.map((r, i) => (
-            <div
-              key={i}
-              className="pr-band pr-selection"
-              style={{
-                left: r.left,
-                top: r.top - SELECTION_PAD,
-                width: r.width,
-                height: r.height + SELECTION_PAD * 2,
-              }}
-            />
-          ))}
           {flashRects.map((r, i) => (
             <div
               key={`flash-${i}`}

@@ -9,6 +9,13 @@ export type SelectionInfo = {
 export function useTextSelection(containerRef: React.RefObject<HTMLElement | null>) {
   const [selection, setSelection] = useState<SelectionInfo | null>(null);
 
+  // PdfViewer's PDF-coordinate selection controller supplies the same small
+  // view model as the native fallback. Keeping the state here means the
+  // popover and its consumers do not need to know which selection path won.
+  const setSelectionInfo = useCallback((next: SelectionInfo | null) => {
+    setSelection(next);
+  }, []);
+
   const handleMouseUp = useCallback(() => {
     const sel = window.getSelection();
     if (!sel || sel.isCollapsed || !sel.toString().trim()) {
@@ -37,5 +44,5 @@ export function useTextSelection(containerRef: React.RefObject<HTMLElement | nul
     window.getSelection()?.removeAllRanges();
   }, []);
 
-  return { selection, handleMouseUp, clearSelection };
+  return { selection, setSelectionInfo, handleMouseUp, clearSelection };
 }

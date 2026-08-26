@@ -65,10 +65,19 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: Request) {
-  const { attachment_key, text, comment, page, position, color } = await req.json();
+  const body = await req.json();
+  // Preferred high-level contract: one selected text-position plus optional
+  // appearance metadata. The legacy flat fields remain accepted so an older
+  // open tab can finish an in-flight write after a hot reload.
+  const attachment_key = body.attachmentKey || body.attachment_key;
+  const text = body.selection?.text ?? body.text;
+  const position = body.selection?.position ?? body.position;
+  const comment = body.options?.comment ?? body.comment;
+  const color = body.options?.color ?? body.color;
+  const page = body.options?.pageLabel ?? body.page;
 
   if (!attachment_key || !text?.trim() || !position?.rects?.length) {
-    return Response.json({ error: "attachment_key, text and position are required" }, { status: 400 });
+    return Response.json({ error: "attachmentKey and a selected text position are required" }, { status: 400 });
   }
   const apiKey = webApiKey();
   if (!apiKey) {
@@ -123,12 +132,34 @@ export async function POST(req: Request) {
 // Edit an existing annotation in place — its colour, its note, or both.
 // Zotero holds the only copy, so this is what "editing a highlight" means.
 export async function PATCH(req: Request) {
-  const { key, color, comment } = await req.json();
+  const { key, color, comment, page, position } = await req.json();
   const patch: Record<string, string> = {};
   if (typeof color === "string") patch.annotationColor = color;
   if (typeof comment === "string") patch.annotationComment = comment;
+  if (position !== undefined) {
+    const pageIndex = position?.pageIndex;
+    const rects = position?.rects;
+    const valid =
+      Number.isInteger(pageIndex) &&
+      pageIndex >= 0 &&
+      Array.isArray(rects) &&
+      rects.length > 0 &&
+      rects.every(
+        (r: unknown) =>
+          Array.isArray(r) &&
+          r.length === 4 &&
+          r.every((n) => typeof n === "number" && Number.isFinite(n)) &&
+          r[0] < r[2] &&
+          r[1] < r[3]
+      );
+    if (!valid) return Response.json({ error: "position must contain valid PDF rectangles" }, { status: 400 });
+    patch.annotationPosition = JSON.stringify({ pageIndex, rects });
+    patch.annotationPageLabel = String(typeof page === "number" ? page : pageIndex + 1);
+    const topY = Math.max(...rects.map((r: number[]) => r[3]));
+    patch.annotationSortIndex = `${pad(pageIndex, 5)}|000000|${pad(99999 - topY, 5)}`;
+  }
   if (!key || Object.keys(patch).length === 0) {
-    return Response.json({ error: "key and one of color/comment are required" }, { status: 400 });
+    return Response.json({ error: "key and at least one editable field are required" }, { status: 400 });
   }
   const apiKey = webApiKey();
   if (!apiKey) return Response.json({ error: "ZOTERO_API_KEY is not configured." }, { status: 400 });

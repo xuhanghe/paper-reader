@@ -1,4 +1,4 @@
-import type { KeyboardEvent } from "react";
+import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 
 // True when Enter means "submit this".
 //
@@ -34,7 +34,7 @@ function trackComposition() {
   }, true);
 }
 
-export function isSubmitKey(e: KeyboardEvent<HTMLElement>): boolean {
+export function isSubmitKey(e: ReactKeyboardEvent<HTMLElement>): boolean {
   trackComposition();
   if (e.key !== "Enter" || e.shiftKey) return false;
 
@@ -45,6 +45,33 @@ export function isSubmitKey(e: KeyboardEvent<HTMLElement>): boolean {
   if (composing) return false;
   if (Date.now() - endedAt < COMMIT_GRACE_MS) return false;
   return true;
+}
+
+type HighlightDeleteKeyEvent = {
+  key: string;
+  isComposing?: boolean;
+  altKey?: boolean;
+  ctrlKey?: boolean;
+  metaKey?: boolean;
+  shiftKey?: boolean;
+};
+
+const TEXT_EDITING_TARGETS =
+  'input, textarea, select, [contenteditable]:not([contenteditable="false"]), [role="textbox"]';
+
+// A selected PDF highlight can be removed with the physical Delete key or the
+// key labelled "delete" on a Mac keyboard, which browsers report as Backspace.
+// Modifier chords belong to the browser/OS and are deliberately left alone.
+export function isHighlightDeleteKey(e: HighlightDeleteKeyEvent): boolean {
+  if (e.isComposing || e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return false;
+  return e.key === "Delete" || e.key === "Backspace";
+}
+
+// Duck-type `closest` instead of using `instanceof Element`: an HTML snapshot
+// lives in an iframe, whose elements belong to a different browser realm.
+export function isTextEditingTarget(target: EventTarget | null): boolean {
+  const candidate = target as { closest?: (selector: string) => unknown } | null;
+  return typeof candidate?.closest === "function" && Boolean(candidate.closest(TEXT_EDITING_TARGETS));
 }
 
 // Test seam: composition state is module-level because the listeners are.

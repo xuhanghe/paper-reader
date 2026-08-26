@@ -104,9 +104,120 @@ html, body, #__next {
   border-radius: 3px;
   mix-blend-mode: multiply;
 }
+/* Persistent marks are anchored to the page, not the scrolling viewer. Their
+   children use page-relative percentages, so PDF.js's CSS-first zoom scales
+   the canvas and annotations in the same coordinate system and frame. */
+.pr-page-bands {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 3;
+}
+.pr-page-selection {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 4;
+}
+
+/* Defensive fallback for any annotation layer supplied outside our PDF viewer.
+   The viewer disables producer annotation appearances at render time and
+   rebuilds all link targets below, so coloured PDF link borders never show. */
+.annotationLayer .linkAnnotation.hasBorder {
+  border-color: transparent !important;
+  background-image: none !important;
+}
+.pr-page-reference-links {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 6;
+}
+.pr-reference-link {
+  position: absolute;
+  display: block;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 2px;
+  background: transparent;
+  color: transparent;
+  pointer-events: auto;
+  cursor: pointer;
+}
+.pr-reference-link:hover,
+.pr-reference-link:focus-visible {
+  background: rgba(113, 173, 253, 0.18);
+  outline: 1px solid rgba(62, 124, 210, 0.5);
+}
+.pr-reference-preview {
+  overflow: hidden;
+  pointer-events: none;
+  border: 1px solid rgba(90, 90, 90, 0.35);
+  border-radius: 7px;
+  background: #fff;
+  color: #202020;
+  box-shadow: 0 10px 32px rgba(0, 0, 0, 0.28);
+}
+.pr-reference-preview-label {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 7px 10px;
+  border-bottom: 1px solid rgba(90, 90, 90, 0.2);
+  color: #555;
+  background: #f7f7f7;
+  font-size: 11px;
+}
+.pr-reference-preview img {
+  display: block;
+  width: 100%;
+  max-height: min(52vh, 390px);
+  object-fit: contain;
+  background: #fff;
+}
+.pr-reference-preview-loading {
+  display: flex;
+  min-height: 150px;
+  align-items: center;
+  justify-content: center;
+  color: #777;
+  font-size: 12px;
+}
 /* Zotero's SELECTION_COLOR (#71ADFD) at the globalAlpha 0.4 it uses on light pages */
 .pr-selection {
   background: rgba(113, 173, 253, 0.4);
+}
+
+/* Explain toolbar responds to the panel's own dragged width, not the browser
+   viewport. At its narrow end the model controls take a second row while the
+   reading and collapse controls remain visible on the first. */
+.pr-explain-panel {
+  container-type: inline-size;
+}
+@container (max-width: 380px) {
+  .pr-explain-toolbar {
+    row-gap: 0.25rem;
+  }
+  .pr-explain-toolbar .pr-collapse-all-label {
+    display: none;
+  }
+  .pr-explain-toolbar .pr-explain-toggle {
+    margin-left: auto;
+    order: 1;
+  }
+  .pr-explain-toolbar .pr-explain-models {
+    flex: 1 0 100%;
+    order: 2;
+  }
 }
 
 /* Thin, theme-matched scrollbars */

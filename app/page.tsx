@@ -16,6 +16,7 @@ import { CustomApiModal } from "@/components/CustomApiModal";
 import { ModelPicker } from "@/components/ModelPicker";
 import { MaterialTabs, MaterialTab } from "@/components/MaterialTabs";
 import { DEFAULT_HIGHLIGHT_COLOR } from "@/lib/highlight-colors";
+import { createZoteroHighlight } from "@/lib/zotero-highlight-api";
 import { providerIdFor } from "@/lib/provider-id";
 import { RegionResult } from "@/hooks/useRegionDrag";
 import type { PdfViewerHandle, AskedPassage } from "@/components/PdfViewer";
@@ -935,23 +936,17 @@ export default function Home() {
       id: string,
       text: string,
       note: string | undefined,
-      page: number | undefined,
       position: { pageIndex: number; rects: number[][] },
       color: string
     ) => {
       const attachmentKey = session.zoteroAttachmentKey;
       if (!attachmentKey) return; // not a Zotero paper — session-local only
       try {
-        const res = await fetch("/api/zotero/annotations", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ attachment_key: attachmentKey, text, comment: note, page, position, color }),
-        });
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok || !data.key) {
-          setZoteroSyncError(data.error || "This highlight could not be saved to Zotero.");
-          return;
-        }
+        const data = await createZoteroHighlight(
+          attachmentKey,
+          { text, pageIndex: position.pageIndex, rects: position.rects },
+          { comment: note, color }
+        );
         if (abandonedHighlights.current.delete(id)) {
           fetch(`/api/zotero/annotations?key=${encodeURIComponent(data.key)}`, { method: "DELETE" }).catch(() => {});
           return;
@@ -964,8 +959,10 @@ export default function Home() {
         if (current && current.color !== color) drift.color = current.color;
         if (current && (current.note || "") !== (note || "")) drift.comment = current.note || "";
         if (Object.keys(drift).length > 0) patchZoteroAnnotation(data.key, drift);
-      } catch {
-        setZoteroSyncError("Could not reach Zotero — the highlight is saved locally only.");
+      } catch (error) {
+        setZoteroSyncError(
+          error instanceof Error ? error.message : "Could not reach Zotero — the highlight is saved locally only."
+        );
       }
     },
     [session.zoteroAttachmentKey, setHighlightZoteroKey, patchZoteroAnnotation]
@@ -982,7 +979,7 @@ export default function Home() {
     (text: string, pageNumber?: number, position?: { pageIndex: number; rects: number[][] }, color = DEFAULT_HIGHLIGHT_COLOR, occurrence = 0) => {
       const id = addHighlight({ text, pageNumber, color, occurrence, position });
       highlightUndo.current.push(id);
-      if (position) syncHighlightToZotero(id, text, undefined, pageNumber, position, color);
+      if (position) syncHighlightToZotero(id, text, undefined, position, color);
     },
     [addHighlight, syncHighlightToZotero]
   );
@@ -991,7 +988,7 @@ export default function Home() {
     (text: string, note: string, pageNumber?: number, position?: { pageIndex: number; rects: number[][] }, color = DEFAULT_HIGHLIGHT_COLOR, occurrence = 0) => {
       const id = addHighlight({ text, note, pageNumber, color, occurrence, position });
       highlightUndo.current.push(id);
-      if (position) syncHighlightToZotero(id, text, note, pageNumber, position, color);
+      if (position) syncHighlightToZotero(id, text, note, position, color);
     },
     [addHighlight, syncHighlightToZotero]
   );

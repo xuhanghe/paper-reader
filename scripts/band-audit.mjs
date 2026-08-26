@@ -228,16 +228,20 @@ async function main() {
   // Skipped cleanly when Zotero isn't reachable or the paper isn't there.
   try {
     const xpu = path.join(OUT, "band-audit-xpu.pdf");
-    const items = await (await fetch("http://127.0.0.1:23119/api/users/0/items?q=xPU&format=json")).json();
-    const parent = items.find((i) => i.data?.title?.includes("xPU"));
-    if (!parent) throw new Error("paper not in library");
-    const kids = await (await fetch(`http://127.0.0.1:23119/api/users/0/items/${parent.key}/children?format=json`)).json();
-    const att = kids.find((k) => k.data?.contentType === "application/pdf");
-    if (!att) throw new Error("no PDF attachment");
-    const head = await fetch(`http://127.0.0.1:23119/api/users/0/items/${att.key}/file`, { redirect: "manual" });
-    const loc = head.headers.get("location");
-    if (!loc) throw new Error("no file redirect");
-    fs.copyFileSync(decodeURIComponent(new URL(loc).pathname), xpu);
+    // Keep the copied fixture once fetched so this regression stays runnable
+    // when Zotero is closed. Fetch it only when a checkout has no fixture yet.
+    if (!fs.existsSync(xpu)) {
+      const items = await (await fetch("http://127.0.0.1:23119/api/users/0/items?q=xPU&format=json")).json();
+      const parent = items.find((i) => i.data?.title?.includes("xPU"));
+      if (!parent) throw new Error("paper not in library");
+      const kids = await (await fetch(`http://127.0.0.1:23119/api/users/0/items/${parent.key}/children?format=json`)).json();
+      const att = kids.find((k) => k.data?.contentType === "application/pdf");
+      if (!att) throw new Error("no PDF attachment");
+      const head = await fetch(`http://127.0.0.1:23119/api/users/0/items/${att.key}/file`, { redirect: "manual" });
+      const loc = head.headers.get("location");
+      if (!loc) throw new Error("no file redirect");
+      fs.copyFileSync(decodeURIComponent(new URL(loc).pathname), xpu);
+    }
 
     const calibrations = [];
     page.on("console", (m) => { if (m.text().includes("[paper-reader]")) calibrations.push(m.text()); });
@@ -322,6 +326,104 @@ async function main() {
       if (!ok) failures.push(`xpu copy: dragging the printed line selected ${JSON.stringify(got.slice(0, 40))}`);
       console.log(`  ${ok ? " ok " : "FAIL"} dragging the printed glyphs selects their own text (${JSON.stringify(got.slice(0, 34))})`);
     }
+
+    // The user's exact regression: a phrase wraps after "work-". It must
+    // produce two complete, ink-aligned bands and keep both through 86% ↔ 113%
+    // zoom changes. The earlier real-paper probe only touched the unwrapped
+    // occurrence, so it could pass while this one showed just "load".
+    const wrapped = await page.evaluate(() => {
+      const layer = document.querySelector('.page[data-page-number="2"] .textLayer');
+      const spans = Array.from(layer.querySelectorAll("span"));
+      const first = spans.find((s) => s.textContent?.includes("end-to-end work-"));
+      const second = first && spans[spans.indexOf(first) + 1];
+      if (!first || !second?.textContent?.startsWith("load")) return { error: "wrapped phrase spans not found" };
+      const start = first.firstChild.data.indexOf("end-to-end");
+      const end = second.firstChild.data.indexOf("load") + "load".length;
+      const range = document.createRange();
+      range.setStart(first.firstChild, start);
+      range.setEnd(second.firstChild, end);
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+      second.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+      return { text: sel.toString() };
+    });
+    if (wrapped.error) throw new Error(wrapped.error);
+    await page.waitForTimeout(400);
+    await page.evaluate(() => document.querySelector('[title="Highlight in this colour"] button')?.click());
+    await page.waitForTimeout(700);
+
+    const zoomTo = async (target) => {
+      const current = await page.evaluate(() => {
+        const button = document.querySelector('button[title="Fit page width"]');
+        return parseInt(button?.textContent || "100", 10) / 100;
+      });
+      if (Math.abs(current - target) < 0.005) return;
+      const canvas = await page.locator('.page[data-page-number="2"] canvas').boundingBox();
+      await page.mouse.move(canvas.x + canvas.width / 2, canvas.y + canvas.height / 2);
+      await page.keyboard.down("Control");
+      await page.mouse.wheel(0, -Math.log(target / current) / 0.008);
+      await page.keyboard.up("Control");
+      await page.waitForTimeout(900);
+    };
+
+    const wrappedGeometry = () => page.evaluate(() => {
+      const rect = (el) => {
+        const r = el.getBoundingClientRect();
+        return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: r.width, height: r.height };
+      };
+      const marks = Array.from(document.querySelectorAll("mark.pr-highlight"))
+        .map(rect)
+        .sort((a, b) => a.top - b.top || a.left - b.left);
+      const bands = Array.from(document.querySelectorAll(".pr-band:not(.pr-selection):not(.pr-asked-rule)"))
+        .map(rect)
+        .sort((a, b) => a.top - b.top || a.left - b.left);
+      const scale = document.querySelector('button[title="Fit page width"]')?.textContent?.trim();
+      return { marks, bands, scale };
+    });
+
+    const judgeWrapped = (label, geometry) => {
+      let ok = geometry.marks.length === 2 && geometry.bands.length === 2;
+      if (ok) {
+        for (let i = 0; i < 2; i++) {
+          const mark = geometry.marks[i], band = geometry.bands[i];
+          const centreDelta = Math.abs((mark.top + mark.bottom - band.top - band.bottom) / 2);
+          const leftDelta = Math.abs(mark.left - band.left);
+          const rightDelta = Math.abs(mark.right - band.right);
+          if (centreDelta > 3 || leftDelta > 3 || rightDelta > 3 || band.width < 8) ok = false;
+        }
+      }
+      if (!ok) failures.push(`${label}: expected two aligned wrapped bands, got ${JSON.stringify(geometry)}`);
+      console.log(`  ${ok ? " ok " : "FAIL"} ${label} shows both wrapped lines at ${geometry.scale}`);
+    };
+
+    const xpuShot = async (name) => {
+      const clip = await page.evaluate(() => {
+        const marks = Array.from(document.querySelectorAll("mark.pr-highlight")).map((m) => m.getBoundingClientRect());
+        const left = Math.min(...marks.map((r) => r.left));
+        const right = Math.max(...marks.map((r) => r.right));
+        const top = Math.min(...marks.map((r) => r.top));
+        const bottom = Math.max(...marks.map((r) => r.bottom));
+        return {
+          x: Math.max(0, left - 35),
+          y: Math.max(0, top - 45),
+          width: Math.min(window.innerWidth - Math.max(0, left - 35), right - left + 280),
+          height: Math.min(window.innerHeight - Math.max(0, top - 45), bottom - top + 100),
+        };
+      });
+      await page.screenshot({ path: path.join(OUT, `${name}.png`), clip });
+    };
+
+    await zoomTo(0.86);
+    let wrappedAtZoom = await wrappedGeometry();
+    judgeWrapped("xpu wrapped 86%", wrappedAtZoom);
+    await xpuShot("7-xpu-wrapped-86");
+
+    await zoomTo(1.13);
+    wrappedAtZoom = await wrappedGeometry();
+    judgeWrapped("xpu wrapped 113%", wrappedAtZoom);
+    await xpuShot("8-xpu-wrapped-113");
+
     fs.rmSync(path.join(ROOT, ".paper-reader-sessions", "band-audit-xpu-pdf"), { recursive: true, force: true });
   } catch (e) {
     console.log(`  xpu scenario skipped: ${e.message}`);
