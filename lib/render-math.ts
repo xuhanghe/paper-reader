@@ -111,6 +111,87 @@ export const RENDER_MATH_JS = String.raw`
 })();
 `;
 
+// Zhihu (logged out) renders answers truncated — a ~400px clamp plus an
+// "阅读全文" button whose click only summons the login wall. The full answer
+// HTML is nevertheless delivered in the #js-initialData hydration blob, so
+// swap it into the DOM before printing. Injected HTML still carries Zhihu's
+// lazy-load placeholders (inline SVG src + data-actualsrc/data-original),
+// which never resolve without their JS — rewrite those to the real image.
+// Runs before the KaTeX pass so any TeX inside the restored text gets
+// rendered too. Harmless elsewhere: no #js-initialData → no-op.
+export const EXPAND_COLLAPSED_JS = String.raw`
+(() => {
+  let expanded = 0;
+
+  const fixLazyImages = (root) => {
+    root.querySelectorAll("img[data-actualsrc], img[data-original]").forEach((img) => {
+      const real = img.getAttribute("data-actualsrc") || img.getAttribute("data-original");
+      if (real && !(img.getAttribute("src") || "").startsWith("http")) img.setAttribute("src", real);
+      img.classList.remove("lazy");
+    });
+  };
+
+  const unclamp = (item) => {
+    item.querySelectorAll(".RichContent").forEach((el) => el.classList.remove("is-collapsed"));
+    item.querySelectorAll(".RichContent-inner").forEach((el) => {
+      el.classList.remove("RichContent-inner--collapsed");
+      // clamp and fade both come from class rules — override, don't just clear
+      el.style.setProperty("max-height", "none", "important");
+      el.style.setProperty("mask-image", "none", "important");
+      el.style.setProperty("-webkit-mask-image", "none", "important");
+    });
+    item
+      .querySelectorAll(".ContentItem-expandButton, button.ContentItem-more, .ContentItem-rightButton")
+      .forEach((el) => el.remove());
+  };
+
+  let entities = {};
+  try {
+    const data = JSON.parse(document.querySelector("#js-initialData")?.textContent ?? "");
+    entities = data?.initialState?.entities ?? {};
+  } catch {
+    // not a Zhihu-style page — the generic unclamp below still applies
+  }
+  const fullContent = (id) => {
+    for (const kind of ["answers", "articles"]) {
+      const content = entities?.[kind]?.[id]?.content;
+      if (typeof content === "string" && content.length) return content;
+    }
+    return null;
+  };
+
+  document.querySelectorAll(".ContentItem[name]").forEach((item) => {
+    const target = item.querySelector(".RichContent-inner .RichText, .RichContent-inner");
+    if (!target) return;
+    const content = fullContent(item.getAttribute("name"));
+    // Zhihu usually server-renders the complete answer and merely clamps it
+    // visually, so unclamping is the whole fix. Swap in the blob only when it
+    // genuinely holds more TEXT than the DOM — comparing HTML lengths would
+    // let a markup-heavy excerpt replace a complete answer.
+    if (content) {
+      const blobText = new DOMParser().parseFromString(content, "text/html").body.textContent || "";
+      if (blobText.length > (target.textContent || "").length + 200) {
+        target.innerHTML = content;
+        fixLazyImages(target);
+        expanded++;
+      }
+    }
+    unclamp(item);
+  });
+
+  // Whatever is still clamped (no blob entry) at least prints in full
+  document.querySelectorAll(".RichContent.is-collapsed").forEach((el) => {
+    unclamp(el.parentElement || el);
+  });
+
+  // With the site's scripts blocked nothing else resolves lazy placeholders,
+  // so sweep the whole page, not just the swapped-in answers
+  fixLazyImages(document.body);
+
+  return { expanded };
+})();
+`;
+
 // Removes site chrome that would otherwise repeat on every printed page
 // (fixed navbars, login cards, cookie banners) and unlocks scrolling.
 export const STRIP_CHROME_JS = String.raw`
@@ -123,6 +204,9 @@ export const STRIP_CHROME_JS = String.raw`
   document
     .querySelectorAll('[role="dialog"], [class*="Modal"], [class*="signFlow"], [class*="LoginBar"], [class*="login-modal"], [class*="Popover-backdrop"], [class*="backdrop"], [class*="CornerButtons"], [class*="Sticky"]')
     .forEach(kill);
+  // With page scripts frozen the browser renders <noscript> fallbacks — on
+  // Zhihu that's escaped <img …> markup printed as literal text
+  document.querySelectorAll("noscript").forEach((el) => el.remove());
   // Fixed/sticky elements repeat on every printed page — always chrome
   [...document.querySelectorAll("*")].forEach((el) => {
     const cs = getComputedStyle(el);

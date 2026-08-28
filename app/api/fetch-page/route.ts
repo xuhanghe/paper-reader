@@ -29,7 +29,7 @@ async function fetchPlain(url: URL): Promise<FetchedPage | null> {
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { createRequire } from "node:module";
-import { RENDER_MATH_JS, STRIP_CHROME_JS } from "@/lib/render-math";
+import { EXPAND_COLLAPSED_JS, RENDER_MATH_JS, STRIP_CHROME_JS } from "@/lib/render-math";
 
 // KaTeX assets, read once from node_modules (no CDN at render time).
 // Its CSS references fonts by relative URL, which would 404 against the
@@ -109,24 +109,54 @@ async function fetchViaChromePdf(
       await page.waitForTimeout(3000); // let math/images render
 
       // Wait for real article text — sites under load sometimes serve a stub
-      // first, which would otherwise be printed as an empty PDF
+      // first, which would otherwise be printed as an empty PDF. The evaluate
+      // can race a challenge page navigating to the real one — count that as
+      // "not ready yet", not a failure.
       const articleReady = async () =>
-        page.evaluate(`(() => {
+        (page.evaluate(`(() => {
           const el = document.querySelector("article, .Post-RichText, .RichText, main");
           return ((el || document.body).innerText || "").trim().length;
-        })()`) as Promise<number>;
+        })()`) as Promise<number>).catch(() => 0);
       for (let i = 0; i < 8 && (await articleReady()) < 400; i++) {
         await page.waitForTimeout(1500);
       }
 
-      // Nudge lazy-loaded images by walking down the page, then return to top
-      await page.evaluate(`(async () => {
-        for (let y = 0; y < document.body.scrollHeight; y += 900) {
-          window.scrollTo(0, y);
-          await new Promise((r) => setTimeout(r, 60));
+      // Zhihu tags headless visitors with a 403 while still serving the full
+      // server-rendered page — then its client app notices and REPLACES the
+      // page with an error view partway through our pipeline (the same app
+      // code draws the login wall and keeps answers collapsed). The moment the
+      // article text is in, freeze the page's own scripts so the swap can
+      // never happen. DevTools-driven evaluate() (expansion, KaTeX, chrome
+      // stripping) still runs with page script execution disabled.
+      if (/(^|\.)zhihu\.com$/.test(url.hostname)) {
+        try {
+          const cdp = await context.newCDPSession(page);
+          await cdp.send("Emulation.setScriptExecutionDisabled", { value: true });
+        } catch (err) {
+          console.error("[fetch-page] script freeze skipped:", err);
         }
-        window.scrollTo(0, 0);
-      })()`);
+      }
+
+      // Restore content the site renders truncated (Zhihu's collapsed answers)
+      // before touching images or math — the swapped-in HTML needs both passes
+      try {
+        const { expanded } = (await page.evaluate(EXPAND_COLLAPSED_JS)) as { expanded: number };
+        if (expanded) console.log("[fetch-page] collapsed sections restored:", expanded);
+      } catch (err) {
+        console.error("[fetch-page] expand pass skipped:", err);
+      }
+
+      // Nudge lazy-loaded images by walking down the page, then return to top.
+      // Driven from here, not by an async loop inside the page — with page
+      // scripts frozen, in-page timers never fire and that loop would hang.
+      const scrollHeight = (await page
+        .evaluate("document.body.scrollHeight")
+        .catch(() => 0)) as number;
+      for (let y = 0; y < scrollHeight; y += 900) {
+        await page.evaluate(`window.scrollTo(0, ${y})`).catch(() => {});
+        await page.waitForTimeout(60);
+      }
+      await page.evaluate("window.scrollTo(0, 0)").catch(() => {});
       await page.waitForTimeout(1200);
 
       // Render raw LaTeX (Zhihu & co. ship it as plain text) before printing.
@@ -148,7 +178,13 @@ async function fetchViaChromePdf(
         console.error("[fetch-page] math rendering skipped:", err);
       }
 
-      await page.addStyleTag({ content: PRINT_CSS });
+      // Synchronous injection — addStyleTag waits on the style's load event,
+      // which never fires while page scripts are frozen
+      await page.evaluate(`(() => {
+        const s = document.createElement("style");
+        s.textContent = ${JSON.stringify(PRINT_CSS)};
+        document.head.appendChild(s);
+      })()`);
       await page.evaluate(STRIP_CHROME_JS);
       await page.emulateMedia({ media: "screen" });
       const title = (await page.title()) || url.hostname;
