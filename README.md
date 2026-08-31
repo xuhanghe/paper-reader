@@ -138,6 +138,14 @@ npm install
 npm run dev          # http://localhost:3000
 ```
 
+**Or just open ⚙ Setup in the header.** It checks the two things that quietly
+break a first run — whether Zotero is reachable and whether any provider CLI is
+actually visible to the server — and fixes what it can in place: paste a Zotero
+key and it is verified against zotero.org before being saved, and a CLI that is
+installed but off the server's `PATH` gets a one-click "use this path". A dot on
+the button means something needs attention. The steps below are the same thing
+done by hand.
+
 **Enable Zotero's local API.** In Zotero: *Settings → Advanced → Allow other
 applications on this computer to communicate with Zotero*. This is what lets the
 reader list your collections and fetch attachments. It is read-only.
@@ -152,7 +160,9 @@ echo 'ZOTERO_API_KEY=your-key-here' >> .env.local
 ```
 
 Without the key everything still works, but highlights stay local to the session
-instead of becoming real Zotero annotations.
+instead of becoming real Zotero annotations. A key with library access but *not*
+write access is the common trap — it looks configured and silently fails to sync.
+⚙ Setup reports that case specifically.
 
 **Optional — give the model your library.** If the `zotero-mcp` server is
 installed, the three CLI providers get it automatically and can search your

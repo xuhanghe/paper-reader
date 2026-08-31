@@ -22,6 +22,7 @@ import { RegionResult } from "@/hooks/useRegionDrag";
 import type { PdfViewerHandle, AskedPassage } from "@/components/PdfViewer";
 import type { PanelScroll } from "@/components/ExplainPanel";
 import { SkillsDrawer } from "@/components/SkillsDrawer";
+import { SetupDialog } from "@/components/SetupDialog";
 import { useAgentSkills } from "@/hooks/useAgentSkills";
 import Link from "next/link";
 
@@ -267,6 +268,32 @@ export default function Home() {
   const [customApi, setCustomApi] = useState<CustomApiConfig | null>(loadCustomApi);
   const [customApiModalOpen, setCustomApiModalOpen] = useState(false);
   const [skillsOpen, setSkillsOpen] = useState(false);
+  const [setupOpen, setSetupOpen] = useState(false);
+  // A quiet badge, not a blocking dialog: the reader still opens local PDFs
+  // with nothing configured, so setup problems are worth showing but never
+  // worth interrupting for.
+  const [setupNeedsAttention, setSetupNeedsAttention] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await fetch("/api/setup", { cache: "no-store" });
+        if (!res.ok) return;
+        const report = await res.json();
+        // Worth a badge only for things that silently degrade the reader:
+        // no library, no provider, or a key that can't actually write.
+        const wrong =
+          !report.zoteroLocal?.reachable ||
+          !report.anyProvider ||
+          (report.zoteroKey?.configured && !report.zoteroKey?.canWrite);
+        if (!cancelled) setSetupNeedsAttention(Boolean(wrong));
+      } catch {
+        // the badge is a nicety — a failed probe should never surface an error
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
   const { skills, activeSkillIds, toggleSkill, loading: skillsLoading } = useAgentSkills();
 
   // ── Open materials (tabs) ─────────────────────────────────────────
@@ -1355,6 +1382,14 @@ export default function Home() {
           <button type="button" onClick={() => setSkillsOpen(true)} className="pr-capability-button">
             ◆ Skills <small>{activeSkillIds.length || ""}</small>
           </button>
+          <button
+            type="button"
+            onClick={() => { setSetupOpen(true); setSetupNeedsAttention(false); }}
+            className="pr-capability-button"
+            title={setupNeedsAttention ? "Something needs attention — Zotero or a provider" : "Check Zotero and provider setup"}
+          >
+            ⚙ Setup{setupNeedsAttention && <span className="pr-setup-badge" aria-label="needs attention" />}
+          </button>
 
         <label className="btn-primary cursor-pointer text-xs px-3 py-1.5">
           Open PDF
@@ -1407,6 +1442,8 @@ export default function Home() {
         onClose={closeTab}
         onReorder={setTabs}
       />
+
+      {setupOpen && <SetupDialog onClose={() => setSetupOpen(false)} />}
 
       <SkillsDrawer
         open={skillsOpen}

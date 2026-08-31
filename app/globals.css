@@ -25,6 +25,12 @@
   --quote:      #7EA6F0;
   --quote-dim:  rgba(126, 166, 240, 0.16);
 
+  /* Setup status. The accent is gold, so "working" cannot also be gold —
+     at 5px an amber warning and a gold pass are the same dot. */
+  --status-ok:   #6FA96F;
+  --status-warn: #D9822B;
+  --status-bad:  #C4635B;
+
   /* Type badge colours */
   --badge-text-bg:   rgba(227, 179, 65, 0.15);
   --badge-text-fg:   #E3B341;
@@ -278,6 +284,8 @@ a:focus-visible {
 .pr-capability-button { height: 29px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); padding: 0 9px; color: var(--ink-muted); font-size: 9px; }
 .pr-capability-button:hover { border-color: #4B5660; color: var(--ink); }
 .pr-capability-button small { min-width: 13px; height: 13px; display: inline-grid; place-items: center; margin-left: 3px; border-radius: 7px; background: var(--accent-dim); color: var(--accent); font-size: 7px; }
+/* Setup needs attention — a dot, not an alarm: nothing here blocks reading */
+.pr-setup-badge { display: inline-block; width: 5px; height: 5px; margin-left: 4px; border-radius: 50%; background: var(--status-warn); vertical-align: middle; }
 .pr-more-menu { position: relative; }
 .pr-more-menu summary { width: 29px; height: 29px; display: grid; place-items: center; cursor: pointer; list-style: none; border: 1px solid var(--border); border-radius: 6px; color: var(--ink-muted); }
 .pr-more-menu summary::-webkit-details-marker { display: none; }
