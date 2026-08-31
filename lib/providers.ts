@@ -116,11 +116,24 @@ function codexEffort(effort: unknown): string | null {
   return ["low", "medium", "high", "xhigh"].includes(effort) ? effort : null;
 }
 
-function codexArgs(prompt: string, opts?: { images?: string[]; effort?: unknown; resumeId?: string }): string[] {
-  const args = ["exec"];
+type CodexRunOptions = {
+  images?: string[];
+  effort?: unknown;
+  resumeId?: string;
+  cwd?: string;
+  writable?: boolean;
+};
+
+function codexArgs(prompt: string, opts?: CodexRunOptions): string[] {
+  // `--search` is a global Codex flag, so it must precede the `exec`
+  // subcommand. Web is an always-available capability in both app surfaces.
+  const args = ["--search"];
+  if (opts?.cwd) args.push("-C", opts.cwd);
+  if (opts?.writable) args.push("-a", "never");
+  args.push("exec");
   if (opts?.resumeId) args.push("resume", opts.resumeId);
   // Sessions are kept (no --ephemeral) so the per-paper conversation can resume
-  args.push("--json", "--skip-git-repo-check", "-s", "read-only");
+  args.push("--json", "--skip-git-repo-check", "-s", opts?.writable ? "workspace-write" : "read-only");
   args.push(...codexMcpArgs()); // Zotero library access
   const eff = codexEffort(opts?.effort);
   if (eff) args.push("-c", `model_reasoning_effort="${eff}"`);
@@ -131,7 +144,7 @@ function codexArgs(prompt: string, opts?: { images?: string[]; effort?: unknown;
 
 export function codexStream(
   prompt: string,
-  opts?: { images?: string[]; effort?: unknown; resumeId?: string; onClose?: () => void }
+  opts?: CodexRunOptions & { onClose?: () => void }
 ): ReadableStream {
   let child: ReturnType<typeof spawn> | null = null;
   return new ReadableStream({
@@ -167,7 +180,19 @@ export function codexStream(
                 encoder.encode(JSON.stringify({ type: "system", session_id: ev.thread_id }) + "\n")
               );
             } else if (ev.type === "item.updated" || ev.type === "item.completed") {
-              emitAgentMessage(ev.item ?? {});
+              const item = ev.item ?? {};
+              emitAgentMessage(item);
+              if (ev.type === "item.completed" && item.type !== "agent_message" && item.type !== "reasoning") {
+                const name = item.type === "web_search"
+                  ? "web.search"
+                  : item.type === "command_execution"
+                    ? "workspace.command"
+                    : item.type === "mcp_tool_call"
+                      ? String(item.server || "mcp") + "." + String(item.tool || "tool")
+                      : String(item.type || "tool");
+                const detail = String(item.query || item.command || item.status || "Completed").slice(0, 180);
+                controller.enqueue(encoder.encode(JSON.stringify({ type: "tool", name, detail, status: "completed" }) + "\n"));
+              }
             }
           } catch {
             // non-JSON line

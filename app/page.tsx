@@ -21,6 +21,9 @@ import { providerIdFor } from "@/lib/provider-id";
 import { RegionResult } from "@/hooks/useRegionDrag";
 import type { PdfViewerHandle, AskedPassage } from "@/components/PdfViewer";
 import type { PanelScroll } from "@/components/ExplainPanel";
+import { SkillsDrawer } from "@/components/SkillsDrawer";
+import { useAgentSkills } from "@/hooks/useAgentSkills";
+import Link from "next/link";
 
 const PdfViewer = dynamic(() => import("@/components/PdfViewer").then((m) => m.PdfViewer), {
   ssr: false,
@@ -263,6 +266,8 @@ export default function Home() {
   const bumpLibraryRefresh = useCallback(() => setLibraryRefresh((v) => v + 1), []);
   const [customApi, setCustomApi] = useState<CustomApiConfig | null>(loadCustomApi);
   const [customApiModalOpen, setCustomApiModalOpen] = useState(false);
+  const [skillsOpen, setSkillsOpen] = useState(false);
+  const { skills, activeSkillIds, toggleSkill, loading: skillsLoading } = useAgentSkills();
 
   // ── Open materials (tabs) ─────────────────────────────────────────
   // Tab metadata persists across restarts; document bytes are cached in
@@ -680,6 +685,7 @@ export default function Home() {
             effort: session.effort,
             custom: session.model === "custom" ? customApi : undefined,
             session_id: session.providerSessions?.[provider],
+            skills: activeSkillIds,
           }),
         });
 
@@ -737,7 +743,7 @@ export default function Home() {
         setStreamingIds((s) => { const next = new Set(s); next.delete(annotationId); return next; });
       }
     },
-    [session.model, session.effort, session.pdfName, session.providerSessions, paperId, customApi, updateLastAssistantMessage, setProviderSession, markTurn]
+    [session.model, session.effort, session.pdfName, session.providerSessions, paperId, customApi, activeSkillIds, updateLastAssistantMessage, setProviderSession, markTurn]
   );
 
   // Summarising a conversation into its takeaways. Runs when the Concepts tab
@@ -1332,23 +1338,23 @@ export default function Home() {
 
   return (
     <div className="h-screen flex flex-col overflow-hidden" style={{ background: "var(--paper)" }}>
-      {/* Header */}
-      <header
-        className="flex items-center gap-2 px-4 shrink-0 h-12"
-        style={{
-          background: "linear-gradient(180deg, #11161D, var(--paper))",
-          borderBottom: "1px solid var(--border)",
-        }}
-      >
-        <span className="flex items-center gap-2 mr-3 select-none">
-          <span
-            className="w-2 h-2 rounded-full shrink-0"
-            style={{ background: "linear-gradient(135deg, var(--accent-bright), var(--accent))", boxShadow: "0 0 8px rgba(232,120,76,0.55)" }}
-          />
-          <span className="font-semibold text-sm tracking-tight" style={{ color: "var(--ink)", fontFamily: "var(--font-lora), Georgia, serif" }}>
-            Paper Reader
-          </span>
-        </span>
+      {/* Shared shell: Reader and Workspace always switch in the same place. */}
+      <header className="pr-app-bar">
+        <div className="pr-brand select-none">
+          <span>P</span>
+          <strong>Paper Reader</strong>
+        </div>
+
+        <nav className="pr-surface-switch" aria-label="Application surface">
+          <Link href="/" className="active" aria-current="page">Reader</Link>
+          <Link href="/workspace">Workspace</Link>
+        </nav>
+
+        <div className="pr-reader-actions">
+          <span className="pr-web-pill" title="Live web search is always available">🌐 Web on</span>
+          <button type="button" onClick={() => setSkillsOpen(true)} className="pr-capability-button">
+            ◆ Skills <small>{activeSkillIds.length || ""}</small>
+          </button>
 
         <label className="btn-primary cursor-pointer text-xs px-3 py-1.5">
           Open PDF
@@ -1358,17 +1364,6 @@ export default function Home() {
         <button onClick={() => setUrlModalOpen(true)} className="btn-ghost text-xs px-3 py-1.5">
           Open URL
         </button>
-
-        {session.pdfName && (
-          <span
-            className="hidden md:flex items-center gap-1.5 text-xs truncate max-w-[300px] px-2.5 py-1 rounded-full ml-2"
-            style={{ color: "var(--ink-muted)", background: "rgba(230,237,243,0.04)", border: "1px solid var(--border-light)" }}
-            title={session.pdfName}
-          >
-            <span className="w-1 h-1 rounded-full shrink-0" style={{ background: "var(--accent)" }} />
-            <span className="truncate">{session.pdfName.replace(/\.pdf$/i, "")}</span>
-          </span>
-        )}
 
         {/* Save the open material into Zotero — shown when it isn't from there */}
         {session.pdfDataUrl && !session.zoteroKey && (
@@ -1394,17 +1389,14 @@ export default function Home() {
           </button>
         )}
 
-        <span className="ml-auto flex items-center gap-2">
-          {session.pdfName && (
-            <button onClick={saveSession} className="btn-ghost text-xs px-3 py-1.5">
-              Save session
-            </button>
-          )}
-          <label className="btn-ghost cursor-pointer text-xs px-3 py-1.5">
-            Load session
-            <input type="file" accept=".json,application/json" onChange={handleLoadSession} className="hidden" />
-          </label>
-        </span>
+          <details className="pr-more-menu">
+            <summary title="More reader actions">•••</summary>
+            <div>
+              {session.pdfName && <button onClick={saveSession}>Save session</button>}
+              <label>Load session<input type="file" accept=".json,application/json" onChange={handleLoadSession} className="hidden" /></label>
+            </div>
+          </details>
+        </div>
       </header>
 
       <MaterialTabs
@@ -1413,6 +1405,16 @@ export default function Home() {
         loadingId={switchingTo}
         onSelect={openTab}
         onClose={closeTab}
+        onReorder={setTabs}
+      />
+
+      <SkillsDrawer
+        open={skillsOpen}
+        onClose={() => setSkillsOpen(false)}
+        skills={skills}
+        activeIds={activeSkillIds}
+        onToggle={toggleSkill}
+        loading={skillsLoading}
       />
 
       {pendingZoteroSave && (

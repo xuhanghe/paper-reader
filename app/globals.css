@@ -1,23 +1,23 @@
 @import "tailwindcss";
 
 :root {
-  /* Dark surface palette — Claude Code terminal */
-  --paper:        #0D1117;   /* main background */
-  --parchment:    #010409;   /* PDF reading surface */
-  --surface:      #161B22;   /* card / panel surfaces */
-  --border:       #30363D;
-  --border-light: #21262D;
+  /* Unified Reader / Workspace palette */
+  color-scheme: dark;
+  --paper:        #0C0F12;
+  --parchment:    #090C0F;
+  --surface:      #12161A;
+  --border:       #2B333B;
+  --border-light: #222930;
 
   /* Text */
-  --ink:          #E6EDF3;   /* primary text */
-  --ink-muted:    #8B949E;   /* secondary text */
-  --ink-faint:    #484F58;   /* very muted / disabled */
+  --ink:          #EDF0F2;
+  --ink-muted:    #9AA3AB;
+  --ink-faint:    #68737D;
 
-  /* Accent — Claude warm orange */
-  --accent:       #E8784C;
-  --accent-bright:#F08D63;
-  --accent-dim:   rgba(232, 120, 76, 0.18);
-  --accent-faint: rgba(232, 120, 76, 0.09);
+  --accent:       #E1C369;
+  --accent-bright:#ECD47F;
+  --accent-dim:   rgba(225, 195, 105, 0.18);
+  --accent-faint: rgba(225, 195, 105, 0.09);
 
   /* Passages carried from a conversation into a question. Deliberately not the
      accent: the accent already means "this is the paper", and a quote link is
@@ -57,7 +57,7 @@ html, body, #__next {
 /* ── Global finish ──────────────────────────────────────────── */
 
 ::selection {
-  background: rgba(232, 120, 76, 0.32);
+  background: rgba(225, 195, 105, 0.32);
   color: var(--ink);
 }
 
@@ -246,9 +246,78 @@ html, body, #__next {
 /* Keyboard focus ring, without flashing on mouse clicks */
 button:focus-visible,
 input:focus-visible,
-select:focus-visible {
+select:focus-visible,
+a:focus-visible {
   outline: 2px solid var(--accent-dim);
   outline-offset: 1px;
+}
+
+/* ── Shared application shell ─────────────────────────────── */
+.pr-app-bar {
+  position: relative;
+  z-index: 30;
+  height: 56px;
+  flex: 0 0 56px;
+  display: grid;
+  grid-template-columns: minmax(210px, 1fr) auto minmax(500px, 1fr);
+  align-items: center;
+  gap: 12px;
+  padding: 0 14px;
+  border-bottom: 1px solid var(--border);
+  background: #0B0E11;
+}
+.pr-brand { display: flex; align-items: center; gap: 9px; min-width: 0; }
+.pr-brand > span { width: 30px; height: 30px; display: grid; place-items: center; border: 1px solid #56616B; border-radius: 7px; color: var(--accent); font: 17px Georgia, serif; }
+.pr-brand strong { font: 15px var(--font-lora), Georgia, serif; white-space: nowrap; }
+.pr-surface-switch { display: flex; padding: 3px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
+.pr-surface-switch a { min-width: 82px; padding: 6px 12px; border-radius: 5px; color: var(--ink-muted); font-size: 10px; text-align: center; text-decoration: none; }
+.pr-surface-switch a:hover { color: var(--ink); }
+.pr-surface-switch a.active { background: #252B31; color: var(--ink); box-shadow: 0 1px 2px rgba(0,0,0,.35); }
+.pr-reader-actions { justify-self: end; min-width: 0; display: flex; align-items: center; gap: 7px; }
+.pr-web-pill, .pr-web-status { display: inline-flex; align-items: center; height: 27px; padding: 0 8px; border: 1px solid #315342; border-radius: 6px; background: #14221B; color: #79BC98; font-size: 9px; white-space: nowrap; }
+.pr-capability-button { height: 29px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); padding: 0 9px; color: var(--ink-muted); font-size: 9px; }
+.pr-capability-button:hover { border-color: #4B5660; color: var(--ink); }
+.pr-capability-button small { min-width: 13px; height: 13px; display: inline-grid; place-items: center; margin-left: 3px; border-radius: 7px; background: var(--accent-dim); color: var(--accent); font-size: 7px; }
+.pr-more-menu { position: relative; }
+.pr-more-menu summary { width: 29px; height: 29px; display: grid; place-items: center; cursor: pointer; list-style: none; border: 1px solid var(--border); border-radius: 6px; color: var(--ink-muted); }
+.pr-more-menu summary::-webkit-details-marker { display: none; }
+.pr-more-menu > div { position: absolute; right: 0; top: 34px; z-index: 80; width: 145px; padding: 5px; border: 1px solid var(--border); border-radius: 7px; background: #171C20; box-shadow: 0 16px 38px rgba(0,0,0,.5); }
+.pr-more-menu button, .pr-more-menu label { display: block; width: 100%; padding: 7px 8px; border: 0; border-radius: 5px; background: transparent; color: var(--ink-muted); font-size: 10px; text-align: left; cursor: pointer; }
+.pr-more-menu button:hover, .pr-more-menu label:hover { background: #252B31; color: var(--ink); }
+.pr-material-tab { cursor: grab; }
+.pr-material-tab:active { cursor: grabbing; }
+
+/* Shared skills drawer. It lives above either surface and keeps one selection. */
+.pr-drawer-backdrop { position: fixed; inset: 0; z-index: 90; border: 0; background: rgba(2,4,6,.58); backdrop-filter: blur(2px); }
+.pr-capability-drawer { position: fixed; z-index: 100; top: 0; right: 0; bottom: 0; width: min(400px, 92vw); display: flex; flex-direction: column; border-left: 1px solid #3B4650; background: #12171B; box-shadow: -18px 0 45px rgba(0,0,0,.4); animation: pr-drawer-in .18s ease-out; }
+@keyframes pr-drawer-in { from { transform: translateX(18px); opacity: 0; } }
+.pr-capability-drawer > header { display: flex; align-items: center; justify-content: space-between; padding: 17px; border-bottom: 1px solid var(--border); }
+.pr-capability-drawer header small { color: var(--ink-faint); font-size: 7px; letter-spacing: .11em; }
+.pr-capability-drawer h2 { margin: 4px 0 0; font: 20px var(--font-lora), Georgia, serif; }
+.pr-capability-drawer header button { border: 0; background: transparent; color: var(--ink-muted); font-size: 22px; }
+.pr-capability-note { margin: 13px 15px 0; color: var(--ink-muted); font-size: 10px; line-height: 1.45; }
+.pr-skill-search { display: grid; grid-template-columns: 22px 1fr; align-items: center; margin: 13px 15px 9px; border: 1px solid var(--border); border-radius: 7px; background: #0F1316; padding: 0 9px; color: var(--ink-muted); }
+.pr-skill-search input { min-width: 0; border: 0; outline: 0; background: transparent; padding: 9px 0; color: var(--ink); font-size: 10px; }
+.pr-skill-list { flex: 1; overflow-y: auto; padding: 0 15px 15px; }
+.pr-skill-list > button { width: 100%; display: grid; grid-template-columns: 28px minmax(0,1fr) auto; gap: 8px; align-items: start; margin-top: 6px; border: 1px solid var(--border-light); border-radius: 7px; background: var(--surface); padding: 10px; color: var(--ink-muted); text-align: left; }
+.pr-skill-list > button:hover { border-color: #46515B; }
+.pr-skill-list > button.active { border-color: #51472C; background: #19180F; }
+.pr-skill-list > button > span { color: #B39BC9; }
+.pr-skill-list p { min-width: 0; display: flex; flex-direction: column; gap: 3px; margin: 0; }
+.pr-skill-list strong { color: var(--ink); font-size: 10px; }
+.pr-skill-list small { color: var(--ink-muted); font-size: 8px; line-height: 1.35; }
+.pr-skill-list i { color: var(--ink-faint); font-size: 7px; font-style: normal; text-transform: uppercase; letter-spacing: .08em; }
+.pr-skill-list b { color: var(--ink-faint); font-size: 7px; }
+.pr-skill-list button.active b { color: #79BC98; }
+.pr-skill-list > button.pr-show-all-skills { border-style: dashed; background: transparent; }
+.pr-skill-empty { padding: 20px 4px; color: var(--ink-faint); font-size: 10px; text-align: center; }
+.pr-capability-drawer > footer { display: flex; flex-direction: column; gap: 4px; padding: 13px 16px; border-top: 1px solid var(--border); background: #0F1317; }
+.pr-capability-drawer footer span { color: #79BC98; font-size: 9px; }
+.pr-capability-drawer footer small { color: var(--ink-faint); font-size: 8px; }
+
+@media (max-width: 1180px) {
+  .pr-app-bar { grid-template-columns: auto auto 1fr; }
+  .pr-web-pill { display: none; }
 }
 
 /* Entry animations */

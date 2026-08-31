@@ -494,6 +494,7 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
   const selectionPaintFrameRef = useRef(0);
 
   const [numPages, setNumPages] = useState(0);
+  const [currentPage, setCurrentPage] = useState(1);
   const [displayScale, setDisplayScale] = useState(1);
   const [captureMode, setCaptureMode] = useState(false);
   const [loadError, setLoadError] = useState(false);
@@ -1445,6 +1446,9 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
       // Saved annotations and the live selection are both page-relative; the
       // page itself scales them together with the canvas.
     });
+    eventBus.on("pagechanging", (e: { pageNumber: number }) => {
+      if (!cancelled && Number.isInteger(e.pageNumber)) setCurrentPage(e.pageNumber);
+    });
     // Text layers rebuild on zoom/virtualization — re-paint highlights each time
     eventBus.on("textlayerrendered", (e: { pageNumber: number }) => {
       if (!cancelled) {
@@ -1484,6 +1488,7 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
         viewer.setDocument(pdf);
         linkService.setDocument(pdf);
         setNumPages(pdf.numPages);
+        setCurrentPage(1);
         setLoadError(false);
       },
       () => { if (!cancelled) setLoadError(true); }
@@ -2159,7 +2164,7 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
             className="ml-auto text-[11px] tabular-nums px-2 py-0.5 rounded-full"
             style={{ color: "var(--ink-faint)", border: "1px solid var(--border-light)" }}
           >
-            {numPages} pages
+            Page {currentPage} / {numPages}
           </span>
         )}
       </div>

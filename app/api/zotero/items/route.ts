@@ -20,6 +20,8 @@ type ZoteroItem = {
 
 // Attachments the reader can display; other kinds (links, images) are skipped
 const READABLE_TYPES = ["application/pdf", "text/html"];
+const PAGE_SIZE = 100;
+const MAX_ITEMS = 10000;
 
 function formatCreators(creators: ZoteroCreator[] = []): string {
   const names = creators.map((c) => c.lastName || c.name || c.firstName || "").filter(Boolean);
@@ -36,7 +38,7 @@ export async function GET(req: NextRequest) {
   // recognition is a *standalone* attachment and is a perfectly good entry.
   // (The /top endpoints already omit attachments that belong to a parent.)
   const params = new URLSearchParams({
-    limit: "100",
+    limit: String(PAGE_SIZE),
     sort: collection ? "title" : "dateModified",
     direction: collection ? "asc" : "desc",
     itemType: "-note",
@@ -48,17 +50,37 @@ export async function GET(req: NextRequest) {
     : `${ZOTERO_BASE}/items/top`;
 
   try {
-    const res = await fetch(`${base}?${params}`, {
-      signal: AbortSignal.timeout(4000),
-      cache: "no-store",
-    });
-    if (!res.ok) {
-      return Response.json(
-        { error: `Zotero responded with ${res.status}. Is the local API enabled?` },
-        { status: 502 }
-      );
+    const fetchPage = async (start: number) => {
+      const pageParams = new URLSearchParams(params);
+      pageParams.set("start", String(start));
+      const response = await fetch(`${base}?${pageParams}`, {
+        signal: AbortSignal.timeout(4000),
+        cache: "no-store",
+      });
+      if (!response.ok) throw new Error(String(response.status));
+      return {
+        items: (await response.json()) as ZoteroItem[],
+        total: Number(response.headers.get("Total-Results")),
+      };
+    };
+
+    const first = await fetchPage(0);
+    const items = [...first.items];
+    if (Number.isFinite(first.total) && first.total > PAGE_SIZE) {
+      const total = Math.min(first.total, MAX_ITEMS);
+      for (let batchStart = PAGE_SIZE; batchStart < total; batchStart += PAGE_SIZE * 4) {
+        const starts = Array.from({ length: 4 }, (_, index) => batchStart + index * PAGE_SIZE).filter((start) => start < total);
+        const pages = await Promise.all(starts.map(fetchPage));
+        for (const page of pages) items.push(...page.items);
+      }
+    } else if (first.items.length === PAGE_SIZE) {
+      for (let start = PAGE_SIZE; start < MAX_ITEMS; start += PAGE_SIZE) {
+        const page = await fetchPage(start);
+        items.push(...page.items);
+        if (page.items.length < PAGE_SIZE) break;
+      }
     }
-    const items = (await res.json()) as ZoteroItem[];
+
     const mapped = items
       .filter((i) => i.data?.title)
       .filter(
@@ -73,8 +95,15 @@ export async function GET(req: NextRequest) {
         year: (i.data.date?.match(/\d{4}/) || [""])[0],
         itemType: i.data.itemType || "",
       }));
-    return Response.json({ items: mapped });
-  } catch {
+    return Response.json({ items: mapped, total: mapped.length });
+  } catch (error) {
+    const status = error instanceof Error ? Number(error.message) : NaN;
+    if (Number.isFinite(status)) {
+      return Response.json(
+        { error: `Zotero responded with ${status}. Is the local API enabled?` },
+        { status: 502 }
+      );
+    }
     return Response.json(
       {
         error:

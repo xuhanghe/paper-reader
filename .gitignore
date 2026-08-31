@@ -43,3 +43,6 @@ next-env.d.ts
 # auto-saved reading sessions
 .paper-reader-sessions/
 band-audit-out/
+
+# scratch renders from debugging
+/tmp/

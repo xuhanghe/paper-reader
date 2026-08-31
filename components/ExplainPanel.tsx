@@ -240,7 +240,6 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
   const [refPickerOpen, setRefPickerOpen] = useState(false);
   const [refQuery, setRefQuery] = useState("");
   const [refResults, setRefResults] = useState<{ key: string; title: string }[]>([]);
-  const [webSearch, setWebSearch] = useState(false);
   const refSearchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const searchLibrary = (q: string) => {
@@ -265,13 +264,12 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
 
   const submitGeneral = () => {
     if (!generalQuestion.trim()) return;
-    onAskGeneral(withQuotes(generalQuestion.trim(), quotes), composerImage || undefined, composerRef || undefined, webSearch);
+    onAskGeneral(withQuotes(generalQuestion.trim(), quotes), composerImage || undefined, composerRef || undefined, true);
     setQuotes([]);
     setGeneralQuestion("");
     setComposerImage(null);
     setComposerRef(null);
     setRefPickerOpen(false);
-    // webSearch stays toggled — it's a sticky mode, not a per-message flag
   };
   const [followUpImage, setFollowUpImage] = useState<Record<string, string>>({});
   const [lightboxState, setLightboxState] = useState<{ src: string; annotationId: string } | null>(null);
@@ -934,18 +932,7 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
         >
           @
         </button>
-        <button
-          onClick={() => setWebSearch((v) => !v)}
-          className="btn-icon w-7 h-7 text-sm shrink-0 transition-all"
-          style={
-            webSearch
-              ? { background: "rgba(232,120,76,0.2)", boxShadow: "0 0 0 1.5px var(--accent) inset" }
-              : { filter: "grayscale(1)", opacity: 0.5 }
-          }
-          title={webSearch ? "Web search ON — the model may search online (Claude & Codex). Click to turn off." : "Enable web search (Claude & Codex)"}
-        >
-          🌐
-        </button>
+        <span className="pr-web-status" title="Live web search is always available to agentic models">🌐 Web</span>
         <label className="btn-icon w-7 h-7 text-sm shrink-0 cursor-pointer flex items-center justify-center" title="Attach an image">
           📎
           <input
@@ -961,7 +948,7 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
         </label>
         <GrowingTextarea
           value={generalQuestion}
-          placeholder={webSearch ? "Ask anything — web search ON 🌐…" : "Ask anything about the paper…"}
+          placeholder="Ask anything about the paper — web available…"
           onChange={(e) => setGeneralQuestion(e.target.value)}
           data-composer="general"
           onPaste={(e) => {

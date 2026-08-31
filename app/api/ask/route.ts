@@ -24,6 +24,7 @@ import {
 import { claudeBin } from "@/lib/bin";
 import { unwrapPartials } from "@/lib/claude-stream";
 import { turnMarker } from "@/lib/citations";
+import { selectedSkillPaths } from "@/lib/skills";
 
 export const runtime = "nodejs";
 
@@ -103,7 +104,7 @@ function teeToThread(source: ReadableStream, opts: TeeOpts): ReadableStream {
 export async function POST(req: Request) {
   const {
     paper_id, paper_title, kind, selected_text, question, page_number,
-    image_base64, annotation_id, model, effort, custom, session_id, web_search,
+    image_base64, annotation_id, model, effort, custom, session_id, skills,
   } = await req.json();
 
   if (!paper_id || typeof paper_id !== "string" || !kind) {
@@ -114,10 +115,15 @@ export async function POST(req: Request) {
   let message = buildAskMessage({ kind, selectedText: selected_text, question, pageNumber: page_number });
   if (!message.trim() && !image_base64) return new Response("empty request", { status: 400 });
 
-  // Web search: the CLIs have search tools (codex's is on by default) —
-  // an instruction is all that's needed. Tool-less custom APIs can't search.
-  if (web_search === true && provider !== "custom") {
-    message += "\n\nPlease use your web search tool to look up current information online for this question, and cite what you find.";
+  // Web access is a capability of the reader, not a per-message mode. Agentic
+  // providers always keep it available; custom HTTP endpoints have no tool
+  // channel, so they remain grounded in the supplied paper context.
+  if (provider !== "custom") {
+    message += "\n\nLive web search is available. Use it whenever current or external information would improve the answer, and cite the sources you rely on.";
+  }
+  const skillPaths = await selectedSkillPaths(skills);
+  if (provider !== "custom" && skillPaths.length) {
+    message += `\n\nUse these user-selected skills when relevant. Read each SKILL.md completely before following it:\n${skillPaths.map((file) => `- ${file}`).join("\n")}`;
   }
 
   // Every ask is numbered, and the number travels on the message itself: on a
@@ -193,7 +199,7 @@ export async function POST(req: Request) {
           images: image_base64 ? [{ mime: "image/png", dataUrl: String(image_base64) }] : undefined,
           effort,
           resumeId: isResume ? session_id : undefined,
-          webSearch: web_search === true,
+          webSearch: true,
           title: typeof paper_title === "string" ? paper_title : undefined,
         }),
         teeOpts
