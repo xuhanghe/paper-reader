@@ -23,7 +23,9 @@ import type { PdfViewerHandle, AskedPassage } from "@/components/PdfViewer";
 import type { PanelScroll } from "@/components/ExplainPanel";
 import { SkillsDrawer } from "@/components/SkillsDrawer";
 import { SetupDialog } from "@/components/SetupDialog";
+import { loadOpenTabs, saveOpenTabs, subscribeOpenTabs, upsertOpenTab } from "@/lib/open-tabs";
 import { useAgentSkills } from "@/hooks/useAgentSkills";
+import { ResizeHandle, usePanelWidth } from "@/components/ResizablePanel";
 import Link from "next/link";
 
 const PdfViewer = dynamic(() => import("@/components/PdfViewer").then((m) => m.PdfViewer), {
@@ -39,115 +41,8 @@ const HtmlViewer = dynamic(() => import("@/components/HtmlViewer").then((m) => m
   ssr: false,
 });
 
-function ResizeHandle({ onDrag, onStart, onEnd }: { onDrag: (dx: number) => void; onStart?: () => void; onEnd?: () => void }) {
-  const [dragging, setDragging] = useState(false);
-  return (
-    <>
-      <div
-        onMouseDown={(e) => {
-          e.preventDefault();
-          onStart?.();
-          setDragging(true);
-          let lastX = e.clientX;
-          const move = (ev: MouseEvent) => { onDrag(ev.clientX - lastX); lastX = ev.clientX; };
-          const up = () => {
-            window.removeEventListener("mousemove", move);
-            window.removeEventListener("mouseup", up);
-            setDragging(false);
-            onEnd?.();
-          };
-          window.addEventListener("mousemove", move);
-          window.addEventListener("mouseup", up);
-        }}
-        className="w-[5px] -mx-[2px] z-10 shrink-0 cursor-col-resize group/handle flex justify-center"
-      >
-        <div
-          className="w-[1.5px] h-full transition-all group-hover/handle:w-[3px]"
-          style={{ background: dragging ? "var(--accent)" : "var(--border-light)" }}
-          onMouseEnter={(e) => { if (!dragging) (e.currentTarget as HTMLDivElement).style.background = "rgba(232,120,76,0.55)"; }}
-          onMouseLeave={(e) => { if (!dragging) (e.currentTarget as HTMLDivElement).style.background = "var(--border-light)"; }}
-        />
-      </div>
-      {/* While dragging, shield iframes/canvases so they don't swallow mouse events */}
-      {dragging && <div className="fixed inset-0 z-50 cursor-col-resize" />}
-    </>
-  );
-}
-
-const clamp = (v: number, min: number, max: number) => Math.min(max, Math.max(min, v));
-
-// Dragging a panel this far past its minimum width collapses it into its rail
-const COLLAPSE_SNAP = 45;
-// Pulling a collapsed rail back out this far past the collapse point reopens
-// it. The gap between the two keeps the panel from flickering on the boundary.
-const REOPEN_SNAP = 28;
-
-// Resizable panel width. Dragging below the minimum auto-collapses the panel;
-// the width resets to its default so reopening gives a comfortable size again.
-function usePanelWidth(
-  initial: number,
-  min: number,
-  max: number,
-  direction: 1 | -1, // 1 = panel grows rightwards (left panels), -1 = right panels
-  isOpen: boolean,
-  setOpen: (open: boolean) => void
-) {
-  const [width, setWidth] = useState(initial);
-  // Where the pointer is, in panel-width terms. It keeps falling below `min`
-  // as the drag continues — that overshoot is what collapses the panel, and
-  // what tells us when the pointer has come back far enough to reopen it.
-  const rawRef = useRef(initial);
-  const widthRef = useRef(initial);
-  const openRef = useRef(isOpen);
-  useEffect(() => {
-    openRef.current = isOpen;
-  }, [isOpen]);
-
-  // Collapsed or open is a function of where the pointer is right now, not of
-  // what the gesture has already done — so overshooting and pulling straight
-  // back re-expands the panel without letting go. The two thresholds differ so
-  // the panel can't flicker while the pointer sits on the boundary.
-  const collapseAt = min - COLLAPSE_SNAP;
-  const reopenAt = collapseAt + REOPEN_SNAP;
-
-  const onStart = useCallback(() => {
-    // From a rail, start at the collapse point: a short pull brings it back
-    rawRef.current = openRef.current ? widthRef.current : collapseAt;
-  }, [collapseAt]);
-
-  const onDrag = useCallback(
-    (dx: number) => {
-      rawRef.current = clamp(rawRef.current + direction * dx, 0, max);
-
-      if (openRef.current) {
-        if (rawRef.current < collapseAt) {
-          setOpen(false);
-          return;
-        }
-      } else {
-        if (rawRef.current <= reopenAt) return;
-        setOpen(true);
-      }
-      const clamped = clamp(rawRef.current, min, max);
-      widthRef.current = clamped;
-      setWidth(clamped);
-    },
-    [min, max, direction, setOpen, collapseAt, reopenAt]
-  );
-
-  // Let go while collapsed and the stored width resets, so reopening from the
-  // rail button later gives a comfortable size rather than the minimum
-  const onEnd = useCallback(() => {
-    if (openRef.current) return;
-    widthRef.current = initial;
-    setWidth(initial);
-  }, [initial]);
-
-  return [width, onDrag, onStart, onEnd] as const;
-}
-
 const CUSTOM_API_KEY = "paper-reader:custom-api";
-const TABS_KEY = "paper-reader:open-tabs";
+
 const LAYOUT_KEY = "paper-reader:layout";
 
 // Panel sizes and open/closed state survive a refresh. First run opens the
@@ -172,16 +67,6 @@ function loadLayout(): Layout {
   }
 }
 
-function loadTabs(): MaterialTab[] {
-  if (typeof window === "undefined") return [];
-  try {
-    const raw = localStorage.getItem(TABS_KEY);
-    const parsed = raw ? JSON.parse(raw) : null;
-    return Array.isArray(parsed) ? parsed.filter((t) => t?.id && t?.name) : [];
-  } catch {
-    return [];
-  }
-}
 
 // The reader's initial state comes from localStorage (layout, tabs), which the
 // server can't know — so the first paint is a plain backdrop and the real UI
@@ -269,6 +154,8 @@ export default function Home() {
   const [customApiModalOpen, setCustomApiModalOpen] = useState(false);
   const [skillsOpen, setSkillsOpen] = useState(false);
   const [setupOpen, setSetupOpen] = useState(false);
+  // nonce, so clicking the same collection chip twice scrolls to it again
+  const [revealCollection, setRevealCollection] = useState<{ key: string; nonce: number } | null>(null);
   // A quiet badge, not a blocking dialog: the reader still opens local PDFs
   // with nothing configured, so setup problems are worth showing but never
   // worth interrupting for.
@@ -299,13 +186,24 @@ export default function Home() {
   // ── Open materials (tabs) ─────────────────────────────────────────
   // Tab metadata persists across restarts; document bytes are cached in
   // memory for instant switching and refetched on demand when missing.
-  const [tabs, setTabs] = useState<MaterialTab[]>(loadTabs);
+  const [tabs, setTabs] = useState<MaterialTab[]>(loadOpenTabs);
   const [switchingTo, setSwitchingTo] = useState<string | null>(null);
   const materialCache = useRef<Record<string, string>>({});
 
   useEffect(() => {
-    try { localStorage.setItem(TABS_KEY, JSON.stringify(tabs)); } catch {}
+    saveOpenTabs(tabs);
   }, [tabs]);
+
+  // The Workspace edits the same list. Re-read it when it changes there, so
+  // a paper opened on that surface is already a tab when you come back.
+  useEffect(
+    () =>
+      subscribeOpenTabs(() => {
+        const stored = loadOpenTabs();
+        setTabs((prev) => (JSON.stringify(prev) === JSON.stringify(stored) ? prev : stored));
+      }),
+    []
+  );
 
   // Opening a material (library click, file, URL, tab switch) registers a tab
   // and pops the map sidebar. The launch restore doesn't go through here, so
@@ -317,11 +215,7 @@ export default function Home() {
       const id = sessionIdFor(name, zoteroKey);
       materialCache.current[id] = dataUrl;
       const entry: MaterialTab = { id, name, docType, zoteroKey, attachmentKey, sourceUrl };
-      setTabs((prev) =>
-        prev.some((t) => t.id === id)
-          ? prev.map((t) => (t.id === id ? { ...t, ...entry } : t))
-          : [...prev, entry]
-      );
+      setTabs((prev) => upsertOpenTab(prev, entry));
     },
     [setPdf]
   );
@@ -1364,7 +1258,7 @@ export default function Home() {
   }
 
   return (
-    <div className="h-screen flex flex-col overflow-hidden" style={{ background: "var(--paper)" }}>
+    <div className="pr-reader-shell h-screen flex flex-col overflow-hidden" style={{ background: "var(--paper)" }}>
       {/* Shared shell: Reader and Workspace always switch in the same place. */}
       <header className="pr-app-bar">
         <div className="pr-brand select-none">
@@ -1378,7 +1272,6 @@ export default function Home() {
         </nav>
 
         <div className="pr-reader-actions">
-          <span className="pr-web-pill" title="Live web search is always available">🌐 Web on</span>
           <button type="button" onClick={() => setSkillsOpen(true)} className="pr-capability-button">
             ◆ Skills <small>{activeSkillIds.length || ""}</small>
           </button>
@@ -1523,6 +1416,7 @@ export default function Home() {
           onToggle={() => setZoteroOpen((v) => !v)}
           width={zoteroWidth}
           refreshSignal={libraryRefresh}
+          revealCollection={revealCollection}
         />
         <ResizeHandle onDrag={dragZotero} onStart={startZotero} onEnd={endZotero} />
 
@@ -1543,6 +1437,11 @@ export default function Home() {
               highlights={allHighlights}
               onReload={session.zoteroKey ? reloadCurrentMaterial : undefined}
               reloading={reloading}
+              zoteroKey={session.zoteroKey}
+              onRevealCollection={(key) => {
+                setZoteroOpen(true);
+                setRevealCollection({ key, nonce: Date.now() });
+              }}
             />
           ) : session.pdfDataUrl ? (
             <PdfViewer
@@ -1562,6 +1461,11 @@ export default function Home() {
               onAskedClick={openConversation}
               onReload={session.zoteroKey ? reloadCurrentMaterial : undefined}
               reloading={reloading}
+              zoteroKey={session.zoteroKey}
+              onRevealCollection={(key) => {
+                setZoteroOpen(true);
+                setRevealCollection({ key, nonce: Date.now() });
+              }}
             />
           ) : (
             <div className="flex-1 flex flex-col items-center justify-center gap-4" style={{ background: "var(--parchment)" }}>

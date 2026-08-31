@@ -1,6 +1,7 @@
 "use client";
 import { useRef, useState, useCallback, useEffect, forwardRef, useImperativeHandle } from "react";
 import { SelectionPopover } from "./SelectionPopover";
+import { CollectionChip } from "./CollectionChip";
 import { HighlightPopover } from "./HighlightPopover";
 import { clearMarks, markTextInContainer, rangeForText, occurrenceAt } from "@/lib/highlight-dom";
 import { isHighlightDeleteKey, isTextEditingTarget } from "@/lib/keys";
@@ -29,6 +30,9 @@ type Props = {
   // Re-reads the snapshot from Zotero; absent for materials not stored there
   onReload?: () => void;
   reloading?: boolean;
+  // Zotero item key for the open snapshot — names its collection in the bar
+  zoteroKey?: string;
+  onRevealCollection?: (collectionKey: string) => void;
 };
 
 type SelectionInfo = { text: string; rect: DOMRect; occurrence?: number };
@@ -87,6 +91,8 @@ export const HtmlViewer = forwardRef<PdfViewerHandle, Props>(function HtmlViewer
     highlights = [],
     onReload,
     reloading,
+    zoteroKey,
+    onRevealCollection,
   },
   ref
 ) {
@@ -314,7 +320,10 @@ export const HtmlViewer = forwardRef<PdfViewerHandle, Props>(function HtmlViewer
             <span className={reloading ? "pr-spin inline-block" : "inline-block"}>↻</span>
           </button>
         )}
-        <span className="ml-auto text-[10px] uppercase tracking-widest" style={{ color: "var(--ink-faint)" }}>HTML snapshot</span>
+        <span className="ml-auto flex items-center gap-2">
+          <span className="text-[10px] uppercase tracking-widest" style={{ color: "var(--ink-faint)" }}>HTML snapshot</span>
+          <CollectionChip zoteroKey={zoteroKey} onReveal={onRevealCollection} />
+        </span>
       </div>
 
       {selection && (

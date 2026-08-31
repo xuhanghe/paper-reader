@@ -5,6 +5,7 @@ import type { PDFDocumentProxy } from "pdfjs-dist";
 import { EventBus, PDFViewer as PdfJsViewer, PDFLinkService, PDFFindController } from "pdfjs-dist/web/pdf_viewer.mjs";
 import "pdfjs-dist/web/pdf_viewer.css";
 import { SelectionPopover } from "./SelectionPopover";
+import { CollectionChip } from "./CollectionChip";
 import { useTextSelection } from "@/hooks/useTextSelection";
 import { useRegionDrag } from "@/hooks/useRegionDrag";
 import { RegionResult } from "@/hooks/useRegionDrag";
@@ -347,6 +348,9 @@ type Props = {
   // Re-reads the document from Zotero; absent for materials not stored there
   onReload?: () => void;
   reloading?: boolean;
+  // Zotero item key for the open paper — names its collection in the toolbar
+  zoteroKey?: string;
+  onRevealCollection?: (collectionKey: string) => void;
 };
 
 // Zotero-compatible annotation position: PDF-space rects on a zero-based page
@@ -468,7 +472,7 @@ export type PdfViewerHandle = {
 // virtualized page rendering, cursor-anchored CSS-first zoom with delayed
 // redraw, and a find controller for jump-and-highlight.
 export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
-  { pdfDataUrl, onTextSelected, onAskAboutSelection, onRegionCaptured, onHighlight, onNote, onRemoveHighlight, onRecolorHighlight, onEditHighlightNote, onHighlightClick, highlights = [], askedPassages = [], onAskedClick, onReload, reloading },
+  { pdfDataUrl, onTextSelected, onAskAboutSelection, onRegionCaptured, onHighlight, onNote, onRemoveHighlight, onRecolorHighlight, onEditHighlightNote, onHighlightClick, highlights = [], askedPassages = [], onAskedClick, onReload, reloading, zoteroKey, onRevealCollection },
   ref
 ) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -2159,14 +2163,17 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
           </button>
         )}
 
-        {numPages > 0 && (
-          <span
-            className="ml-auto text-[11px] tabular-nums px-2 py-0.5 rounded-full"
-            style={{ color: "var(--ink-faint)", border: "1px solid var(--border-light)" }}
-          >
-            Page {currentPage} / {numPages}
-          </span>
-        )}
+        <span className="ml-auto flex items-center gap-2">
+          {numPages > 0 && (
+            <span
+              className="text-[11px] tabular-nums px-2 py-0.5 rounded-full"
+              style={{ color: "var(--ink-faint)", border: "1px solid var(--border-light)" }}
+            >
+              Page {currentPage} / {numPages}
+            </span>
+          )}
+          <CollectionChip zoteroKey={zoteroKey} onReveal={onRevealCollection} />
+        </span>
       </div>
 
       {/* Viewer */}
