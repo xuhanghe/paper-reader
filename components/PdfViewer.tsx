@@ -1503,13 +1503,21 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
       // Tear the viewer down so no in-flight page setup fires against a
       // detached DOM ("offsetParent is not set" console errors)
       try {
+        // Stop the render queue before the document goes away. Without this a
+        // page draw already in flight resumes against a reset page view and
+        // pdf.js throws "pdfPage is not loaded" — which is what closing a tab
+        // mid-render used to produce.
+        const queue = (viewer as unknown as { renderingQueue?: { renderHighestPriority?: () => void } }).renderingQueue;
+        if (queue) queue.renderHighestPriority = () => {};
         // pdf.js supports null for teardown; its TS types don't declare it
         viewer.setDocument(null as unknown as PDFDocumentProxy);
         linkService.setDocument(null);
       } catch {
         // viewer may not have received a document yet
       }
-      loadingTask.destroy().catch(() => {});
+      // Destroy only once the viewer has let go: destroying underneath a live
+      // page view is the other half of the same race.
+      loadingTask.promise.catch(() => {}).finally(() => { void loadingTask.destroy().catch(() => {}); });
       pdfDocRef.current = null;
       textContentCache.clear();
       selectionPageCache.clear();

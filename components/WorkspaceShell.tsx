@@ -9,7 +9,7 @@ import rehypeKatex from "rehype-katex";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import type { MaterialTab } from "@/components/MaterialTabs";
-import { loadOpenTabs, saveOpenTabs, subscribeOpenTabs, upsertOpenTab } from "@/lib/open-tabs";
+import { loadOpenTabs } from "@/lib/open-tabs";
 import { SkillsDrawer } from "@/components/SkillsDrawer";
 import { ModelPicker } from "@/components/ModelPicker";
 import { ResizeHandle, usePanelWidth } from "@/components/ResizablePanel";
@@ -28,9 +28,6 @@ const ACTIVE_WORKSPACE_KEY = "paper-reader:active-workspace:v1";
 const WORKSPACE_DOCS_KEY = "paper-reader:workspace-docs:v1";
 const WORKSPACE_ACTIVE_DOC_KEY = "paper-reader:workspace-active-doc:v1";
 
-// Document ids for papers are prefixed so they can't collide with file paths;
-// the shared tab store keys on the bare paper id, so the two forms convert.
-const paperDocId = (paperId: string) => `paper:${paperId}`;
 const CUSTOM_API_KEY = "paper-reader:custom-api";
 const WORKSPACE_LAYOUT_KEY = "paper-reader:workspace-layout:v1";
 const NO_SUBSCRIBE = () => () => {};
@@ -364,11 +361,10 @@ export function WorkspaceShell() {
   const [workspaceLayout0] = useState(() => loadJson(WORKSPACE_LAYOUT_KEY, { projectWidth: 320, agentWidth: 420 }));
   const [projectWidth, dragProject, startProject, endProject] = usePanelWidth(workspaceLayout0.projectWidth, 250, 560, 1, true, KEEP_PANEL_OPEN, { collapsible: false });
   const [agentWidth, dragAgent, startAgent, endAgent] = usePanelWidth(workspaceLayout0.agentWidth, 320, 720, -1, true, KEEP_PANEL_OPEN, { collapsible: false });
-  // Papers live in the shared tab store so the Reader shows the same set;
-  // files and workspace PDFs are local to this workspace and persisted beside
-  // it. Both survive a surface switch, which unmounts this component.
-  const [paperTabs, setPaperTabs] = useState<MaterialTab[]>(loadOpenTabs);
-  const [localDocs, setLocalDocs] = useState<WorkspaceDocument[]>(
+  // What is open belongs to the workspace, not to the app: a workspace is a
+  // desk, and you expect to come back to the papers you left on it. Persisted
+  // because switching surfaces unmounts this component entirely.
+  const [openDocs, setOpenDocs] = useState<WorkspaceDocument[]>(
     () => loadJson<WorkspaceDocument[]>(`${WORKSPACE_DOCS_KEY}:${activeWorkspaceId || "none"}`, [])
   );
   const [activeDocId, setActiveDocId] = useState<string | null>(null);
@@ -391,13 +387,6 @@ export function WorkspaceShell() {
   const { skills, activeSkillIds, toggleSkill, loading: skillsLoading } = useAgentSkills();
   const abortRef = useRef<AbortController | null>(null);
   const activeWorkspace = workspaces.find((workspace) => workspace.id === activeWorkspaceId) || workspaces[0] || null;
-  const openDocs = useMemo<WorkspaceDocument[]>(
-    () => [
-      ...paperTabs.map((paper) => ({ id: paperDocId(paper.id), kind: "paper" as const, paper })),
-      ...localDocs,
-    ],
-    [paperTabs, localDocs]
-  );
   const activeDoc = openDocs.find((document) => document.id === activeDocId) || null;
 
   const persist = useCallback((next: ResearchWorkspace[]) => { setWorkspaces(next); saveWorkspaces(next); }, []);
@@ -428,7 +417,7 @@ export function WorkspaceShell() {
   const switchWorkspace = (id: string) => {
     const saved = loadJson<{ messages: AgentMessage[]; session?: string }>(`paper-reader:workspace-chat:${id}`, { messages: [] });
     setActiveWorkspaceId(id); setMessages(saved.messages || []); setProviderSession(saved.session);
-    setLocalDocs(loadJson<WorkspaceDocument[]>(`${WORKSPACE_DOCS_KEY}:${id}`, []));
+    setOpenDocs(loadJson<WorkspaceDocument[]>(`${WORKSPACE_DOCS_KEY}:${id}`, []));
     setActiveDocId(null); setPdfData(""); setEditorContent(""); setFiles([]); setExpandedDirectories(new Set());
     try { localStorage.setItem(ACTIVE_WORKSPACE_KEY, JSON.stringify(id)); } catch {}
   };
@@ -452,7 +441,7 @@ export function WorkspaceShell() {
       abortRef.current?.abort();
       if (next[0]) switchWorkspace(next[0].id);
       else {
-        setActiveWorkspaceId(null); setMessages([]); setProviderSession(undefined); setLocalDocs([]); setActiveDocId(null); setPdfData(""); setEditorContent(""); setFiles([]);
+        setActiveWorkspaceId(null); setMessages([]); setProviderSession(undefined); setOpenDocs([]); setActiveDocId(null); setPdfData(""); setEditorContent(""); setFiles([]);
         try { localStorage.removeItem(ACTIVE_WORKSPACE_KEY); } catch {}
         setCreateOpen(true);
       }
@@ -460,14 +449,10 @@ export function WorkspaceShell() {
     setNotice(deleteDirectory ? `Removed “${workspace.name}” and moved its folder to Trash.` : `Removed “${workspace.name}” from Paper Reader. Its folder was kept.`);
   };
 
-  // Persist both halves. Papers go to the shared store the Reader reads;
-  // files and workspace PDFs are keyed to the workspace they belong to.
-  useEffect(() => { saveOpenTabs(paperTabs); }, [paperTabs]);
-
   useEffect(() => {
     if (!activeWorkspaceId) return;
-    try { localStorage.setItem(`${WORKSPACE_DOCS_KEY}:${activeWorkspaceId}`, JSON.stringify(localDocs)); } catch {}
-  }, [localDocs, activeWorkspaceId]);
+    try { localStorage.setItem(`${WORKSPACE_DOCS_KEY}:${activeWorkspaceId}`, JSON.stringify(openDocs)); } catch {}
+  }, [openDocs, activeWorkspaceId]);
 
   useEffect(() => {
     // Never persist the null that every mount starts with — it would erase
@@ -476,22 +461,8 @@ export function WorkspaceShell() {
     try { localStorage.setItem(`${WORKSPACE_ACTIVE_DOC_KEY}:${activeWorkspaceId}`, JSON.stringify(activeDocId)); } catch {}
   }, [activeDocId, activeWorkspaceId]);
 
-  // The Reader edits the same paper list — pick up its changes
-  useEffect(
-    () =>
-      subscribeOpenTabs(() => {
-        const stored = loadOpenTabs();
-        setPaperTabs((prev) => (JSON.stringify(prev) === JSON.stringify(stored) ? prev : stored));
-      }),
-    []
-  );
-
   const openDocument = useCallback(async (document: WorkspaceDocument) => {
-    if (document.kind === "paper") {
-      setPaperTabs((current) => upsertOpenTab(current, document.paper));
-    } else {
-      setLocalDocs((current) => current.some((item) => item.id === document.id) ? current : [...current, document]);
-    }
+    setOpenDocs((current) => current.some((item) => item.id === document.id) ? current : [...current, document]);
     setActiveDocId(document.id); setPreview(false); setNotice("");
     if (document.kind === "paper" || document.kind === "workspacePdf") {
       setPdfData(""); setPdfError(""); setPdfHighlights([]);
@@ -521,8 +492,14 @@ export function WorkspaceShell() {
   // list alone would show the paper while the stage sat empty.
   const restoredFor = useRef<string | null>(null);
   useEffect(() => {
-    if (!activeWorkspaceId || activeDocId || restoredFor.current === activeWorkspaceId) return;
-    // openDocs fills in as the stores load; waiting for it beats giving up on
+    if (!activeWorkspaceId || restoredFor.current === activeWorkspaceId) return;
+    // Once anything is open, this workspace has nothing left to restore.
+    // Without this the effect would re-fire when you CLOSE the last tab —
+    // reopening the document you just closed, and churning the PDF viewer
+    // through an unmount/remount that pdf.js reports as "pdfPage is not
+    // loaded".
+    if (activeDocId) { restoredFor.current = activeWorkspaceId; return; }
+    // openDocs fills in as storage loads; waiting for it beats giving up on
     // the first pass and leaving the stage blank behind a populated tab bar
     if (!openDocs.length) return;
     restoredFor.current = activeWorkspaceId;
@@ -534,13 +511,13 @@ export function WorkspaceShell() {
   const closeDocument = (id: string) => {
     const index = openDocs.findIndex((document) => document.id === id);
     const next = openDocs.filter((document) => document.id !== id);
-    // Closing a paper here closes it in the Reader too — one shared set of
-    // tabs means one close, not two.
-    setPaperTabs((current) => current.filter((paper) => paperDocId(paper.id) !== id));
-    setLocalDocs((current) => current.filter((document) => document.id !== id));
+    setOpenDocs(next);
     if (activeDocId === id) {
       const neighbour = next[Math.max(0, index - 1)] || next[0];
-      if (neighbour) void openDocument(neighbour); else setActiveDocId(null);
+      if (neighbour) { void openDocument(neighbour); return; }
+      setActiveDocId(null);
+      setPdfData(""); setPdfError(""); setPdfHighlights([]); setEditorContent(""); setSavedContent("");
+      try { localStorage.removeItem(`${WORKSPACE_ACTIVE_DOC_KEY}:${activeWorkspaceId}`); } catch {}
     }
   };
 
@@ -610,7 +587,7 @@ export function WorkspaceShell() {
       const oldId = `${isPdf ? "workspace-pdf" : "file"}:${from}`;
       const newId = `${isPdf ? "workspace-pdf" : "file"}:${movedPath}`;
       const name = movedPath.split("/").pop() || movedPath;
-      setLocalDocs((current) => current.map((document) => {
+      setOpenDocs((current) => current.map((document) => {
         if ((document.kind === "file" || document.kind === "workspacePdf") && document.path === from) {
           return { ...document, id: newId, path: movedPath, name };
         }
@@ -815,7 +792,7 @@ export function WorkspaceShell() {
         <ResizeHandle onDrag={dragProject} onStart={startProject} onEnd={endProject} />
 
         <section className={styles.documentPanel}>
-          <div className={styles.docTabs}>{openDocs.map((document) => { const pdf = document.kind === "paper" || document.kind === "workspacePdf"; return <button key={document.id} className={document.id === activeDocId ? styles.activeTab : ""} onClick={() => void openDocument(document)}><span className={pdf ? styles.kindPdf : styles.fileKind}>{pdf ? "PDF" : (document.kind === "file" ? (document.extension || "FILE").toUpperCase() : "FILE")}</span><strong>{document.kind === "paper" ? document.paper.name.replace(/\.pdf$/i, "") : document.name}</strong><i onClick={(event) => { event.stopPropagation(); closeDocument(document.id); }}>×</i></button>; })}</div>
+          <div className={styles.docTabs}>{openDocs.map((document) => { const pdf = document.kind === "paper" || document.kind === "workspacePdf"; return <button key={document.id} className={document.id === activeDocId ? styles.activeTab : ""} onClick={() => void openDocument(document)}><span className={pdf ? styles.kindPdf : styles.fileKind} title={pdf ? "PDF" : (document.extension || "file").toUpperCase()} /><strong>{document.kind === "paper" ? document.paper.name.replace(/\.pdf$/i, "") : document.name}</strong><i onClick={(event) => { event.stopPropagation(); closeDocument(document.id); }}>×</i></button>; })}</div>
           {!activeDoc && <div className={styles.emptyDocument}><span>⌘</span><h2>Open a paper or workspace file</h2><p>Read papers, edit project files, and work with the agent without leaving this workspace.</p>{activeWorkspace && <button onClick={() => setPaperPickerOpen(true)}>Add papers</button>}</div>}
           {(activeDoc?.kind === "paper" || activeDoc?.kind === "workspacePdf") && <div className={styles.pdfStage}>{pdfError ? <div className={styles.emptyDocument}><h2>Paper unavailable</h2><p>{pdfError}</p></div> : pdfData ? <PdfViewer pdfDataUrl={pdfData} onTextSelected={(text, page) => setQuestion(`Explain this passage from page ${page || "?"}:\n\n“${text}”`)} onAskAboutSelection={(text, prompt, page) => setQuestion(`${prompt}\n\nPassage from page ${page || "?"}:\n“${text}”`)} onRegionCaptured={() => {}} onHighlight={(text, page, position, color, occurrence) => void makeHighlight(text, page, position, color, undefined, occurrence)} onNote={(text, note, page, position, color, occurrence) => void makeHighlight(text, page, position, color, note, occurrence)} onRemoveHighlight={removeHighlight} highlights={pdfHighlights} zoteroKey={activeDoc.kind === "paper" ? activeDoc.paper.zoteroKey : undefined} /> : <div className={styles.emptyDocument}><p>Loading PDF…</p></div>}</div>}
           {activeDoc?.kind === "file" && <><header className={styles.editorToolbar}><div><strong>{activeDoc.path}</strong><small>{activeDoc.extension === "md" ? "Markdown" : "Text"} · editable workspace file</small></div>{activeDoc.extension === "md" && <span><button className={!preview ? styles.selected : ""} onClick={() => setPreview(false)}>Edit</button><button className={preview ? styles.selected : ""} onClick={() => setPreview(true)}>Preview</button></span>}<p><small className={editorContent === savedContent ? "" : styles.unsaved}>{editorContent === savedContent ? "Saved" : "Unsaved"}</small><button onClick={saveFile}>Save ⌘S</button></p></header><div className={styles.editorStage}>{preview && activeDoc.extension === "md" ? <article className={styles.markdown}><ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex, [rehypeHighlight, { detect: true }]]} urlTransform={(url, key) => key === "src" && activeWorkspace ? workspaceMarkdownAssetUrl(activeWorkspace.root, activeDoc.path, url) : defaultUrlTransform(url)}>{editorContent}</ReactMarkdown></article> : <textarea value={editorContent} onChange={(event) => setEditorContent(event.target.value)} spellCheck={false} />}</div></>}
