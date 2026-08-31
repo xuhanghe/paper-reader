@@ -43,9 +43,11 @@ type Props = {
   onToggle: () => void;
   width?: number;
   refreshSignal?: number; // bump to reload the library (e.g. after a save)
+  /** Collection to open and scroll to — set by the open paper's collection chip */
+  revealCollection?: { key: string; nonce: number } | null;
 };
 
-export function ZoteroLibrary({ onDocumentLoaded, activeDocName, isOpen, onToggle, width = 272, refreshSignal }: Props) {
+export function ZoteroLibrary({ onDocumentLoaded, activeDocName, isOpen, onToggle, width = 272, refreshSignal, revealCollection }: Props) {
   const [query, setQuery] = useState("");
   const [collections, setCollections] = useState<ZoteroCollection[]>([]);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -173,6 +175,34 @@ export function ZoteroLibrary({ onDocumentLoaded, activeDocName, isOpen, onToggl
     });
     if (!itemsByCollection[key]) fetchItems(key);
   }, [itemsByCollection, fetchItems]);
+
+  // Reveal a collection on request: expand it (loading its items if this is
+  // the first time), clear any search that would be hiding the tree, and
+  // bring it into view. Keyed by nonce so asking twice for the same
+  // collection still scrolls.
+  useEffect(() => {
+    if (!revealCollection) return;
+    const { key } = revealCollection;
+    // Deferred as one batch: updating state synchronously here would cascade
+    // a render, and the scroll has to wait for the expanded rows anyway.
+    const timer = setTimeout(() => {
+      setQuery("");
+      setSearchResults(null);
+      setExpanded((prev) => (prev.has(key) ? prev : new Set(prev).add(key)));
+      if (!itemsByCollection[key]) fetchItems(key);
+      requestAnimationFrame(() => {
+        const container = document.querySelector(`[data-collection-key="${key}"]`);
+        // Centre the collection's header row, not the container: once expanded
+        // the container is taller than the pane, so centring it scrolls the
+        // name itself off the top.
+        (container?.firstElementChild ?? container)?.scrollIntoView({ block: "center", behavior: "smooth" });
+      });
+    }, 0);
+    return () => clearTimeout(timer);
+    // itemsByCollection is deliberately out: it changes as items load, and
+    // re-running would fight the user's own scrolling
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [revealCollection, fetchItems]);
 
   const handleSearch = (q: string) => {
     setQuery(q);
@@ -364,7 +394,7 @@ export function ZoteroLibrary({ onDocumentLoaded, activeDocName, isOpen, onToggl
     const isPinned = orderPrefs.pinned.includes(collection.key);
     const isDropTarget = depth === 0 && dropTargetKey === collection.key && dragKey !== collection.key;
     return (
-      <div key={collection.key}>
+      <div key={collection.key} data-collection-key={collection.key}>
         <div
           onClick={() => toggleCollection(collection.key)}
           draggable={depth === 0}

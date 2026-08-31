@@ -18,6 +18,8 @@ type Props = {
   onSelect: (id: string) => void;
   onClose: (id: string) => void;
   onReorder?: (tabs: MaterialTab[]) => void;
+  /** Pinned to the right of the row — stays put while the tabs scroll */
+  trailing?: React.ReactNode;
 };
 
 export function reorderMaterialTabs(tabs: MaterialTab[], fromId: string, toId: string): MaterialTab[] {
@@ -34,7 +36,7 @@ export function reorderMaterialTabs(tabs: MaterialTab[], fromId: string, toId: s
 // Open materials, switchable like browser tabs. Each tab keeps its own
 // conversation, paper map and highlights — switching restores that paper's
 // session rather than starting over.
-export function MaterialTabs({ tabs, activeId, loadingId, onSelect, onClose, onReorder }: Props) {
+export function MaterialTabs({ tabs, activeId, loadingId, onSelect, onClose, onReorder, trailing }: Props) {
   const [dragId, setDragId] = useState<string | null>(null);
   const [dropId, setDropId] = useState<string | null>(null);
 
@@ -123,6 +125,12 @@ export function MaterialTabs({ tabs, activeId, loadingId, onSelect, onClose, onR
           </div>
         );
       })}
+      {trailing && (
+        // sticky, so it stays visible when many tabs push the row into scroll
+        <div className="sticky right-0 ml-auto flex items-center shrink-0 pl-2" style={{ background: "var(--surface)" }}>
+          {trailing}
+        </div>
+      )}
     </div>
   );
 }
