@@ -39,6 +39,12 @@
 .tree h3 > button { border: 1px solid #6a5c34; border-radius: 7px; background: rgba(225,195,105,.11); padding: 7px 9px; color: var(--accent-bright); font-size: 11px; font-weight: 680; letter-spacing: 0; white-space: nowrap; box-shadow: 0 1px 1px rgba(0,0,0,.25); }
 .tree h3 > button:hover { border-color: var(--accent); background: rgba(225,195,105,.18); color: #f4e2a1; }
 .tree h3 > button:disabled { opacity: .35; }
+/* The section chevron shares the heading's first grid column, so it must not
+   pick up the gold pill styling the heading's action buttons use. */
+.tree h3 > button.sectionChevron { width: 14px; padding: 0; border: 0; border-radius: 0; background: none; color: var(--accent); font-size: 9px; font-weight: 400; box-shadow: none; text-align: left; }
+.tree h3 > button.sectionChevron:hover { background: none; color: var(--accent-bright); }
+.tree h3 > strong.sectionTitle { cursor: pointer; }
+.tree h3 > strong.sectionTitle:hover { color: var(--ink); }
 .tree h3.filesHeading { grid-template-columns: 14px minmax(0,1fr); }
 .explorerActions { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 5px; margin-top: 4px; }
 .explorerActions button { min-width: 0; border: 1px solid #49545e; border-radius: 6px; background: #1b2227; padding: 6px 5px; color: #b9c1c7; font-size: 10px; font-weight: 620; letter-spacing: 0; white-space: nowrap; }

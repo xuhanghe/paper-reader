@@ -379,12 +379,19 @@ export function WorkspaceShell() {
   const [draggedFilePath, setDraggedFilePath] = useState<string | null>(null);
   const [dropTarget, setDropTarget] = useState<string | null>(null);
   const [workspaceLayout0] = useState(() =>
-    loadJson(WORKSPACE_LAYOUT_KEY, { projectWidth: 320, agentWidth: 420, projectOpen: true, agentOpen: true })
+    loadJson(WORKSPACE_LAYOUT_KEY, {
+      projectWidth: 320, agentWidth: 420, projectOpen: true, agentOpen: true,
+      papersOpen: true, filesOpen: true,
+    })
   );
   // Both panels collapse to a rail, the same way the Reader's do: drag the
   // handle past the panel's minimum, or use the chevron in its header.
   const [projectOpen, setProjectOpen] = useState(workspaceLayout0.projectOpen ?? true);
   const [agentOpen, setAgentOpen] = useState(workspaceLayout0.agentOpen ?? true);
+  // The two sections of the project tree fold away independently, so a long
+  // file list doesn't push the papers off the top and vice versa.
+  const [papersOpen, setPapersOpen] = useState(workspaceLayout0.papersOpen ?? true);
+  const [filesOpen, setFilesOpen] = useState(workspaceLayout0.filesOpen ?? true);
   const [projectWidth, dragProject, startProject, endProject] = usePanelWidth(workspaceLayout0.projectWidth, 250, 560, 1, projectOpen, setProjectOpen);
   const [agentWidth, dragAgent, startAgent, endAgent] = usePanelWidth(workspaceLayout0.agentWidth, 320, 720, -1, agentOpen, setAgentOpen);
   // What is open belongs to the workspace, not to the app: a workspace is a
@@ -446,8 +453,8 @@ export function WorkspaceShell() {
   useEffect(() => { void refreshFiles(); }, [refreshFiles]);
 
   useEffect(() => {
-    try { localStorage.setItem(WORKSPACE_LAYOUT_KEY, JSON.stringify({ projectWidth, agentWidth, projectOpen, agentOpen })); } catch {}
-  }, [projectWidth, agentWidth, projectOpen, agentOpen]);
+    try { localStorage.setItem(WORKSPACE_LAYOUT_KEY, JSON.stringify({ projectWidth, agentWidth, projectOpen, agentOpen, papersOpen, filesOpen })); } catch {}
+  }, [projectWidth, agentWidth, projectOpen, agentOpen, papersOpen, filesOpen]);
 
   useEffect(() => {
     if (!activeWorkspace) return;
@@ -760,8 +767,8 @@ export function WorkspaceShell() {
           </header>
           <div className={styles.tree}>
             <section>
-              <h3><span>▾</span><strong>SOURCE PAPERS <small>{activeWorkspace?.papers.length || 0}</small></strong><button onClick={() => setPaperPickerOpen(true)} disabled={!activeWorkspace}>＋ Add papers</button></h3>
-              {activeWorkspace?.papers.map((paper) => {
+              <h3><button type="button" className={styles.sectionChevron} onClick={() => setPapersOpen((open) => !open)} aria-expanded={papersOpen} title={papersOpen ? "Collapse source papers" : "Expand source papers"}>{papersOpen ? "▾" : "▸"}</button><strong className={styles.sectionTitle} onClick={() => setPapersOpen((open) => !open)}>SOURCE PAPERS <small>{activeWorkspace?.papers.length || 0}</small></strong><button onClick={() => setPaperPickerOpen(true)} disabled={!activeWorkspace}>＋ Add papers</button></h3>
+              {papersOpen && activeWorkspace?.papers.map((paper) => {
                 const documentId = `paper:${paper.id}`;
                 return <div key={paper.id} className={`${styles.paperRow} ${activeDocId === documentId ? styles.activeRow : ""}`}>
                   <button className={styles.paperOpen} onClick={() => void openDocument({ id: documentId, kind: "paper", paper })}>
@@ -770,7 +777,7 @@ export function WorkspaceShell() {
                   <button className={styles.detachPaper} onClick={() => detachPaper(paper)} title="Detach from workspace" aria-label={`Detach ${paper.name.replace(/\.pdf$/i, "")} from this workspace`}>×</button>
                 </div>;
               })}
-              {activeWorkspace && !activeWorkspace.papers.length && <p className={styles.treeEmpty}>Use Add papers to search Zotero or select a collection.</p>}
+              {papersOpen && activeWorkspace && !activeWorkspace.papers.length && <p className={styles.treeEmpty}>Use Add papers to search Zotero or select a collection.</p>}
             </section>
             <section>
               <h3
@@ -778,14 +785,14 @@ export function WorkspaceShell() {
                 onDragOver={(event) => { if (draggedFilePath) { event.preventDefault(); event.dataTransfer.dropEffect = "move"; setDropTarget(""); } }}
                 onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setDropTarget(null); }}
                 onDrop={(event) => { event.preventDefault(); if (draggedFilePath) void moveFile(draggedFilePath, ""); }}
-              ><span>▾</span><strong>WORKING FILES <small>{fileRows.length}</small></strong><span className={styles.explorerActions}>
+              ><button type="button" className={styles.sectionChevron} onClick={() => setFilesOpen((open) => !open)} aria-expanded={filesOpen} title={filesOpen ? "Collapse working files" : "Expand working files"}>{filesOpen ? "▾" : "▸"}</button><strong className={styles.sectionTitle} onClick={() => setFilesOpen((open) => !open)}>WORKING FILES <small>{fileRows.length}</small></strong><span className={styles.explorerActions}>
                 <button onClick={() => void refreshFiles()} disabled={!activeWorkspace || filesLoading} title="Refresh working files">↻ Refresh</button>
                 <button onClick={createDirectory} disabled={!activeWorkspace}>＋ Folder</button>
                 <button onClick={createFile} disabled={!activeWorkspace}>＋ File</button>
               </span></h3>
-              {filesLoading && <p className={styles.treeEmpty}>Reading directory…</p>}
-              {!filesLoading && activeWorkspace && !files.length && <p className={styles.treeEmpty}>No files yet. Create a note or copy selected PDFs.</p>}
-              <div className={styles.fileExplorer} role="tree" aria-label="Workspace files">
+              {filesOpen && filesLoading && <p className={styles.treeEmpty}>Reading directory…</p>}
+              {filesOpen && !filesLoading && activeWorkspace && !files.length && <p className={styles.treeEmpty}>No files yet. Create a note or copy selected PDFs.</p>}
+              {filesOpen && <div className={styles.fileExplorer} role="tree" aria-label="Workspace files">
                 {visibleWorkspaceEntries.map((entry) => {
                   const depth = workspacePathDepth(entry.path);
                   const style = { "--tree-depth": depth } as CSSProperties;
@@ -830,7 +837,7 @@ export function WorkspaceShell() {
                     <strong>{entry.name}</strong>
                   </button>;
                 })}
-              </div>
+              </div>}
             </section>
           </div>
           {activeWorkspace && <footer><button onClick={() => setCopyOpen(true)} disabled={!activeWorkspace.papers.length}><span>⇩</span><strong>Copy selected PDFs…</strong></button><button onClick={() => setSkillsOpen(true)}><span>◆</span><strong>Skills</strong><small>{activeSkillIds.length} active</small></button></footer>}
