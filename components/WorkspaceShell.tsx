@@ -8,8 +8,9 @@ import rehypeHighlight from "rehype-highlight";
 import rehypeKatex from "rehype-katex";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
-import type { MaterialTab } from "@/components/MaterialTabs";
+import { MaterialTabs, type MaterialTab } from "@/components/MaterialTabs";
 import { loadOpenTabs } from "@/lib/open-tabs";
+import { createTabStore } from "@/lib/tab-store";
 import { cacheDocument, getCachedDocument } from "@/lib/document-cache";
 import { SkillsDrawer } from "@/components/SkillsDrawer";
 import { ModelPicker } from "@/components/ModelPicker";
@@ -27,6 +28,18 @@ const PdfViewer = dynamic(() => import("@/components/PdfViewer").then((module) =
 const WORKSPACES_KEY = "paper-reader:research-workspaces:v1";
 const ACTIVE_WORKSPACE_KEY = "paper-reader:active-workspace:v1";
 const WORKSPACE_DOCS_KEY = "paper-reader:workspace-docs:v1";
+
+// Same mechanism as the Reader's open-tabs store, keyed per workspace — a
+// workspace's open documents are its own, but they load, save and notify
+// exactly as the Reader's do.
+const docStore = (workspaceId: string) =>
+  createTabStore<WorkspaceDocument>(
+    `${WORKSPACE_DOCS_KEY}:${workspaceId}`,
+    (entry) => {
+      const doc = entry as WorkspaceDocument | null;
+      return !!doc?.id && (doc.kind === "paper" ? !!doc.paper?.name : !!doc.name);
+    }
+  );
 const WORKSPACE_ACTIVE_DOC_KEY = "paper-reader:workspace-active-doc:v1";
 
 const CUSTOM_API_KEY = "paper-reader:custom-api";
@@ -373,7 +386,7 @@ export function WorkspaceShell() {
   // desk, and you expect to come back to the papers you left on it. Persisted
   // because switching surfaces unmounts this component entirely.
   const [openDocs, setOpenDocs] = useState<WorkspaceDocument[]>(
-    () => loadJson<WorkspaceDocument[]>(`${WORKSPACE_DOCS_KEY}:${activeWorkspaceId || "none"}`, [])
+    () => docStore(activeWorkspaceId || "none").load()
   );
   const [activeDocId, setActiveDocId] = useState<string | null>(null);
   const [pdfData, setPdfData] = useState("");
@@ -396,6 +409,20 @@ export function WorkspaceShell() {
   const abortRef = useRef<AbortController | null>(null);
   const activeWorkspace = workspaces.find((workspace) => workspace.id === activeWorkspaceId) || workspaces[0] || null;
   const activeDoc = openDocs.find((document) => document.id === activeDocId) || null;
+  const docTabs = useMemo<MaterialTab[]>(
+    () =>
+      openDocs.map((doc) =>
+        doc.kind === "paper"
+          ? { ...doc.paper, id: doc.id, kind: "paper" as const }
+          : {
+              id: doc.id,
+              name: doc.name,
+              docType: "pdf" as const,
+              kind: doc.kind === "workspacePdf" ? ("paper" as const) : ("file" as const),
+            }
+      ),
+    [openDocs]
+  );
 
   const persist = useCallback((next: ResearchWorkspace[]) => { setWorkspaces(next); saveWorkspaces(next); }, []);
 
@@ -425,7 +452,7 @@ export function WorkspaceShell() {
   const switchWorkspace = (id: string) => {
     const saved = loadJson<{ messages: AgentMessage[]; session?: string }>(`paper-reader:workspace-chat:${id}`, { messages: [] });
     setActiveWorkspaceId(id); setMessages(saved.messages || []); setProviderSession(saved.session);
-    setOpenDocs(loadJson<WorkspaceDocument[]>(`${WORKSPACE_DOCS_KEY}:${id}`, []));
+    setOpenDocs(docStore(id).load());
     setActiveDocId(null); setPdfData(""); setEditorContent(""); setFiles([]); setExpandedDirectories(new Set());
     try { localStorage.setItem(ACTIVE_WORKSPACE_KEY, JSON.stringify(id)); } catch {}
   };
@@ -459,7 +486,7 @@ export function WorkspaceShell() {
 
   useEffect(() => {
     if (!activeWorkspaceId) return;
-    try { localStorage.setItem(`${WORKSPACE_DOCS_KEY}:${activeWorkspaceId}`, JSON.stringify(openDocs)); } catch {}
+    docStore(activeWorkspaceId).save(openDocs);
   }, [openDocs, activeWorkspaceId]);
 
   useEffect(() => {
@@ -804,7 +831,16 @@ export function WorkspaceShell() {
         <ResizeHandle onDrag={dragProject} onStart={startProject} onEnd={endProject} />
 
         <section className={styles.documentPanel}>
-          <div className={styles.docTabs}>{openDocs.map((document) => { const pdf = document.kind === "paper" || document.kind === "workspacePdf"; return <button key={document.id} className={document.id === activeDocId ? styles.activeTab : ""} onClick={() => void openDocument(document)}><span className={pdf ? styles.kindPdf : styles.fileKind} title={pdf ? "PDF" : (document.extension || "file").toUpperCase()} /><strong>{document.kind === "paper" ? document.paper.name.replace(/\.pdf$/i, "") : document.name}</strong><i onClick={(event) => { event.stopPropagation(); closeDocument(document.id); }}>×</i></button>; })}</div>
+          {/* The Reader's tab bar, not a copy of it — one component, so the
+              two surfaces cannot drift apart in style or behaviour. */}
+          <MaterialTabs
+            tabs={docTabs}
+            activeId={activeDocId}
+            loadingId={null}
+            onSelect={(id) => { const doc = openDocs.find((entry) => entry.id === id); if (doc) void openDocument(doc); }}
+            onClose={closeDocument}
+            onReorder={(ordered) => setOpenDocs(ordered.map((tab) => openDocs.find((doc) => doc.id === tab.id)!).filter(Boolean))}
+          />
           {!activeDoc && <div className={styles.emptyDocument}><span>⌘</span><h2>Open a paper or workspace file</h2><p>Read papers, edit project files, and work with the agent without leaving this workspace.</p>{activeWorkspace && <button onClick={() => setPaperPickerOpen(true)}>Add papers</button>}</div>}
           {(activeDoc?.kind === "paper" || activeDoc?.kind === "workspacePdf") && <div className={styles.pdfStage}>{pdfError ? <div className={styles.emptyDocument}><h2>Paper unavailable</h2><p>{pdfError}</p></div> : pdfData ? <PdfViewer pdfDataUrl={pdfData} onTextSelected={(text, page) => setQuestion(`Explain this passage from page ${page || "?"}:\n\n“${text}”`)} onAskAboutSelection={(text, prompt, page) => setQuestion(`${prompt}\n\nPassage from page ${page || "?"}:\n“${text}”`)} onRegionCaptured={() => {}} onHighlight={(text, page, position, color, occurrence) => void makeHighlight(text, page, position, color, undefined, occurrence)} onNote={(text, note, page, position, color, occurrence) => void makeHighlight(text, page, position, color, note, occurrence)} onRemoveHighlight={removeHighlight} highlights={pdfHighlights} zoteroKey={activeDoc.kind === "paper" ? activeDoc.paper.zoteroKey : undefined} positionKey={activeDoc.kind === "paper" ? activeDoc.paper.id : activeDoc.path} /> : <div className={styles.emptyDocument}><p>Loading PDF…</p></div>}</div>}
           {activeDoc?.kind === "file" && <><header className={styles.editorToolbar}><div><strong>{activeDoc.path}</strong><small>{activeDoc.extension === "md" ? "Markdown" : "Text"} · editable workspace file</small></div>{activeDoc.extension === "md" && <span><button className={!preview ? styles.selected : ""} onClick={() => setPreview(false)}>Edit</button><button className={preview ? styles.selected : ""} onClick={() => setPreview(true)}>Preview</button></span>}<p><small className={editorContent === savedContent ? "" : styles.unsaved}>{editorContent === savedContent ? "Saved" : "Unsaved"}</small><button onClick={saveFile}>Save ⌘S</button></p></header><div className={styles.editorStage}>{preview && activeDoc.extension === "md" ? <article className={styles.markdown}><ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex, [rehypeHighlight, { detect: true }]]} urlTransform={(url, key) => key === "src" && activeWorkspace ? workspaceMarkdownAssetUrl(activeWorkspace.root, activeDoc.path, url) : defaultUrlTransform(url)}>{editorContent}</ReactMarkdown></article> : <textarea value={editorContent} onChange={(event) => setEditorContent(event.target.value)} spellCheck={false} />}</div></>}

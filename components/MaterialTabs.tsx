@@ -6,6 +6,9 @@ export type MaterialTab = {
   id: string; // paper id (Zotero key or name slug)
   name: string;
   docType: DocType;
+  // Display only, for surfaces that open more than papers: the Workspace also
+  // opens editable project files, and its tabs mark them differently.
+  kind?: "paper" | "file";
   zoteroKey?: string;
   attachmentKey?: string;
   sourceUrl?: string;
@@ -102,7 +105,7 @@ export function MaterialTabs({ tabs, activeId, loadingId, onSelect, onClose, onR
                   ? "var(--badge-text-fg)"
                   : isActive
                     ? "var(--accent)"
-                    : tab.docType === "html"
+                    : tab.kind === "file" || tab.docType === "html"
                       ? "var(--badge-fig-fg)"
                       : "var(--ink-faint)",
               }}

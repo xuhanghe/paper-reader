@@ -82,18 +82,7 @@
 .projectSidebar > footer small { color: #818b94; font-size: 10px; }
 
 .documentPanel { position: relative; min-width: 360px; flex: 1 1 480px; display: flex; flex-direction: column; overflow: hidden; background: #0b0f13; }
-.docTabs { display: flex; align-items: stretch; flex: 0 0 auto; overflow-x: auto; border-bottom: 1px solid var(--border); background: var(--surface); }
-.docTabs > button { max-width: 240px; flex: 0 0 auto; display: flex; align-items: center; gap: 8px; border: 0; border-right: 1px solid var(--border); border-left: 2px solid transparent; background: transparent; padding: 6px 8px 6px 12px; color: var(--ink-muted); }
-.docTabs > button:hover { background: rgba(230,237,243,0.04); color: var(--ink); }
-.docTabs > button.activeTab { background: var(--paper); color: var(--ink); box-shadow: inset 0 2px 0 var(--accent); }
 /* A kind dot, the same language the Reader's tabs use for pdf vs snapshot */
-.docTabs button > span { width: 6px; height: 6px; flex: 0 0 auto; border-radius: 50%; background: var(--ink-faint); font-size: 0; }
-.docTabs > button.activeTab > span { background: var(--accent); }
-.docTabs button > span.fileKind { background: var(--badge-fig-fg); }
-.docTabs button > strong { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 11px; font-weight: 500; }
-.docTabs button > i { width: 16px; height: 16px; display: grid; place-items: center; margin-left: 2px; border-radius: 4px; color: var(--ink-faint); font-size: 10px; font-style: normal; opacity: 0; }
-.docTabs > button:hover > i, .docTabs > button.activeTab > i { opacity: 1; }
-.docTabs button > i:hover { background: var(--border); color: var(--ink); }
 .emptyDocument { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 44px; color: #9ca6ae; text-align: center; background: radial-gradient(circle at 50% 46%, rgba(225,195,105,.055), transparent 34%); }
 .emptyDocument > span { width: 54px; height: 54px; display: grid; place-items: center; border: 1px solid #554b31; border-radius: 14px; background: #1e1c16; color: var(--accent); font-size: 30px; }
 .emptyDocument h2 { margin: 20px 0 8px; color: var(--ink); font: 25px var(--font-lora), Georgia, serif; }
