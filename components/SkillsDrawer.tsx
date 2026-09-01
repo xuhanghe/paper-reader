@@ -60,7 +60,6 @@ export function SkillsDrawer({ open, onClose, skills, activeIds, onToggle, loadi
           )}
         </div>
         <footer>
-          <span>🌐 Web is always available</span>
           <small>Skill installation will run in an isolated agent session.</small>
         </footer>
       </aside>

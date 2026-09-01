@@ -21,7 +21,7 @@ import { DEFAULT_HIGHLIGHT_COLOR } from "@/lib/highlight-colors";
 import { flattenZoteroCollections, zoteroCollectionBranch, zoteroPaperTab, type ZoteroCollection, type ZoteroPaper } from "@/lib/workspace-zotero";
 import type { CustomApiConfig, Effort, Highlight, Model } from "@/types/session";
 import type { ResearchWorkspace, WorkspaceDocument } from "@/types/workspace";
-import styles from "./WorkspaceShell.module.css";
+import styles from "./workspace-shell.module.css";
 
 const PdfViewer = dynamic(() => import("@/components/PdfViewer").then((module) => module.PdfViewer), { ssr: false });
 

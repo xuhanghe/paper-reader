@@ -23,10 +23,12 @@
 .rail .railActions > button:disabled { opacity: .28; }
 
 .projectSidebar { min-width: 0; min-height: 0; flex: 0 0 auto; display: flex; flex-direction: column; overflow: hidden; background: #13181d; }
-.projectSidebar > header { min-height: 72px; flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between; padding: 0 18px; border-bottom: 1px solid #303943; background: #161c21; }
-.projectSidebar > header > div { display: flex; flex-direction: column; gap: 5px; }
-.projectSidebar > header span { color: #c8ced4; font-size: 12px; font-weight: 720; letter-spacing: .08em; }
-.projectSidebar > header small { color: #8f99a2; font-size: 12px; }
+/* Kept to explorer scale: a low single-purpose title bar, not a 72px block
+   looming over 22px rows. */
+.projectSidebar > header { min-height: 50px; flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0 10px 0 14px; border-bottom: 1px solid #29313a; background: #141a1f; }
+.projectSidebar > header > div { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.projectSidebar > header span { color: #c8ced4; font-size: 11px; font-weight: 700; letter-spacing: .07em; }
+.projectSidebar > header small { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: #8f99a2; font-size: 11px; }
 /* Collapse control in a panel header — the chevron points the way the panel
    goes, matching the Zotero sidebar's affordance in the Reader. */
 .collapsePanel { width: 22px; height: 22px; flex: 0 0 auto; display: grid; place-items: center; border: 1px solid transparent; border-radius: 6px; background: transparent; color: var(--ink-faint); font-size: 13px; line-height: 1; }
