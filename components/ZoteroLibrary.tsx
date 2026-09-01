@@ -1,6 +1,7 @@
 "use client";
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { DocType } from "@/types/session";
+import { CollapsedRail } from "@/components/ResizablePanel";
 import { GrowingTextarea } from "./GrowingTextarea";
 
 // Device-level preference for how root collections are arranged
@@ -528,24 +529,7 @@ export function ZoteroLibrary({ onDocumentLoaded, activeDocName, isOpen, onToggl
   };
 
   if (!isOpen) {
-    return (
-      <button
-        onClick={onToggle}
-        className="flex flex-col items-center shrink-0 cursor-pointer transition-colors hover:bg-[rgba(230,237,243,0.05)]"
-        style={{ width: "2.25rem", borderRight: "1px solid var(--border)", background: "var(--surface)" }}
-        title="Show Zotero library"
-      >
-        <span className="flex items-center justify-center h-9 w-full shrink-0" style={{ borderBottom: "1px solid var(--border)" }}>
-          <span className="rotate-90 text-xs" style={{ color: "var(--ink-faint)" }}>≡</span>
-        </span>
-        <span
-          className="mt-3 text-[10px] uppercase tracking-widest select-none"
-          style={{ color: "var(--ink-faint)", writingMode: "vertical-rl" }}
-        >
-          Zotero
-        </span>
-      </button>
-    );
+    return <CollapsedRail label="Zotero" side="left" onExpand={onToggle} title="Show Zotero library" />;
   }
 
   const showSearch = query.trim().length > 0;

@@ -27,6 +27,10 @@
 .projectSidebar > header > div { display: flex; flex-direction: column; gap: 5px; }
 .projectSidebar > header span { color: #c8ced4; font-size: 12px; font-weight: 720; letter-spacing: .08em; }
 .projectSidebar > header small { color: #8f99a2; font-size: 12px; }
+/* Collapse control in a panel header — the chevron points the way the panel
+   goes, matching the Zotero sidebar's affordance in the Reader. */
+.collapsePanel { width: 22px; height: 22px; flex: 0 0 auto; display: grid; place-items: center; border: 1px solid transparent; border-radius: 6px; background: transparent; color: var(--ink-faint); font-size: 13px; line-height: 1; }
+.collapsePanel:hover { border-color: var(--border); background: rgba(230,237,243,0.05); color: var(--ink); }
 .tree { min-height: 0; flex: 1; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; padding: 14px 10px; }
 .tree section { margin-bottom: 20px; }
 .tree h3 { display: grid; grid-template-columns: 14px minmax(0,1fr) auto; align-items: center; gap: 5px; margin: 0 0 9px; padding: 8px 6px 10px; border-bottom: 1px solid #293139; color: #a6afb7; font-size: 11px; letter-spacing: .06em; }

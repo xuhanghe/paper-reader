@@ -14,7 +14,7 @@ import { createTabStore } from "@/lib/tab-store";
 import { cacheDocument, getCachedDocument } from "@/lib/document-cache";
 import { SkillsDrawer } from "@/components/SkillsDrawer";
 import { ModelPicker } from "@/components/ModelPicker";
-import { ResizeHandle, usePanelWidth } from "@/components/ResizablePanel";
+import { CollapsedRail, ResizeHandle, usePanelWidth } from "@/components/ResizablePanel";
 import { useAgentSkills } from "@/hooks/useAgentSkills";
 import { createZoteroHighlight } from "@/lib/zotero-highlight-api";
 import { DEFAULT_HIGHLIGHT_COLOR } from "@/lib/highlight-colors";
@@ -45,7 +45,6 @@ const WORKSPACE_ACTIVE_DOC_KEY = "paper-reader:workspace-active-doc:v1";
 const CUSTOM_API_KEY = "paper-reader:custom-api";
 const WORKSPACE_LAYOUT_KEY = "paper-reader:workspace-layout:v1";
 const NO_SUBSCRIBE = () => () => {};
-const KEEP_PANEL_OPEN = () => {};
 const useIsClient = () => useSyncExternalStore(NO_SUBSCRIBE, () => true, () => false);
 
 type WorkspaceFile = { path: string; name: string; kind: "file" | "directory"; extension?: string; size?: number };
@@ -379,9 +378,15 @@ export function WorkspaceShell() {
   const [expandedDirectories, setExpandedDirectories] = useState<Set<string>>(() => new Set());
   const [draggedFilePath, setDraggedFilePath] = useState<string | null>(null);
   const [dropTarget, setDropTarget] = useState<string | null>(null);
-  const [workspaceLayout0] = useState(() => loadJson(WORKSPACE_LAYOUT_KEY, { projectWidth: 320, agentWidth: 420 }));
-  const [projectWidth, dragProject, startProject, endProject] = usePanelWidth(workspaceLayout0.projectWidth, 250, 560, 1, true, KEEP_PANEL_OPEN, { collapsible: false });
-  const [agentWidth, dragAgent, startAgent, endAgent] = usePanelWidth(workspaceLayout0.agentWidth, 320, 720, -1, true, KEEP_PANEL_OPEN, { collapsible: false });
+  const [workspaceLayout0] = useState(() =>
+    loadJson(WORKSPACE_LAYOUT_KEY, { projectWidth: 320, agentWidth: 420, projectOpen: true, agentOpen: true })
+  );
+  // Both panels collapse to a rail, the same way the Reader's do: drag the
+  // handle past the panel's minimum, or use the chevron in its header.
+  const [projectOpen, setProjectOpen] = useState(workspaceLayout0.projectOpen ?? true);
+  const [agentOpen, setAgentOpen] = useState(workspaceLayout0.agentOpen ?? true);
+  const [projectWidth, dragProject, startProject, endProject] = usePanelWidth(workspaceLayout0.projectWidth, 250, 560, 1, projectOpen, setProjectOpen);
+  const [agentWidth, dragAgent, startAgent, endAgent] = usePanelWidth(workspaceLayout0.agentWidth, 320, 720, -1, agentOpen, setAgentOpen);
   // What is open belongs to the workspace, not to the app: a workspace is a
   // desk, and you expect to come back to the papers you left on it. Persisted
   // because switching surfaces unmounts this component entirely.
@@ -441,8 +446,8 @@ export function WorkspaceShell() {
   useEffect(() => { void refreshFiles(); }, [refreshFiles]);
 
   useEffect(() => {
-    try { localStorage.setItem(WORKSPACE_LAYOUT_KEY, JSON.stringify({ projectWidth, agentWidth })); } catch {}
-  }, [projectWidth, agentWidth]);
+    try { localStorage.setItem(WORKSPACE_LAYOUT_KEY, JSON.stringify({ projectWidth, agentWidth, projectOpen, agentOpen })); } catch {}
+  }, [projectWidth, agentWidth, projectOpen, agentOpen]);
 
   useEffect(() => {
     if (!activeWorkspace) return;
@@ -746,9 +751,12 @@ export function WorkspaceShell() {
           </div>
         </nav>
 
+        {!projectOpen && <CollapsedRail label="Workspace" side="left" onExpand={() => setProjectOpen(true)} title="Show the workspace panel" />}
+        {projectOpen && (
         <aside className={styles.projectSidebar} style={{ width: projectWidth }}>
           <header>
             <div><span>WORKSPACE</span><small>{activeWorkspace ? `${activeWorkspace.papers.length} papers · ${fileRows.length} files` : "No workspace"}</small></div>
+            <button className={styles.collapsePanel} onClick={() => setProjectOpen(false)} title="Hide the workspace panel" aria-label="Hide the workspace panel">‹</button>
           </header>
           <div className={styles.tree}>
             <section>
@@ -828,6 +836,7 @@ export function WorkspaceShell() {
           {activeWorkspace && <footer><button onClick={() => setCopyOpen(true)} disabled={!activeWorkspace.papers.length}><span>⇩</span><strong>Copy selected PDFs…</strong></button><button onClick={() => setSkillsOpen(true)}><span>◆</span><strong>Skills</strong><small>{activeSkillIds.length} active</small></button></footer>}
         </aside>
 
+        )}
         <ResizeHandle onDrag={dragProject} onStart={startProject} onEnd={endProject} />
 
         <section className={styles.documentPanel}>
@@ -848,11 +857,14 @@ export function WorkspaceShell() {
 
         <ResizeHandle onDrag={dragAgent} onStart={startAgent} onEnd={endAgent} />
 
+        {agentOpen && (
         <aside className={styles.agentPanel} style={{ width: agentWidth }}>
-          <header><div><span>✦</span><p><strong>Workspace Agent</strong><small>{activeDoc ? `Working with ${activeDoc.kind === "paper" ? activeDoc.paper.name : activeDoc.path}` : "Workspace context"}</small></p></div><ModelPicker model={model} effort={effort} onModelChange={setModel} onEffortChange={setEffort} onConfigureCustom={() => setNotice("Configure custom models from Reader.")} /></header>
+          <header><button className={styles.collapsePanel} onClick={() => setAgentOpen(false)} title="Hide the workspace agent" aria-label="Hide the workspace agent">›</button><div><span>✦</span><p><strong>Workspace Agent</strong><small>{activeDoc ? `Working with ${activeDoc.kind === "paper" ? activeDoc.paper.name : activeDoc.path}` : "Workspace context"}</small></p></div><ModelPicker model={model} effort={effort} onModelChange={setModel} onEffortChange={setEffort} onConfigureCustom={() => setNotice("Configure custom models from Reader.")} /></header>
           <div className={styles.messages}>{!messages.length && <div className={styles.agentWelcome}><span>✦</span><h2>Start with the decision you need to make</h2><p>I can read the open document, inspect workspace files, use your active skills, and turn an idea into an experiment handoff.</p><button onClick={() => setQuestion("Evaluate whether this idea is novel, feasible, and worth a small experiment.")}>Evaluate an idea</button><button onClick={() => setQuestion("Search for the latest related work and identify the strongest novelty risk.")}>Check latest related work</button></div>}{messages.map((message) => <article key={message.id} className={message.role === "user" ? styles.userMessage : styles.agentMessage}>{message.role === "assistant" && <span>✦</span>}<div>{message.tools && message.tools.length > 0 && <details className={styles.tools}><summary>✓ Used {message.tools.length} tool{message.tools.length === 1 ? "" : "s"}</summary>{message.tools.map((tool, index) => <p key={`${tool.name}-${index}`}><strong>{tool.name}</strong><small>{tool.detail}</small></p>)}</details>}<ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content || (streaming ? "Working…" : "")}</ReactMarkdown></div></article>)}</div>
           <footer className={styles.composerArea}><div className={styles.composer}><textarea value={question} onChange={(event) => setQuestion(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void askAgent(); } }} placeholder="Ask about the open document or workspace…" /><div><span><button onClick={() => setSkillsOpen(true)}>◆ {activeSkillIds.length} skills</button><button className={writeOnce ? styles.writeApproved : ""} onClick={() => setWriteOnce((value) => !value)} title="Approve file writes for only the next message">{writeOnce ? "✓ Write once" : "⌘ Read only"}</button></span>{streaming ? <button className={styles.send} onClick={() => abortRef.current?.abort()}>■</button> : <button className={styles.send} disabled={!question.trim() || !activeWorkspace} onClick={() => void askAgent()}>↑</button>}</div></div><small>{writeOnce ? "Next message may edit files inside the fixed directory" : "Current document + workspace attached · writes require approval"}</small></footer>
         </aside>
+        )}
+        {!agentOpen && <CollapsedRail label="Agent" side="right" onExpand={() => setAgentOpen(true)} title="Show the workspace agent" />}
       </main>
 
       {notice && <div className={styles.toast}>{notice}<button onClick={() => setNotice("")}>×</button></div>}
