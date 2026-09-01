@@ -98,6 +98,11 @@ export function ZoteroLibrary({ onDocumentLoaded, activeDocName, isOpen, onToggl
   // the dragged collection before it and adopts that row's pinned/unpinned group.
   const [dragKey, setDragKey] = useState<string | null>(null);
   const [dropTargetKey, setDropTargetKey] = useState<string | null>(null);
+  // A paper being dragged onto a collection. Separate from dragKey, which is
+  // the collection-reordering drag — the two look identical to the drop
+  // handler otherwise, and reordering would fire when filing a paper.
+  const [dragPaper, setDragPaper] = useState<{ key: string; from: string | null; title: string } | null>(null);
+  const [filing, setFiling] = useState<string | null>(null);
 
   const handleDropOn = useCallback((targetKey: string) => {
     if (!dragKey || dragKey === targetKey) return;
@@ -305,7 +310,39 @@ export function ZoteroLibrary({ onDocumentLoaded, activeDocName, isOpen, onToggl
     }
   }, [forgetItem]);
 
-  const renderItem = (item: ZoteroListItem, indent: number) => {
+  // Drop a paper onto a collection: it leaves the collection it was dragged
+  // out of and joins the target. Dragged from a flat list (search, All papers)
+  // there is no source to leave, so it is filed as an addition.
+  const filePaper = useCallback(async (paper: { key: string; from: string | null; title: string }, to: string) => {
+    if (paper.from === to) return;
+    setFiling(paper.key);
+    setError(null);
+    try {
+      const res = await fetch("/api/zotero/item-collections", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ key: paper.key, from: paper.from ?? undefined, to }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "Could not move that paper.");
+      // Zotero syncs the change back down to the local API, which the sidebar
+      // reads — reload both ends of the move rather than guessing
+      setItemsByCollection((current) => {
+        const next = { ...current };
+        if (paper.from) delete next[paper.from];
+        delete next[to];
+        return next;
+      });
+      if (paper.from && expanded.has(paper.from)) void fetchItems(paper.from);
+      if (expanded.has(to)) void fetchItems(to);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Could not move that paper.");
+    } finally {
+      setFiling(null);
+    }
+  }, [expanded, fetchItems]);
+
+  const renderItem = (item: ZoteroListItem, indent: number, sourceCollection: string | null = null, canDrag = true) => {
     const opening = openingKey === item.key;
     const isActive = activeDocName === item.title || activeDocName === `${item.title}.pdf`;
     const confirming = confirmKey === item.key;
@@ -351,10 +388,21 @@ export function ZoteroLibrary({ onDocumentLoaded, activeDocName, isOpen, onToggl
     return (
       <div
         key={item.key}
+        draggable={canDrag}
+        onDragStart={(event) => {
+          setDragPaper({ key: item.key, from: sourceCollection, title: item.title });
+          event.dataTransfer.effectAllowed = "move";
+          // Some browsers refuse to start a drag with no payload
+          event.dataTransfer.setData("text/plain", item.key);
+        }}
+        onDragEnd={() => { setDragPaper(null); setDropTargetKey(null); }}
         className="group/item w-full flex items-center transition-colors"
+        title={!canDrag ? undefined : sourceCollection ? "Drag onto a collection to move this paper there" : "Drag onto a collection to file this paper there"}
         style={{
           borderLeft: isActive ? "2px solid var(--accent)" : "2px solid transparent",
           background: isActive ? "var(--accent-dim)" : "transparent",
+          opacity: dragPaper?.key === item.key ? 0.4 : filing === item.key ? 0.6 : 1,
+          cursor: filing === item.key ? "progress" : undefined,
         }}
         onMouseEnter={(e) => { if (!isActive) (e.currentTarget as HTMLElement).style.background = "rgba(230,237,243,0.05)"; }}
         onMouseLeave={(e) => { if (!isActive) (e.currentTarget as HTMLElement).style.background = "transparent"; }}
@@ -392,7 +440,11 @@ export function ZoteroLibrary({ onDocumentLoaded, activeDocName, isOpen, onToggl
     const items = itemsByCollection[collection.key];
     const isLoading = loadingKeys.has(collection.key);
     const isPinned = orderPrefs.pinned.includes(collection.key);
-    const isDropTarget = depth === 0 && dropTargetKey === collection.key && dragKey !== collection.key;
+    // A collection accepts a dragged paper at any depth; the reorder drag is
+    // top-level only, so the two drop behaviours stay distinct.
+    const takesPaper = !!dragPaper && dragPaper.from !== collection.key;
+    const isDropTarget =
+      dropTargetKey === collection.key && (takesPaper || (depth === 0 && dragKey !== collection.key));
     return (
       <div key={collection.key} data-collection-key={collection.key}>
         <div
@@ -404,18 +456,43 @@ export function ZoteroLibrary({ onDocumentLoaded, activeDocName, isOpen, onToggl
             // Some browsers refuse to start a drag without payload data
             e.dataTransfer.setData("text/plain", collection.key);
           } : undefined}
-          onDragOver={depth === 0 ? (e) => { e.preventDefault(); e.dataTransfer.dropEffect = "move"; setDropTargetKey(collection.key); } : undefined}
-          onDrop={depth === 0 ? (e) => { e.preventDefault(); handleDropOn(collection.key); setDragKey(null); setDropTargetKey(null); } : undefined}
+          onDragOver={(e) => {
+            if (!dragPaper && depth !== 0) return;
+            if (dragPaper && !takesPaper) return;
+            e.preventDefault();
+            e.dataTransfer.dropEffect = "move";
+            setDropTargetKey(collection.key);
+          }}
+          onDragLeave={() => setDropTargetKey((current) => (current === collection.key ? null : current))}
+          onDrop={(e) => {
+            if (!dragPaper && depth !== 0) return;
+            e.preventDefault();
+            e.stopPropagation();
+            if (dragPaper) {
+              const paper = dragPaper;
+              setDragPaper(null);
+              void filePaper(paper, collection.key);
+            } else {
+              handleDropOn(collection.key);
+              setDragKey(null);
+            }
+            setDropTargetKey(null);
+          }}
           onDragEnd={depth === 0 ? () => { setDragKey(null); setDropTargetKey(null); } : undefined}
           className="group w-full text-left flex items-center gap-1.5 py-1.5 pr-2 transition-colors cursor-pointer select-none"
           style={{
             paddingLeft: `${0.625 + depth * 0.75}rem`,
-            boxShadow: isDropTarget ? "inset 0 2px 0 var(--accent)" : "none",
+            // Reordering inserts *before* a collection, so it marks the edge;
+            // filing a paper goes *into* one, so it lights the whole row.
+            boxShadow: isDropTarget && !dragPaper ? "inset 0 2px 0 var(--accent)" : "none",
+            outline: isDropTarget && dragPaper ? "1px solid var(--accent)" : "none",
+            outlineOffset: "-1px",
+            background: isDropTarget && dragPaper ? "var(--accent-dim)" : undefined,
             opacity: dragKey === collection.key ? 0.4 : 1,
           }}
-          onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = "rgba(230,237,243,0.05)"; }}
-          onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}
-          title={depth === 0 ? "Drag to reorder" : undefined}
+          onMouseEnter={(e) => { if (!dragPaper) (e.currentTarget as HTMLElement).style.background = "rgba(230,237,243,0.05)"; }}
+          onMouseLeave={(e) => { if (!dragPaper) (e.currentTarget as HTMLElement).style.background = "transparent"; }}
+          title={dragPaper ? `File “${dragPaper.title}” into ${collection.name}` : depth === 0 ? "Drag to reorder" : undefined}
         >
           <span className="text-[9px] shrink-0" style={{ color: "var(--accent)" }}>{isExpanded ? "▾" : "▸"}</span>
           <span className="text-xs truncate" style={{ color: "var(--ink-muted)" }}>
@@ -443,7 +520,7 @@ export function ZoteroLibrary({ onDocumentLoaded, activeDocName, isOpen, onToggl
             {items?.length === 0 && !isLoading && children.length === 0 && (
               <p className="text-[10px] py-1" style={{ color: "var(--ink-faint)", paddingLeft: `${1.375 + depth * 0.75}rem` }}>no papers</p>
             )}
-            {items?.map((item) => renderItem(item, 1.375 + depth * 0.75))}
+            {items?.map((item) => renderItem(item, 1.375 + depth * 0.75, collection.key))}
           </div>
         )}
       </div>
@@ -544,7 +621,7 @@ export function ZoteroLibrary({ onDocumentLoaded, activeDocName, isOpen, onToggl
             {!searching && searchResults?.length === 0 && (
               <p className="text-xs text-center py-4 px-3" style={{ color: "var(--ink-faint)" }}>No papers match your search</p>
             )}
-            {!searching && searchResults?.map((item) => renderItem(item, 0.625))}
+            {!searching && searchResults?.map((item) => renderItem(item, 0.625, null, false))}
           </>
         ) : (
           loaded && !error && (

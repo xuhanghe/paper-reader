@@ -1,4 +1,5 @@
 import type { NextRequest } from "next/server";
+import { ZOTERO_WEB_API, getWebUserId, webApiKey } from "@/lib/zotero-server";
 
 export const runtime = "nodejs";
 
@@ -77,4 +78,74 @@ export async function GET(req: NextRequest) {
     }));
 
   return Response.json({ collections });
+}
+
+// Move a paper from one collection into another.
+//
+// Zotero's local API is read-only, so this goes through zotero.org and syncs
+// back down, the same route the trash and annotation writes take.
+//
+// `from` is optional: dragging out of a collection moves the paper (it leaves
+// the source), while dragging from a flat list — search results, All papers —
+// has no source to leave, so it is filed into the target as an addition.
+// Other collections the paper belongs to are left alone either way.
+export async function POST(req: NextRequest) {
+  const { key, from, to } = await req.json().catch(() => ({}));
+  if (typeof key !== "string" || !key || typeof to !== "string" || !to) {
+    return Response.json({ error: "key and to are required" }, { status: 400 });
+  }
+  if (from === to) return Response.json({ ok: true, unchanged: true });
+
+  const apiKey = webApiKey();
+  if (!apiKey) {
+    return Response.json(
+      { error: "Moving papers between collections needs ZOTERO_API_KEY in .env.local — the local Zotero API is read-only." },
+      { status: 400 }
+    );
+  }
+  const userId = await getWebUserId();
+  if (!userId) return Response.json({ error: "Could not determine your Zotero user ID." }, { status: 502 });
+
+  // Membership lives on the top-level item; a standalone attachment is its own
+  const local = await zotero<ZoteroItem>(`/items/${encodeURIComponent(key)}`);
+  const targetKey = local.ok && local.data.data?.parentItem ? local.data.data.parentItem : key;
+
+  try {
+    const itemUrl = `${ZOTERO_WEB_API}/users/${userId}/items/${encodeURIComponent(targetKey)}`;
+    const itemRes = await fetch(itemUrl, {
+      headers: { "Zotero-API-Key": apiKey },
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!itemRes.ok) {
+      return Response.json(
+        { error: `That item isn't on zotero.org yet (${itemRes.status}) — it may still be syncing.` },
+        { status: 404 }
+      );
+    }
+    const item = await itemRes.json();
+    const current: string[] = Array.isArray(item.data?.collections) ? item.data.collections : [];
+    const next = [...new Set([...current.filter((c) => c !== from), to])];
+
+    const patchRes = await fetch(itemUrl, {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+        "Zotero-API-Key": apiKey,
+        "If-Unmodified-Since-Version": String(item.version),
+      },
+      body: JSON.stringify({ collections: next }),
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!patchRes.ok && patchRes.status !== 204) {
+      return Response.json(
+        { error: patchRes.status === 412
+            ? "That paper changed in Zotero while this was in flight — try again."
+            : `Zotero refused the change (${patchRes.status}).` },
+        { status: 502 }
+      );
+    }
+    return Response.json({ ok: true, key: targetKey, collections: next, moved: !!from });
+  } catch {
+    return Response.json({ error: "Could not reach the Zotero web API." }, { status: 502 });
+  }
 }
