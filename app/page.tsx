@@ -220,21 +220,29 @@ export default function Home() {
     [setPdf]
   );
 
-  // The paper restored at launch shows as a tab without being stored twice
-  const visibleTabs = useMemo<MaterialTab[]>(() => {
-    if (!paperId || !session.pdfName || tabs.some((t) => t.id === paperId)) return tabs;
-    return [
-      ...tabs,
-      {
-        id: paperId,
-        name: session.pdfName,
-        docType: session.docType || "pdf",
-        zoteroKey: session.zoteroKey,
-        attachmentKey: session.zoteroAttachmentKey,
-        sourceUrl: session.sourceUrl,
-      },
-    ];
-  }, [tabs, paperId, session.pdfName, session.docType, session.zoteroKey, session.zoteroAttachmentKey, session.sourceUrl]);
+  // The paper restored at launch never went through openMaterial, so nothing
+  // registered a tab for it. It used to be synthesised here for display only,
+  // which meant it existed just while it was the *active* paper — opening a
+  // URL or another paper made it disappear instead of joining it. Register it
+  // for real, so it behaves like every other tab.
+  const restoredTabRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (restoring || !paperId || !session.pdfName || restoredTabRef.current === paperId) return;
+    restoredTabRef.current = paperId;
+    const entry: MaterialTab = {
+      id: paperId,
+      name: session.pdfName,
+      docType: session.docType || "pdf",
+      zoteroKey: session.zoteroKey,
+      attachmentKey: session.zoteroAttachmentKey,
+      sourceUrl: session.sourceUrl,
+    };
+    // A tick later: registering during the effect itself cascades a render
+    const timer = setTimeout(() => setTabs((prev) => upsertOpenTab(prev, entry)), 0);
+    return () => clearTimeout(timer);
+  }, [restoring, paperId, session.pdfName, session.docType, session.zoteroKey, session.zoteroAttachmentKey, session.sourceUrl]);
+
+  const visibleTabs = tabs;
 
   const openTab = useCallback(
     async (id: string) => {
@@ -1438,6 +1446,7 @@ export default function Home() {
               onReload={session.zoteroKey ? reloadCurrentMaterial : undefined}
               reloading={reloading}
               zoteroKey={session.zoteroKey}
+              positionKey={paperId ?? undefined}
               onRevealCollection={(key) => {
                 setZoteroOpen(true);
                 setRevealCollection({ key, nonce: Date.now() });
@@ -1462,6 +1471,7 @@ export default function Home() {
               onReload={session.zoteroKey ? reloadCurrentMaterial : undefined}
               reloading={reloading}
               zoteroKey={session.zoteroKey}
+              positionKey={paperId ?? undefined}
               onRevealCollection={(key) => {
                 setZoteroOpen(true);
                 setRevealCollection({ key, nonce: Date.now() });

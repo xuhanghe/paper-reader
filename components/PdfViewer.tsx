@@ -6,6 +6,7 @@ import { EventBus, PDFViewer as PdfJsViewer, PDFLinkService, PDFFindController }
 import "pdfjs-dist/web/pdf_viewer.css";
 import { SelectionPopover } from "./SelectionPopover";
 import { CollectionChip } from "./CollectionChip";
+import { loadReadingPosition, saveReadingPosition } from "@/lib/reading-position";
 import { useTextSelection } from "@/hooks/useTextSelection";
 import { useRegionDrag } from "@/hooks/useRegionDrag";
 import { RegionResult } from "@/hooks/useRegionDrag";
@@ -351,6 +352,9 @@ type Props = {
   // Zotero item key for the open paper — names its collection in the toolbar
   zoteroKey?: string;
   onRevealCollection?: (collectionKey: string) => void;
+  // Identity to remember scroll offset and zoom against. Absent means this
+  // document is not worth resuming (a preview, a one-off render).
+  positionKey?: string;
 };
 
 // Zotero-compatible annotation position: PDF-space rects on a zero-based page
@@ -472,7 +476,7 @@ export type PdfViewerHandle = {
 // virtualized page rendering, cursor-anchored CSS-first zoom with delayed
 // redraw, and a find controller for jump-and-highlight.
 export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
-  { pdfDataUrl, onTextSelected, onAskAboutSelection, onRegionCaptured, onHighlight, onNote, onRemoveHighlight, onRecolorHighlight, onEditHighlightNote, onHighlightClick, highlights = [], askedPassages = [], onAskedClick, onReload, reloading, zoteroKey, onRevealCollection },
+  { pdfDataUrl, onTextSelected, onAskAboutSelection, onRegionCaptured, onHighlight, onNote, onRemoveHighlight, onRecolorHighlight, onEditHighlightNote, onHighlightClick, highlights = [], askedPassages = [], onAskedClick, onReload, reloading, zoteroKey, onRevealCollection, positionKey },
   ref
 ) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -500,6 +504,11 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
   const [numPages, setNumPages] = useState(0);
   const [currentPage, setCurrentPage] = useState(1);
   const [displayScale, setDisplayScale] = useState(1);
+  // Read inside the long-lived viewer effect, which must not re-run when the
+  // open document changes identity
+  const positionKeyRef = useRef(positionKey);
+  useEffect(() => { positionKeyRef.current = positionKey; }, [positionKey]);
+  const recordPositionRef = useRef<(() => void) | null>(null);
   const [captureMode, setCaptureMode] = useState(false);
   const [loadError, setLoadError] = useState(false);
   const [highlightMenu, setHighlightMenu] = useState<{ id: string; rect: DOMRect } | null>(null);
@@ -1436,7 +1445,19 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
       cancelAnimationFrame(zoomFrameRef.current);
       zoomFrameRef.current = 0;
       zoomTargetScaleRef.current = null;
-      viewer.currentScaleValue = "page-width";
+      // Resume where this paper was left, at the zoom it was left at. The
+      // scale has to be applied before the scroll: page-width and a numeric
+      // scale give different document heights, so scrolling first would land
+      // somewhere else entirely.
+      const resume = positionKeyRef.current ? loadReadingPosition(positionKeyRef.current) : null;
+      viewer.currentScaleValue = typeof resume?.scale === "number" ? String(resume.scale) : "page-width";
+      if (resume && resume.scrollTop > 0) {
+        // One frame later: pdf.js sizes the pages during this event, so the
+        // container is not yet tall enough to accept the offset.
+        requestAnimationFrame(() => {
+          if (!cancelled && container.isConnected) container.scrollTop = resume.scrollTop;
+        });
+      }
     });
     eventBus.on("scalechanging", (e: { scale: number }) => {
       if (cancelled) return;
@@ -1445,7 +1466,9 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
       if (zoomPercentRef.current) zoomPercentRef.current.textContent = `${Math.round(e.scale * 100)}%`;
       clearTimeout(zoomLabelCommitTimerRef.current);
       zoomLabelCommitTimerRef.current = setTimeout(() => {
-        if (!cancelled) setDisplayScale(e.scale);
+        if (cancelled) return;
+        setDisplayScale(e.scale);
+        recordPositionRef.current?.();
       }, 120);
       // Saved annotations and the live selection are both page-relative; the
       // page itself scales them together with the canvas.
@@ -1603,6 +1626,38 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
       zoomFrameRef.current = requestAnimationFrame(stepZoomAnimation);
     }
   }, [stepZoomAnimation]);
+
+  // Record where reading got to. Debounced while scrolling, and flushed on
+  // teardown so crossing to the other surface captures the last position
+  // rather than the one from a second earlier.
+  const recordPosition = useCallback(() => {
+    const container = containerRef.current;
+    const viewer = viewerRef.current;
+    const key = positionKeyRef.current;
+    if (!container || !viewer || !key) return;
+    // "page-width" is a rule, not a number: storing the number it happens to
+    // resolve to would freeze the paper at one window size.
+    const scale = viewer.currentScaleValue === "page-width" ? "page-width" : viewer.currentScale;
+    saveReadingPosition(key, { scrollTop: container.scrollTop, scale, page: viewer.currentPageNumber });
+  }, []);
+
+  useEffect(() => { recordPositionRef.current = recordPosition; }, [recordPosition]);
+
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    let timer = 0;
+    const onScroll = () => {
+      clearTimeout(timer);
+      timer = window.setTimeout(recordPosition, 400);
+    };
+    container.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      clearTimeout(timer);
+      container.removeEventListener("scroll", onScroll);
+      recordPosition();
+    };
+  }, [recordPosition]);
 
   const zoomBy = useCallback((factor: number, origin?: [number, number]) => {
     const viewer = viewerRef.current;

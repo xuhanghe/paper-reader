@@ -2,6 +2,7 @@
 import { useRef, useState, useCallback, useEffect, forwardRef, useImperativeHandle } from "react";
 import { SelectionPopover } from "./SelectionPopover";
 import { CollectionChip } from "./CollectionChip";
+import { loadReadingPosition, saveReadingPosition } from "@/lib/reading-position";
 import { HighlightPopover } from "./HighlightPopover";
 import { clearMarks, markTextInContainer, rangeForText, occurrenceAt } from "@/lib/highlight-dom";
 import { isHighlightDeleteKey, isTextEditingTarget } from "@/lib/keys";
@@ -33,6 +34,8 @@ type Props = {
   // Zotero item key for the open snapshot — names its collection in the bar
   zoteroKey?: string;
   onRevealCollection?: (collectionKey: string) => void;
+  // Identity to remember scroll offset and zoom against
+  positionKey?: string;
 };
 
 type SelectionInfo = { text: string; rect: DOMRect; occurrence?: number };
@@ -93,6 +96,7 @@ export const HtmlViewer = forwardRef<PdfViewerHandle, Props>(function HtmlViewer
     reloading,
     zoteroKey,
     onRevealCollection,
+    positionKey,
   },
   ref
 ) {
@@ -100,6 +104,7 @@ export const HtmlViewer = forwardRef<PdfViewerHandle, Props>(function HtmlViewer
   const [selection, setSelection] = useState<SelectionInfo | null>(null);
   const [highlightMenu, setHighlightMenu] = useState<{ id: string; rect: DOMRect } | null>(null);
   const [zoom, setZoom] = useState(1);
+  const zoomRef = useRef(1);
 
   // Read from event handlers that must not be re-bound every time a highlight
   // changes — the listeners live on the iframe document, rebuilt only on load
@@ -134,6 +139,7 @@ export const HtmlViewer = forwardRef<PdfViewerHandle, Props>(function HtmlViewer
   const applyZoom = useCallback((z: number) => {
     const clamped = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, z));
     setZoom(clamped);
+    zoomRef.current = clamped;
     const body = iframeRef.current?.contentDocument?.body;
     if (body) (body.style as CSSStyleDeclaration & { zoom: string }).zoom = String(clamped);
   }, []);
@@ -170,6 +176,35 @@ export const HtmlViewer = forwardRef<PdfViewerHandle, Props>(function HtmlViewer
   useEffect(() => {
     paintHighlights();
   }, [highlights, paintHighlights]);
+
+  // Same resume behaviour as the PDF viewer: a snapshot reopens where it was
+  // left, at the zoom it was left at. It scrolls inside its own document, so
+  // both sides of this reach through the frame.
+  const resumedFor = useRef<string | null>(null);
+  useEffect(() => {
+    if (!positionKey || resumedFor.current === positionKey) return;
+    const win = iframeRef.current?.contentWindow;
+    if (!win?.document?.body) return;
+    resumedFor.current = positionKey;
+    const saved = loadReadingPosition(positionKey);
+    if (!saved) return;
+    if (typeof saved.scale === "number") applyZoom(saved.scale);
+    if (saved.scrollTop > 0) requestAnimationFrame(() => win.scrollTo({ top: saved.scrollTop }));
+  }, [positionKey, applyZoom, highlights]);
+
+  useEffect(() => {
+    const win = iframeRef.current?.contentWindow;
+    if (!win || !positionKey) return;
+    let timer = 0;
+    const save = () => saveReadingPosition(positionKey, { scrollTop: win.scrollY, scale: zoomRef.current });
+    const onScroll = () => { clearTimeout(timer); timer = window.setTimeout(save, 400); };
+    win.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      clearTimeout(timer);
+      win.removeEventListener("scroll", onScroll);
+      save();
+    };
+  }, [positionKey, highlights]);
 
   const flashMarks = useCallback((id: string) => {
     const doc = iframeRef.current?.contentDocument;
