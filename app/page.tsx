@@ -1283,8 +1283,8 @@ export default function Home() {
         </nav>
 
         <div className="pr-reader-actions">
-          <button type="button" onClick={() => setSkillsOpen(true)} className="pr-capability-button">
-            ◆ Skills <small>{activeSkillIds.length || ""}</small>
+          <button type="button" onClick={() => setSkillsOpen(true)} className="pr-capability-button" title="Choose agent skills">
+            <i aria-hidden>◆</i><span>Skills</span>{activeSkillIds.length > 0 && <small>{activeSkillIds.length}</small>}
           </button>
           <button
             type="button"
@@ -1292,7 +1292,7 @@ export default function Home() {
             className="pr-capability-button"
             title={setupNeedsAttention ? "Something needs attention — Zotero or a provider" : "Check Zotero and provider setup"}
           >
-            ⚙ Setup{setupNeedsAttention && <span className="pr-setup-badge" aria-label="needs attention" />}
+            <i aria-hidden>⚙</i><span>Setup</span>{setupNeedsAttention && <span className="pr-setup-badge" aria-label="needs attention" />}
           </button>
 
         <label className="btn-primary cursor-pointer text-xs px-3 py-1.5">

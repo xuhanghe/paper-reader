@@ -280,9 +280,16 @@ a:focus-visible {
 .pr-surface-switch a:hover { color: var(--ink); }
 .pr-surface-switch a.active { background: #252B31; color: var(--ink); box-shadow: 0 1px 2px rgba(0,0,0,.35); }
 .pr-reader-actions { justify-self: end; min-width: 0; display: flex; align-items: center; gap: 7px; }
-.pr-capability-button { height: 32px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface); padding: 0 10px; color: var(--ink-muted); font-size: 11px; }
-.pr-capability-button:hover { border-color: #4B5660; color: var(--ink); }
-.pr-capability-button small { min-width: 16px; height: 16px; display: inline-grid; place-items: center; margin-left: 4px; border-radius: 8px; background: var(--accent-dim); color: var(--accent); font-size: 10px; }
+/* Quiet utilities: Open PDF and Open URL carry the visual weight in this bar,
+   so Skills and Setup are borderless text buttons — a glyph, a label, and a
+   hover wash — rather than a third competing family of outlined pills. */
+.pr-capability-button { height: 30px; display: inline-flex; align-items: center; gap: 6px; border: 0; border-radius: 6px; background: none; padding: 0 9px; color: var(--ink-muted); font-size: 12.5px; font-weight: 500; letter-spacing: .01em; transition: background 0.13s, color 0.13s; }
+.pr-capability-button:hover { background: rgba(230,237,243,0.06); color: var(--ink); }
+.pr-capability-button i { font-style: normal; color: var(--ink-faint); font-size: 10px; line-height: 1; transition: color 0.13s; }
+.pr-capability-button:hover i { color: var(--accent); }
+/* The count only exists when something is active — an empty chip reads as a
+   smudge, which is exactly how it used to render at zero. */
+.pr-capability-button small { min-width: 16px; height: 16px; display: inline-grid; place-items: center; padding: 0 5px; border-radius: 8px; background: var(--accent-dim); color: var(--accent-bright); font-size: 10px; font-weight: 650; line-height: 1; }
 /* Setup needs attention — a dot, not an alarm: nothing here blocks reading */
 /* Which Zotero collection the open paper is filed in — quiet by default,
    the collection name itself is the only clickable part */
