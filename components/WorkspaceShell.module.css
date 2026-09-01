@@ -31,56 +31,48 @@
    goes, matching the Zotero sidebar's affordance in the Reader. */
 .collapsePanel { width: 22px; height: 22px; flex: 0 0 auto; display: grid; place-items: center; border: 1px solid transparent; border-radius: 6px; background: transparent; color: var(--ink-faint); font-size: 13px; line-height: 1; }
 .collapsePanel:hover { border-color: var(--border); background: rgba(230,237,243,0.05); color: var(--ink); }
-.tree { min-height: 0; flex: 1; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; padding: 14px 10px; }
-.tree section { margin-bottom: 20px; }
-.tree h3 { display: grid; grid-template-columns: 14px minmax(0,1fr) auto; align-items: center; gap: 5px; margin: 0 0 9px; padding: 8px 6px 10px; border-bottom: 1px solid #293139; color: #a6afb7; font-size: 11px; letter-spacing: .06em; }
-.tree h3 > strong { min-width: 0; display: flex; align-items: center; gap: 7px; font: inherit; }
+.tree { min-height: 0; flex: 1; overflow-y: auto; overscroll-behavior: contain; padding: 4px 0 10px; }
+.tree section { margin-bottom: 8px; }
+/* VS Code-style section header: one 24px row, the whole width toggles, and
+   the actions are icon buttons that surface on hover instead of living as
+   permanent gold pills. */
+.tree h3 { display: grid; grid-template-columns: 18px minmax(0,1fr) auto; align-items: center; gap: 2px; height: 26px; margin: 0; padding: 0 6px 0 4px; color: #a6afb7; font-size: 11px; font-weight: 700; letter-spacing: .05em; }
+.tree h3:hover { color: #d3d9de; }
+.tree h3 > strong { min-width: 0; display: flex; align-items: center; gap: 6px; overflow: hidden; white-space: nowrap; font: inherit; cursor: pointer; }
 .tree h3 small { color: #77828c; font-size: 10px; font-weight: 500; letter-spacing: 0; }
-.tree h3 > button { border: 1px solid #6a5c34; border-radius: 7px; background: rgba(225,195,105,.11); padding: 7px 9px; color: var(--accent-bright); font-size: 11px; font-weight: 680; letter-spacing: 0; white-space: nowrap; box-shadow: 0 1px 1px rgba(0,0,0,.25); }
-.tree h3 > button:hover { border-color: var(--accent); background: rgba(225,195,105,.18); color: #f4e2a1; }
-.tree h3 > button:disabled { opacity: .35; }
-/* The section chevron shares the heading's first grid column, so it must not
-   pick up the gold pill styling the heading's action buttons use. */
-.tree h3 > button.sectionChevron { width: 14px; padding: 0; border: 0; border-radius: 0; background: none; color: var(--accent); font-size: 9px; font-weight: 400; box-shadow: none; text-align: left; }
-.tree h3 > button.sectionChevron:hover { background: none; color: var(--accent-bright); }
-.tree h3 > strong.sectionTitle { cursor: pointer; }
-.tree h3 > strong.sectionTitle:hover { color: var(--ink); }
-.tree h3.filesHeading { grid-template-columns: 14px minmax(0,1fr); }
-.explorerActions { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 5px; margin-top: 4px; }
-.explorerActions button { min-width: 0; border: 1px solid #49545e; border-radius: 6px; background: #1b2227; padding: 6px 5px; color: #b9c1c7; font-size: 10px; font-weight: 620; letter-spacing: 0; white-space: nowrap; }
-.explorerActions button:hover { border-color: #75663d; background: rgba(225,195,105,.1); color: #f1e4b5; }
-.explorerActions button:disabled { opacity: .35; }
-.tree h3.rootDropTarget { border-color: #7c6c3f; border-radius: 6px; background: rgba(225,195,105,.12); box-shadow: inset 0 0 0 1px rgba(225,195,105,.12); }
-.tree section > button { width: 100%; min-width: 0; display: grid; grid-template-columns: 40px minmax(0,1fr); gap: 11px; align-items: center; margin-bottom: 4px; border: 1px solid transparent; border-radius: 9px; background: transparent; padding: 9px; color: #adb5bc; text-align: left; }
-.tree section > button:hover { border-color: #303a43; background: #1a2025; color: var(--ink); }
-.tree section > button.activeRow { border-color: #615637; background: #25231d; color: var(--ink); }
-.paperRow { min-width: 0; display: grid; grid-template-columns: minmax(0,1fr) 30px; align-items: center; margin-bottom: 4px; border: 1px solid transparent; border-radius: 9px; color: #adb5bc; }
-.paperRow:hover { border-color: #303a43; background: #1a2025; }
-.paperRow.activeRow { border-color: #615637; background: #25231d; color: var(--ink); }
-.paperOpen { min-width: 0; display: grid; grid-template-columns: 40px minmax(0,1fr); gap: 11px; align-items: center; border: 0; background: transparent; padding: 9px 3px 9px 9px; color: inherit; text-align: left; }
-.paperRow .detachPaper { width: 27px; height: 27px; border: 1px solid transparent; border-radius: 7px; background: transparent; color: #8c969f; opacity: .45; font-size: 16px; }
+.tree h3 > button.sectionChevron { width: 18px; height: 100%; padding: 0; border: 0; background: none; color: #98a2ab; font-size: 12px; line-height: 1; text-align: center; }
+.tree h3 > button.sectionChevron:hover { color: var(--ink); }
+.headerActions { display: none; align-items: center; gap: 1px; }
+.tree h3:hover .headerActions, .headerActions:focus-within { display: flex; }
+.headerActions button { width: 22px; height: 22px; display: grid; place-items: center; border: 0; border-radius: 5px; background: none; padding: 0; color: #a6afb7; font-size: 14px; font-weight: 400; line-height: 1; }
+.headerActions button:hover { background: #2a3239; color: var(--ink); }
+.headerActions button:disabled { opacity: .35; }
+.headerActions svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.15; stroke-linejoin: round; stroke-linecap: round; }
+.tree h3.rootDropTarget { background: rgba(225,195,105,.12); box-shadow: inset 0 0 0 1px rgba(225,195,105,.25); }
+
+/* Rows: 22px, single line, full-bleed and square — the explorer look. */
+.paperRow { min-width: 0; display: grid; grid-template-columns: minmax(0,1fr) auto; align-items: center; color: #b8c0c7; }
+.paperRow:hover { background: #1d242a; color: #e0e4e7; }
+.paperRow.activeRow { background: #26313a; color: #f0f2f3; }
+.paperOpen { min-width: 0; height: 22px; display: flex; align-items: center; gap: 6px; border: 0; background: none; padding: 0 4px 0 22px; color: inherit; text-align: left; }
+.paperRow .detachPaper { width: 20px; height: 20px; margin-right: 4px; border: 0; border-radius: 4px; background: none; color: #8c969f; font-size: 13px; line-height: 1; opacity: 0; }
 .paperRow:hover .detachPaper, .paperRow .detachPaper:focus-visible { opacity: 1; }
 .paperRow .detachPaper:hover { background: rgba(240,128,128,.12); color: #f08080; }
-.tree button p { min-width: 0; display: flex; flex-direction: column; gap: 4px; margin: 0; }
-.tree button strong, .tree button small { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-.tree button strong { color: inherit; font-size: 13px; font-weight: 620; }
-.tree button small { color: #77828c; font-size: 11px; }
-.treeEmpty { margin: 10px 8px; color: #89939c; font-size: 12px; line-height: 1.5; }
-.fileExplorer { display: flex; flex-direction: column; padding: 1px 0 4px; }
-.explorerRow { --tree-depth: 0; width: 100%; min-width: 0; height: 31px; display: grid; grid-template-columns: auto 14px 22px minmax(0,1fr); align-items: center; gap: 3px; border: 1px solid transparent; border-radius: 5px; background: transparent; padding: 0 6px 0 4px; color: #adb5bc; text-align: left; }
+.tree button strong { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: inherit; font-size: 13px; font-weight: 430; }
+.treeEmpty { margin: 4px 22px 8px; color: #89939c; font-size: 12px; line-height: 1.5; }
+.fileExplorer { display: flex; flex-direction: column; }
+.explorerRow { --tree-depth: 0; width: 100%; min-width: 0; height: 22px; display: flex; align-items: center; gap: 5px; border: 0; background: none; padding: 0 6px 0 4px; color: #b8c0c7; text-align: left; }
 .explorerRow:hover { background: #1d242a; color: #e0e4e7; }
-.explorerRow.activeExplorerRow { border-color: #4d5963; background: #26313a; color: #f0f2f3; }
-.explorerRow.directoryDropTarget { border-color: #8b7842; background: rgba(225,195,105,.15); color: #f1e4b5; box-shadow: inset 0 0 0 1px rgba(225,195,105,.08); }
+.explorerRow.activeExplorerRow { background: #26313a; color: #f0f2f3; }
+.explorerRow.directoryDropTarget { background: rgba(225,195,105,.15); color: #f1e4b5; box-shadow: inset 0 0 0 1px rgba(225,195,105,.25); }
 .explorerRow.draggingFile { opacity: .42; }
 .explorerRow:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
-.indentGuides { width: calc(var(--tree-depth) * 16px); align-self: stretch; display: flex; overflow: hidden; }
-.indentGuides i { width: 16px; height: 100%; flex: 0 0 16px; border-left: 1px solid #313a42; }
-.explorerChevron { display: grid; place-items: center; color: #89939c; font-size: 16px; line-height: 1; }
-.folderIcon { width: 17px; height: 17px; fill: rgba(225,195,105,.19); stroke: #d0b760; stroke-linejoin: round; stroke-width: 1.5; }
-.explorerFileIcon { width: 20px; height: 20px; display: grid; place-items: center; border-radius: 4px; background: #18313a; color: #8fc8dc; font: 8px ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: -.03em; }
-.pdfExplorerIcon { background: #35251b; color: #e2a36a; }
-.explorerRow strong { min-width: 0; overflow: hidden; color: inherit; font-size: 12px; font-weight: 510; white-space: nowrap; text-overflow: ellipsis; }
-.directoryRow strong { font-weight: 590; }
+.explorerRow strong { min-width: 0; flex: 1; }
+.indentGuides { width: calc(var(--tree-depth) * 14px); align-self: stretch; display: flex; flex: 0 0 auto; overflow: hidden; }
+.indentGuides i { width: 14px; height: 100%; flex: 0 0 14px; border-left: 1px solid #2b333b; }
+.explorerChevron { width: 14px; flex: 0 0 auto; display: grid; place-items: center; color: #98a2ab; font-size: 12px; line-height: 1; }
+.fileGlyph { width: 15px; height: 15px; flex: 0 0 auto; }
+.directoryRow strong { font-weight: 500; }
 .kindPdf, .fileKind { width: 38px; height: 38px; display: grid; place-items: center; border-radius: 8px; font: 10px ui-monospace, SFMono-Regular, Menlo, monospace; }
 .kindPdf { border: 1px solid #4a3526; background: #30241c; color: #e4a66e; }
 .fileKind { border: 1px solid #29444f; background: #172a32; color: #86c3da; }

@@ -73,11 +73,25 @@ function safePdfName(name: string) {
   return `${stem}.pdf`;
 }
 
-function explorerFileLabel(file: WorkspaceFile) {
-  const extension = (file.extension || "").toLowerCase();
-  if (extension === "md" || extension === "markdown") return "MD";
-  if (extension === "jpeg" || extension === "jpg" || extension === "png" || extension === "webp") return "IMG";
-  return (extension || "FILE").slice(0, 3).toUpperCase();
+// One document shape, tinted per type — the tint is the identity, the way a
+// VS Code icon theme's colours are, instead of a lettered badge block.
+const FILE_TINTS: Record<string, string> = {
+  md: "#6cb6ff", markdown: "#6cb6ff",
+  pdf: "#e2a36a",
+  json: "#d9b96c", yaml: "#d9b96c", yml: "#d9b96c", toml: "#d9b96c",
+  png: "#b18ae0", jpg: "#b18ae0", jpeg: "#b18ae0", webp: "#b18ae0", svg: "#b18ae0", gif: "#b18ae0",
+  py: "#8fd18a", ts: "#7fb6e8", tsx: "#7fb6e8", js: "#e8d67f", ipynb: "#e8a87f", sh: "#8fd18a",
+  csv: "#8fd1c0", tsv: "#8fd1c0", tex: "#8fd1c0", bib: "#8fd1c0",
+};
+
+function FileGlyph({ extension }: { extension?: string }) {
+  const tint = FILE_TINTS[(extension || "").toLowerCase()] || "#98a2ab";
+  return (
+    <svg className={styles.fileGlyph} viewBox="0 0 16 16" aria-hidden="true" style={{ color: tint }}>
+      <path d="M4 1.75h5.2l2.8 2.8v9.7H4z" fill="none" stroke="currentColor" strokeWidth="1.15" strokeLinejoin="round" />
+      <path d="M9.2 1.75v2.8H12" fill="none" stroke="currentColor" strokeWidth="1.15" strokeLinejoin="round" />
+    </svg>
+  );
 }
 
 function workspacePathDepth(path: string) {
@@ -767,12 +781,14 @@ export function WorkspaceShell() {
           </header>
           <div className={styles.tree}>
             <section>
-              <h3><button type="button" className={styles.sectionChevron} onClick={() => setPapersOpen((open) => !open)} aria-expanded={papersOpen} title={papersOpen ? "Collapse source papers" : "Expand source papers"}>{papersOpen ? "▾" : "▸"}</button><strong className={styles.sectionTitle} onClick={() => setPapersOpen((open) => !open)}>SOURCE PAPERS <small>{activeWorkspace?.papers.length || 0}</small></strong><button onClick={() => setPaperPickerOpen(true)} disabled={!activeWorkspace}>＋ Add papers</button></h3>
+              <h3><button type="button" className={styles.sectionChevron} onClick={() => setPapersOpen((open) => !open)} aria-expanded={papersOpen} title={papersOpen ? "Collapse source papers" : "Expand source papers"}>{papersOpen ? "⌄" : "›"}</button><strong className={styles.sectionTitle} onClick={() => setPapersOpen((open) => !open)}>SOURCE PAPERS <small>{activeWorkspace?.papers.length || 0}</small></strong><span className={styles.headerActions}>
+                <button onClick={() => setPaperPickerOpen(true)} disabled={!activeWorkspace} title="Add papers from Zotero" aria-label="Add papers from Zotero">＋</button>
+              </span></h3>
               {papersOpen && activeWorkspace?.papers.map((paper) => {
                 const documentId = `paper:${paper.id}`;
                 return <div key={paper.id} className={`${styles.paperRow} ${activeDocId === documentId ? styles.activeRow : ""}`}>
-                  <button className={styles.paperOpen} onClick={() => void openDocument({ id: documentId, kind: "paper", paper })}>
-                    <span className={styles.kindPdf}>PDF</span><p><strong>{paper.name.replace(/\.pdf$/i, "")}</strong><small>{paper.zoteroKey ? "Zotero link" : "Reader link"} · zero copy</small></p>
+                  <button className={styles.paperOpen} onClick={() => void openDocument({ id: documentId, kind: "paper", paper })} title={`${paper.name} — ${paper.zoteroKey ? "linked from Zotero" : "linked from the Reader"} · zero copy`}>
+                    <FileGlyph extension="pdf" /><strong>{paper.name.replace(/\.pdf$/i, "")}</strong>
                   </button>
                   <button className={styles.detachPaper} onClick={() => detachPaper(paper)} title="Detach from workspace" aria-label={`Detach ${paper.name.replace(/\.pdf$/i, "")} from this workspace`}>×</button>
                 </div>;
@@ -785,10 +801,10 @@ export function WorkspaceShell() {
                 onDragOver={(event) => { if (draggedFilePath) { event.preventDefault(); event.dataTransfer.dropEffect = "move"; setDropTarget(""); } }}
                 onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setDropTarget(null); }}
                 onDrop={(event) => { event.preventDefault(); if (draggedFilePath) void moveFile(draggedFilePath, ""); }}
-              ><button type="button" className={styles.sectionChevron} onClick={() => setFilesOpen((open) => !open)} aria-expanded={filesOpen} title={filesOpen ? "Collapse working files" : "Expand working files"}>{filesOpen ? "▾" : "▸"}</button><strong className={styles.sectionTitle} onClick={() => setFilesOpen((open) => !open)}>WORKING FILES <small>{fileRows.length}</small></strong><span className={styles.explorerActions}>
-                <button onClick={() => void refreshFiles()} disabled={!activeWorkspace || filesLoading} title="Refresh working files">↻ Refresh</button>
-                <button onClick={createDirectory} disabled={!activeWorkspace}>＋ Folder</button>
-                <button onClick={createFile} disabled={!activeWorkspace}>＋ File</button>
+              ><button type="button" className={styles.sectionChevron} onClick={() => setFilesOpen((open) => !open)} aria-expanded={filesOpen} title={filesOpen ? "Collapse working files" : "Expand working files"}>{filesOpen ? "⌄" : "›"}</button><strong className={styles.sectionTitle} onClick={() => setFilesOpen((open) => !open)}>WORKING FILES <small>{fileRows.length}</small></strong><span className={styles.headerActions}>
+                <button onClick={createFile} disabled={!activeWorkspace} title="New file" aria-label="New file"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 1.75h5.2l2.8 2.8v9.7H4z" /><path d="M9.2 1.75v2.8H12" /><path d="M6.2 9h3.6M8 7.2v3.6" /></svg></button>
+                <button onClick={createDirectory} disabled={!activeWorkspace} title="New folder" aria-label="New folder"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M1.75 3.75h4.3l1.5 1.9h6.7v6.6h-12.5z" /><path d="M6.2 8.7h3.6M8 6.9v3.6" /></svg></button>
+                <button onClick={() => void refreshFiles()} disabled={!activeWorkspace || filesLoading} title="Refresh" aria-label="Refresh working files">↻</button>
               </span></h3>
               {filesOpen && filesLoading && <p className={styles.treeEmpty}>Reading directory…</p>}
               {filesOpen && !filesLoading && activeWorkspace && !files.length && <p className={styles.treeEmpty}>No files yet. Create a note or copy selected PDFs.</p>}
@@ -813,7 +829,6 @@ export function WorkspaceShell() {
                     >
                       <span className={styles.indentGuides} aria-hidden="true">{Array.from({ length: depth }, (_, index) => <i key={index} />)}</span>
                       <span className={styles.explorerChevron} aria-hidden="true">{expanded ? "⌄" : "›"}</span>
-                      <svg className={styles.folderIcon} aria-hidden="true" viewBox="0 0 24 24"><path d="M3.5 7.5h6l2-2h9v13h-17z" /></svg>
                       <strong>{entry.name}</strong>
                     </button>;
                   }
@@ -833,7 +848,7 @@ export function WorkspaceShell() {
                   >
                     <span className={styles.indentGuides} aria-hidden="true">{Array.from({ length: depth }, (_, index) => <i key={index} />)}</span>
                     <span className={styles.explorerChevron} aria-hidden="true" />
-                    <span className={`${styles.explorerFileIcon} ${pdf ? styles.pdfExplorerIcon : ""}`} aria-hidden="true">{explorerFileLabel(entry)}</span>
+                    <FileGlyph extension={entry.extension} />
                     <strong>{entry.name}</strong>
                   </button>;
                 })}
