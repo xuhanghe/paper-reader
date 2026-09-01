@@ -87,7 +87,7 @@ const FILE_TINTS: Record<string, string> = {
 function FileGlyph({ extension }: { extension?: string }) {
   const tint = FILE_TINTS[(extension || "").toLowerCase()] || "#98a2ab";
   return (
-    <svg className={styles.fileGlyph} viewBox="0 0 16 16" aria-hidden="true" style={{ color: tint }}>
+    <svg className={styles.fileGlyph} viewBox="0 0 16 16" width={15} height={15} aria-hidden="true" style={{ color: tint }}>
       <path d="M4 1.75h5.2l2.8 2.8v9.7H4z" fill="none" stroke="currentColor" strokeWidth="1.15" strokeLinejoin="round" />
       <path d="M9.2 1.75v2.8H12" fill="none" stroke="currentColor" strokeWidth="1.15" strokeLinejoin="round" />
     </svg>
@@ -802,8 +802,8 @@ export function WorkspaceShell() {
                 onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setDropTarget(null); }}
                 onDrop={(event) => { event.preventDefault(); if (draggedFilePath) void moveFile(draggedFilePath, ""); }}
               ><button type="button" className={styles.sectionChevron} onClick={() => setFilesOpen((open) => !open)} aria-expanded={filesOpen} title={filesOpen ? "Collapse working files" : "Expand working files"}>{filesOpen ? "⌄" : "›"}</button><strong className={styles.sectionTitle} onClick={() => setFilesOpen((open) => !open)}>WORKING FILES <small>{fileRows.length}</small></strong><span className={styles.headerActions}>
-                <button onClick={createFile} disabled={!activeWorkspace} title="New file" aria-label="New file"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 1.75h5.2l2.8 2.8v9.7H4z" /><path d="M9.2 1.75v2.8H12" /><path d="M6.2 9h3.6M8 7.2v3.6" /></svg></button>
-                <button onClick={createDirectory} disabled={!activeWorkspace} title="New folder" aria-label="New folder"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M1.75 3.75h4.3l1.5 1.9h6.7v6.6h-12.5z" /><path d="M6.2 8.7h3.6M8 6.9v3.6" /></svg></button>
+                <button onClick={createFile} disabled={!activeWorkspace} title="New file" aria-label="New file"><svg viewBox="0 0 16 16" width={15} height={15} aria-hidden="true"><path d="M4 1.75h5.2l2.8 2.8v9.7H4z" /><path d="M9.2 1.75v2.8H12" /><path d="M6.2 9h3.6M8 7.2v3.6" /></svg></button>
+                <button onClick={createDirectory} disabled={!activeWorkspace} title="New folder" aria-label="New folder"><svg viewBox="0 0 16 16" width={15} height={15} aria-hidden="true"><path d="M1.75 3.75h4.3l1.5 1.9h6.7v6.6h-12.5z" /><path d="M6.2 8.7h3.6M8 6.9v3.6" /></svg></button>
                 <button onClick={() => void refreshFiles()} disabled={!activeWorkspace || filesLoading} title="Refresh" aria-label="Refresh working files">↻</button>
               </span></h3>
               {filesOpen && filesLoading && <p className={styles.treeEmpty}>Reading directory…</p>}
