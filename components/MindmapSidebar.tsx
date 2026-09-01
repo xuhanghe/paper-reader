@@ -459,7 +459,7 @@ export function MindmapSidebar({
         onClick={onToggle}
         className="flex flex-col items-center shrink-0 cursor-pointer transition-colors hover:bg-[rgba(230,237,243,0.05)]"
         style={{ width: "2.25rem", borderLeft: "1px solid var(--border)", background: "var(--surface)" }}
-        title="Show paper map"
+        title="Show the notebook"
       >
         <span className="flex items-center justify-center h-9 w-full shrink-0" style={{ borderBottom: "1px solid var(--border)" }}>
           <span className="rotate-90 text-xs" style={{ color: "var(--ink-faint)" }}>≡</span>
@@ -468,7 +468,7 @@ export function MindmapSidebar({
           className="mt-3 text-[10px] uppercase tracking-widest select-none"
           style={{ color: "var(--ink-faint)", writingMode: "vertical-rl" }}
         >
-          Map
+          Notebook
         </span>
       </button>
     );
@@ -585,7 +585,7 @@ export function MindmapSidebar({
         </div>
       )}
 
-      {/* Notes tab — highlights and notes, quotable into the Explain panel */}
+      {/* Notes tab — highlights and notes, quotable into the Ask panel */}
       {tab === "notes" && (
         <div className="flex-1 overflow-y-auto p-2 space-y-1.5">
           {/* Notes stored on the item in Zotero */}
@@ -631,7 +631,7 @@ export function MindmapSidebar({
                         }}
                         className="text-[10px] transition-opacity hover:opacity-70"
                         style={{ color: askingHighlightId === askId ? "var(--accent)" : "var(--ink-faint)" }}
-                        title="Ask about this note in the Explain panel"
+                        title="Ask about this note"
                       >
                         ✦ ask
                       </button>
@@ -839,7 +839,7 @@ export function MindmapSidebar({
                   }}
                   className="text-[10px] transition-opacity hover:opacity-70"
                   style={{ color: askingHighlightId === h.id ? "var(--accent)" : "var(--ink-faint)" }}
-                  title="Ask about this passage in the Explain panel"
+                  title="Ask about this passage"
                 >
                   ✦ ask
                 </button>
@@ -901,7 +901,7 @@ export function MindmapSidebar({
         <div className="flex-1 overflow-y-auto p-2 space-y-1.5">
           {concepts.length === 0 && (
             <p className="text-xs text-center mt-4 px-2" style={{ color: "var(--ink-faint)" }}>
-              What you work out in the Explain panel is summarised here
+              What you work out in the Ask panel is summarised here
             </p>
           )}
           {concepts.map((c) => (

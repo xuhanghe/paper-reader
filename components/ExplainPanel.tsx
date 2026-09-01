@@ -229,7 +229,7 @@ function ImageLightbox({
 }
 
 const FONT_SIZES = [12, 13, 14, 15, 16, 17, 18, 20];
-const DEFAULT_FONT_IDX = 2; // 14px
+const DEFAULT_FONT_IDX = 3; // 15px
 const COLLAPSE_CHARS = 300;
 
 export function ExplainPanel({ annotations, activeId, model, streamingIds, onFollowUp, onStop, onEditMessage, onAskGeneral, onDelete, onReExplainImage, onViewInPdf, onCitePaper, annotationRefs, scrollHandle, canGoBack, canGoForward, onGoBack, onGoForward, isOpen, onToggle, width = 460, modelControls }: Props) {
@@ -697,7 +697,7 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
         onClick={onToggle}
         className="flex flex-col items-center shrink-0 cursor-pointer transition-colors hover:bg-[rgba(230,237,243,0.05)]"
         style={{ width: "2.25rem", borderLeft: "1px solid var(--border)", background: "var(--surface)" }}
-        title="Show explanations"
+        title="Show the conversation"
       >
         <span className="flex items-center justify-center h-9 w-full shrink-0" style={{ borderBottom: "1px solid var(--border)" }}>
           <span className="rotate-90 text-xs" style={{ color: "var(--ink-faint)" }}>≡</span>
@@ -706,7 +706,7 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
           className="mt-3 text-[10px] uppercase tracking-widest select-none"
           style={{ color: "var(--ink-faint)", writingMode: "vertical-rl" }}
         >
-          Explain
+          Ask
         </span>
         {annotations.length > 0 && (
           <span
@@ -932,7 +932,6 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
         >
           @
         </button>
-        <span className="pr-web-status" title="Live web search is always available to agentic models">🌐 Web</span>
         <label className="btn-icon w-7 h-7 text-sm shrink-0 cursor-pointer flex items-center justify-center" title="Attach an image">
           📎
           <input

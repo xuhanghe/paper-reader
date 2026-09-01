@@ -1503,7 +1503,7 @@ export default function Home() {
           )}
         </div>
 
-        {/* Right: Explain panel (collapsible) */}
+        {/* Right: Ask panel — the conversation (collapsible) */}
         <ResizeHandle onDrag={dragExplain} onStart={startExplain} onEnd={endExplain} />
         <ExplainPanel
           annotations={session.annotations}
