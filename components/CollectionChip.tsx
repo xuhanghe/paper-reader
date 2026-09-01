@@ -3,6 +3,10 @@ import { useEffect, useState } from "react";
 
 export type ItemCollection = { key: string; name: string; path: string };
 
+// Collection membership barely changes and the chip remounts on every surface
+// switch, so remember what Zotero said. Module scope, to survive the switch.
+const known = new Map<string, ItemCollection[]>();
+
 type Props = {
   /** Zotero item (or attachment) key for the open paper; absent for local files */
   zoteroKey?: string;
@@ -19,14 +23,16 @@ export function CollectionChip({ zoteroKey, onReveal }: Props) {
   const [loaded, setLoaded] = useState<{ key: string; list: ItemCollection[] } | null>(null);
 
   useEffect(() => {
-    if (!zoteroKey) return;
+    if (!zoteroKey || known.has(zoteroKey)) return;
     let cancelled = false;
     void (async () => {
       try {
         const res = await fetch(`/api/zotero/item-collections?key=${encodeURIComponent(zoteroKey)}`, { cache: "no-store" });
         if (!res.ok) return;
         const data = await res.json();
-        if (!cancelled) setLoaded({ key: zoteroKey, list: Array.isArray(data.collections) ? data.collections : [] });
+        const list = Array.isArray(data.collections) ? data.collections : [];
+        known.set(zoteroKey, list);
+        if (!cancelled) setLoaded({ key: zoteroKey, list });
       } catch {
         // a missing chip is the right failure here — never an error surface
       }
@@ -34,7 +40,7 @@ export function CollectionChip({ zoteroKey, onReveal }: Props) {
     return () => { cancelled = true; };
   }, [zoteroKey]);
 
-  const collections = zoteroKey && loaded?.key === zoteroKey ? loaded.list : [];
+  const collections = zoteroKey ? (known.get(zoteroKey) ?? (loaded?.key === zoteroKey ? loaded.list : [])) : [];
   if (!collections.length) return null;
 
   const [first, ...rest] = collections;

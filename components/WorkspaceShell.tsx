@@ -10,6 +10,7 @@ import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import type { MaterialTab } from "@/components/MaterialTabs";
 import { loadOpenTabs } from "@/lib/open-tabs";
+import { cacheDocument, getCachedDocument } from "@/lib/document-cache";
 import { SkillsDrawer } from "@/components/SkillsDrawer";
 import { ModelPicker } from "@/components/ModelPicker";
 import { ResizeHandle, usePanelWidth } from "@/components/ResizablePanel";
@@ -107,15 +108,22 @@ async function responseAsDataUrl(response: Response): Promise<string> {
 }
 
 async function loadPaperData(paper: MaterialTab): Promise<{ data: string; attachmentKey?: string }> {
+  // Shared with the Reader, so crossing surfaces reuses the bytes already
+  // fetched rather than pulling the whole PDF from Zotero again
+  const cached = getCachedDocument(paper.id);
+  if (cached) return { data: cached, attachmentKey: paper.attachmentKey };
   if (paper.zoteroKey) {
     const response = await fetch(`/api/zotero/file?key=${encodeURIComponent(paper.zoteroKey)}`);
     if (!response.ok) throw new Error("Could not load this paper from Zotero.");
-    return { data: await responseAsDataUrl(response), attachmentKey: response.headers.get("X-Attachment-Key") || paper.attachmentKey };
+    const data = await responseAsDataUrl(response);
+    cacheDocument(paper.id, data);
+    return { data, attachmentKey: response.headers.get("X-Attachment-Key") || paper.attachmentKey };
   }
   const response = await fetch(`/api/sessions?id=${encodeURIComponent(paper.id)}`);
   if (!response.ok) throw new Error("This local paper is no longer available.");
   const payload = await response.json();
   if (!payload.state?.pdfDataUrl) throw new Error("This local paper has no saved document data.");
+  cacheDocument(paper.id, payload.state.pdfDataUrl);
   return { data: payload.state.pdfDataUrl, attachmentKey: paper.attachmentKey };
 }
 
@@ -472,9 +480,13 @@ export function WorkspaceShell() {
           setPdfData(loaded.data); setPdfAttachmentKey(loaded.attachmentKey);
         } else {
           if (!activeWorkspace) return;
+          const cachedPdf = getCachedDocument(document.id);
+          if (cachedPdf) { setPdfData(cachedPdf); setPdfAttachmentKey(undefined); return; }
           const response = await fetch(`/api/workspaces/files?root=${encodeURIComponent(activeWorkspace.root)}&path=${encodeURIComponent(document.path)}&raw=1`);
           if (!response.ok) throw new Error("Could not read this workspace PDF.");
-          setPdfData(await responseAsDataUrl(response)); setPdfAttachmentKey(undefined);
+          const data = await responseAsDataUrl(response);
+          cacheDocument(document.id, data);
+          setPdfData(data); setPdfAttachmentKey(undefined);
         }
       } catch (reason) { setPdfError(reason instanceof Error ? reason.message : "Could not load this paper."); }
       return;

@@ -8,7 +8,15 @@ export const runtime = "nodejs";
 
 const CLIS: CliId[] = ["claude", "codex", "opencode", "zotero-mcp"];
 
-export async function GET() {
+// Every check here costs something real: four CLI subprocesses, a request to
+// Zotero and one to zotero.org. The reader asks on each mount to decide
+// whether to show its badge, and switching surfaces remounts it — so hold the
+// answer briefly. The Setup dialog's Re-check passes ?fresh=1 to skip this.
+type Report = Awaited<ReturnType<typeof buildReport>>;
+let cached: { at: number; report: Report } | null = null;
+const TTL_MS = 60_000;
+
+async function buildReport() {
   const [zoteroLocal, zoteroKey, ...clis] = await Promise.all([
     detectZoteroLocal(),
     detectZoteroKey(),
@@ -16,7 +24,17 @@ export async function GET() {
   ]);
   // Only the absence of every provider actually stops the reader working
   const anyProvider = clis.some((cli) => cli.id !== "zotero-mcp" && cli.found);
-  return Response.json({ zoteroLocal, zoteroKey, clis, anyProvider });
+  return { zoteroLocal, zoteroKey, clis, anyProvider };
+}
+
+export async function GET(req: Request) {
+  const fresh = new URL(req.url).searchParams.get("fresh") === "1";
+  if (!fresh && cached && Date.now() - cached.at < TTL_MS) {
+    return Response.json(cached.report);
+  }
+  const report = await buildReport();
+  cached = { at: Date.now(), report };
+  return Response.json(report);
 }
 
 // Applies one setting to .env.local. Values are validated here rather than in
@@ -52,6 +70,7 @@ export async function POST(req: Request) {
     }
     if (!report.valid) return Response.json({ error: report.problem }, { status: 400 });
     await saveSetting(setting, trimmed);
+    cached = null;
     // A read-only key is saved but reported, since it half-works
     return Response.json({ ok: true, warning: report.problem, username: report.username });
   }
@@ -66,5 +85,6 @@ export async function POST(req: Request) {
     return Response.json({ error: "Nothing executable at that path." }, { status: 400 });
   }
   await saveSetting(setting, trimmed);
+  cached = null;
   return Response.json({ ok: true });
 }

@@ -2,6 +2,7 @@
 import { useState, useCallback, useEffect, useRef } from "react";
 import { SessionState, Annotation, ConceptEntry, Model, Effort, Mindmap, DocType, Highlight, Message } from "@/types/session";
 import { makeLabel } from "@/lib/session-utils";
+import { cacheDocument, getCachedDocument } from "@/lib/document-cache";
 
 const DEFAULT_STATE: SessionState = {
   pdfName: "",
@@ -73,6 +74,16 @@ export function useSession() {
         if (!state?.pdfName) return;
 
         if (!state.pdfDataUrl && state.zoteroKey) {
+          // Already in memory from this browsing session (the other surface
+          // fetched it, or this one did before a switch)? Then the round trip
+          // to Zotero and the re-encode are pure latency.
+          const cached = getCachedDocument(last);
+          if (cached) {
+            state.pdfDataUrl = cached;
+            state.docType = cached.startsWith("data:application/pdf") ? "pdf" : state.docType || "pdf";
+            setSession(state);
+            return;
+          }
           // Zero-copy session: pull the document back out of Zotero
           const fileRes = await fetch(`/api/zotero/file?key=${encodeURIComponent(state.zoteroKey)}`);
           if (!fileRes.ok) return;
@@ -92,7 +103,10 @@ export function useSession() {
             state.docType = "pdf";
           }
         }
-        if (state.pdfDataUrl) setSession(state);
+        if (state.pdfDataUrl) {
+          cacheDocument(last, state.pdfDataUrl);
+          setSession(state);
+        }
       } catch {
         // no saved session or Zotero unreachable — open blank
       } finally {

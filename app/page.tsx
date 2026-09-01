@@ -24,6 +24,7 @@ import type { PanelScroll } from "@/components/ExplainPanel";
 import { SkillsDrawer } from "@/components/SkillsDrawer";
 import { SetupDialog } from "@/components/SetupDialog";
 import { loadOpenTabs, saveOpenTabs, subscribeOpenTabs, upsertOpenTab } from "@/lib/open-tabs";
+import { cacheDocument, forgetDocument, getCachedDocument } from "@/lib/document-cache";
 import { useAgentSkills } from "@/hooks/useAgentSkills";
 import { ResizeHandle, usePanelWidth } from "@/components/ResizablePanel";
 import Link from "next/link";
@@ -188,7 +189,9 @@ export default function Home() {
   // memory for instant switching and refetched on demand when missing.
   const [tabs, setTabs] = useState<MaterialTab[]>(loadOpenTabs);
   const [switchingTo, setSwitchingTo] = useState<string | null>(null);
-  const materialCache = useRef<Record<string, string>>({});
+  // Document bytes live in lib/document-cache (module scope), not in a ref:
+  // a surface switch unmounts the Reader and a ref would take the cache with
+  // it, making every crossing refetch the whole PDF from Zotero.
 
   useEffect(() => {
     saveOpenTabs(tabs);
@@ -213,7 +216,7 @@ export default function Home() {
       setPdf(name, dataUrl, docType, zoteroKey, attachmentKey, sourceUrl);
       setSidebarOpen(true);
       const id = sessionIdFor(name, zoteroKey);
-      materialCache.current[id] = dataUrl;
+      cacheDocument(id, dataUrl);
       const entry: MaterialTab = { id, name, docType, zoteroKey, attachmentKey, sourceUrl };
       setTabs((prev) => upsertOpenTab(prev, entry));
     },
@@ -251,7 +254,7 @@ export default function Home() {
       setSwitchingTo(id);
       try {
         await flushSave(); // don't lose the current paper's latest turns
-        let data = materialCache.current[id];
+        let data = getCachedDocument(id);
 
         if (!data) {
           // Not in memory (e.g. after a restart): reload from Zotero, or from
@@ -279,7 +282,7 @@ export default function Home() {
             data = state?.pdfDataUrl;
           }
           if (!data) throw new Error("no document data");
-          materialCache.current[id] = data;
+          cacheDocument(id, data);
         }
 
         openMaterial(tab.name, data, tab.docType, tab.zoteroKey, tab.attachmentKey, tab.sourceUrl);
@@ -318,7 +321,7 @@ export default function Home() {
           reader.readAsDataURL(blob);
         });
       }
-      materialCache.current[tab.id] = data;
+      cacheDocument(tab.id, data);
       openMaterial(tab.name, data, tab.docType, tab.zoteroKey, attachmentKey, tab.sourceUrl);
     } catch {
       // couldn't reach Zotero — keep showing what's already loaded
@@ -329,7 +332,7 @@ export default function Home() {
 
   const closeTab = useCallback(
     (id: string) => {
-      delete materialCache.current[id];
+      forgetDocument(id);
       const remaining = visibleTabs.filter((t) => t.id !== id);
       setTabs((prev) => prev.filter((t) => t.id !== id));
       if (id === paperId) {

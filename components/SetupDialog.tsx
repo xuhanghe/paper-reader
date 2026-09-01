@@ -34,7 +34,7 @@ export function SetupDialog({ onClose }: Props) {
   const check = useCallback(async () => {
     setChecking(true);
     try {
-      const res = await fetch("/api/setup", { cache: "no-store" });
+      const res = await fetch("/api/setup?fresh=1", { cache: "no-store" });
       setReport(await res.json());
     } catch {
       setMessage({ tone: "bad", text: "Couldn't run the checks — is the dev server still up?" });
