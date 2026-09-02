@@ -67,6 +67,18 @@ html, body, #__next {
   color: var(--ink);
 }
 
+/* pdf.js sizes a page as content-box: the page div is the viewport's exact
+   width, wrapped in a 9px transparent border. Tailwind's preflight makes every
+   element border-box, which folds that border into the width — the canvas and
+   its wrapper (100% of the padding box) shrink by 18px in each axis while the
+   text layer keeps its explicit width and stays full size. The print is then
+   ~2.5% smaller than the selectable text above it, so selections, highlights
+   and cited-passage rules drift right and down the further along a line or
+   page they sit. Restore the box model pdf.js's stylesheet assumes. */
+.pdfViewer .page {
+  box-sizing: content-box;
+}
+
 /* The PDF text layer sits invisibly on top of the rendered page, one absolutely
    positioned span per glyph run. The native selection paints each of those
    separately, which reads as a row of ragged boxes with gaps, so it is hidden

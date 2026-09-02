@@ -4,6 +4,7 @@ import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Annotation, Model } from "@/types/session";
 import { isSubmitKey } from "@/lib/keys";
+import { loadPanelScroll, savePanelScroll } from "@/lib/panel-scroll";
 import { withQuotes, quotePreview, quoteLabel, parseQuotes, addQuote as pushQuote, type Quote, type QuotedPassage } from "@/lib/quotes";
 import { clearMarks, markTextInContainer } from "@/lib/highlight-dom";
 import { parseCitation, citationLabel } from "@/lib/citations";
@@ -40,6 +41,9 @@ type Props = {
   onToggle: () => void;
   width?: number;
   modelControls?: React.ReactNode;
+  // Identity to remember the list's scroll offset against — the open paper.
+  // Absent means nothing is remembered.
+  positionKey?: string;
 };
 
 // ── Citations the model writes ──────────────────────────────────────
@@ -232,7 +236,7 @@ const FONT_SIZES = [12, 13, 14, 15, 16, 17, 18, 20];
 const DEFAULT_FONT_IDX = 3; // 15px
 const COLLAPSE_CHARS = 300;
 
-export function ExplainPanel({ annotations, activeId, model, streamingIds, onFollowUp, onStop, onEditMessage, onAskGeneral, onDelete, onReExplainImage, onViewInPdf, onCitePaper, annotationRefs, scrollHandle, canGoBack, canGoForward, onGoBack, onGoForward, isOpen, onToggle, width = 460, modelControls }: Props) {
+export function ExplainPanel({ annotations, activeId, model, streamingIds, onFollowUp, onStop, onEditMessage, onAskGeneral, onDelete, onReExplainImage, onViewInPdf, onCitePaper, annotationRefs, scrollHandle, canGoBack, canGoForward, onGoBack, onGoForward, isOpen, onToggle, width = 460, modelControls, positionKey }: Props) {
   const [followUpText, setFollowUpText] = useState<Record<string, string>>({});
   const [generalQuestion, setGeneralQuestion] = useState("");
   const [composerImage, setComposerImage] = useState<string | null>(null);
@@ -339,6 +343,43 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
     el.addEventListener("wheel", onWheel, { passive: false });
     return () => el.removeEventListener("wheel", onWheel);
   }, [isOpen, annotations.length]);
+
+  // Land where the conversation was left. The list unmounts when the panel
+  // collapses to its rail and when the reader crosses to the Workspace, and a
+  // fresh mount starts at the top; the offset is remembered per paper instead.
+  // Restored once per paper per mount of the list (the effect also re-runs as
+  // conversations are added, which must not yank the reader back), and saved
+  // while scrolling and at teardown so the last position wins.
+  const restoredScrollFor = useRef<string | null>(null);
+  useEffect(() => {
+    const el = scrollRef.current;
+    const key = positionKey;
+    if (!el || !key) return;
+    if (restoredScrollFor.current !== key) {
+      restoredScrollFor.current = key;
+      const top = loadPanelScroll(key);
+      // One frame later: the list has to lay out before it can be scrolled
+      if (top !== null) requestAnimationFrame(() => { if (el.isConnected) el.scrollTop = top; });
+    }
+    let timer = 0;
+    // The offset as last seen while the list was still in the document. By
+    // the time the cleanup runs on collapse or unmount the element has been
+    // detached, and a detached element reports a scrollTop of 0.
+    let last = el.scrollTop;
+    const onScroll = () => {
+      last = el.scrollTop;
+      clearTimeout(timer);
+      timer = window.setTimeout(() => savePanelScroll(key, last), 300);
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      clearTimeout(timer);
+      el.removeEventListener("scroll", onScroll);
+      savePanelScroll(key, el.isConnected ? el.scrollTop : last);
+      // Once the list is gone, the next one must restore again
+      if (!el.isConnected) restoredScrollFor.current = null;
+    };
+  }, [isOpen, annotations.length, positionKey]);
 
   // Whatever becomes active is about to be answered or jumped to, so a folded
   // card opens itself rather than leaving the reply hidden behind a chevron.
@@ -796,8 +837,12 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
           reader.readAsDataURL(file);
         }}
         onKeyDown={(e) => {
-          if (isSubmitKey(e) && followUpText[annotation.id]?.trim()) {
-            submitFollowUp(annotation.id);
+          if (isSubmitKey(e)) {
+            // Enter sends (Shift+Enter breaks a line). Without this the
+            // keystroke also lands as a newline in the box just emptied,
+            // leaving a blank line behind — or in an empty box, for nothing.
+            e.preventDefault();
+            if (followUpText[annotation.id]?.trim()) submitFollowUp(annotation.id);
           }
         }}
         className="flex-1 min-w-0 text-sm px-3 py-1.5 rounded-md focus:outline-none transition-colors resize-none"
@@ -959,7 +1004,7 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
               readImageFile(file);
             }
           }}
-          onKeyDown={(e) => { if (isSubmitKey(e)) submitGeneral(); }}
+          onKeyDown={(e) => { if (isSubmitKey(e)) { e.preventDefault(); submitGeneral(); } }}
           className="flex-1 min-w-0 text-sm px-3 py-2 rounded-md focus:outline-none transition-all resize-none"
           style={{ border: "1px solid var(--border)", background: "var(--surface)", color: "var(--ink)", lineHeight: 1.5 }}
           onFocus={(e) => {

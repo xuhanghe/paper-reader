@@ -1531,6 +1531,7 @@ export default function Home() {
           onToggle={() => setExplainOpen((v) => !v)}
           width={explainWidth}
           modelControls={explainModelControls}
+          positionKey={paperId ?? undefined}
         />
 
         {/* Far right: paper mindmap + concepts + notes */}
