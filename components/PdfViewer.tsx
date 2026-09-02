@@ -23,6 +23,7 @@ import {
 } from "@/lib/pdf-selection-model";
 import { alignReferenceLink, referenceRectFractions } from "@/lib/pdf-reference-geometry";
 import { verticalNudge, horizontalNudge } from "@/lib/text-layer-calibration";
+import { fittedTransform, parseScaleX } from "@/lib/text-layer-fit";
 import { highlightTint, DEFAULT_HIGHLIGHT_COLOR } from "@/lib/highlight-colors";
 import { isHighlightDeleteKey, isTextEditingTarget } from "@/lib/keys";
 import { nextZoomFrameScale, wheelDeltaPixels, wheelZoomTarget } from "@/lib/pdf-zoom";
@@ -132,6 +133,66 @@ function renderPageBands(wrapper: HTMLElement, bands: HighlightBand[]) {
     fragment.appendChild(el);
   }
   overlay.replaceChildren(fragment);
+}
+
+// pdf.js stretches each text-layer span to its printed width with a scaleX it
+// computes from a canvas measurement in the span's inline font. When the DOM
+// renders the span in some other font — an extension or user stylesheet
+// swapping fonts, a profile preference the canvas ignores — every span is the
+// wrong width and words drift along the line, a whole word by the end of it.
+// Measure the way pdf.js measured and correct the scale by the difference.
+// See lib/text-layer-fit.ts. Keyed by scale: pdf.js rewrites the transforms
+// when the zoom changes, and the next textlayerrendered fits them again.
+//
+// The measurement has to be taken where pdf.js took it: on a canvas that is
+// part of the document. A detached canvas resolves a generic family like
+// `sans-serif` on its own and, on this Mac, measures it 5% wider than the
+// document does — "correcting" every span on a clean machine. pdf.js keeps
+// its measuring canvas in the body; that one is used when it is still there,
+// and an equivalent is attached otherwise.
+let measuringCtx: CanvasRenderingContext2D | null = null;
+function measuringContext(): CanvasRenderingContext2D | null {
+  if (measuringCtx?.canvas.isConnected) return measuringCtx;
+  const shared = document.querySelector("canvas.hiddenCanvasElement") as HTMLCanvasElement | null;
+  let canvas = shared;
+  if (!canvas) {
+    canvas = document.createElement("canvas");
+    canvas.className = "hiddenCanvasElement";
+    document.body.append(canvas);
+  }
+  measuringCtx = canvas.getContext("2d", { willReadFrequently: true });
+  return measuringCtx;
+}
+
+function fitTextLayer(layer: HTMLElement, key: string) {
+  if (layer.dataset.prFitted === key) return;
+  const ctx = measuringContext();
+  if (!ctx) return;
+  // pdf.js measures at device pixels: CSS size times the pixel ratio
+  const pixelRatio = window.devicePixelRatio || 1;
+  // Read everything first, then write: alternating the two lays the page out
+  // once per span
+  const fits: { span: HTMLElement; transform: string }[] = [];
+  for (const span of Array.from(layer.querySelectorAll("span")) as HTMLElement[]) {
+    const k = parseScaleX(span.style.transform);
+    const text = span.textContent;
+    if (k === null || !text || !text.trim()) continue;
+    const computed = getComputedStyle(span);
+    const size = parseFloat(computed.fontSize);
+    if (!(size > 0)) continue;
+    ctx.font = `${size * pixelRatio}px ${span.style.fontFamily || computed.fontFamily}`;
+    const measured = ctx.measureText(text).width / pixelRatio;
+    const rendered = span.getBoundingClientRect().width / k;
+    const transform = fittedTransform(span.style.transform, measured, rendered);
+    if (transform) fits.push({ span, transform });
+  }
+  for (const { span, transform } of fits) span.style.transform = transform;
+  layer.dataset.prFitted = key;
+  if (fits.length > 3) {
+    console.info(
+      `[paper-reader] refitted ${fits.length} text spans — this browser renders the text layer in a different font than pdf.js measured it with`
+    );
+  }
 }
 
 // The live browser selection belongs to the PDF page for the same reason a
@@ -1479,6 +1540,10 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
     // Text layers rebuild on zoom/virtualization — re-paint highlights each time
     eventBus.on("textlayerrendered", (e: { pageNumber: number }) => {
       if (!cancelled) {
+        const layer = container.querySelector(
+          `.page[data-page-number="${e.pageNumber}"] .textLayer`
+        ) as HTMLElement | null;
+        if (layer) fitTextLayer(layer, String(viewer.currentScale));
         paintPageHighlights(e.pageNumber);
         scheduleSelectionPreparation(e.pageNumber);
         void paintReferenceLinks(e.pageNumber);
