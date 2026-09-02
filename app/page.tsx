@@ -1,4 +1,5 @@
 "use client";
+import type { AskKind, SelectionIntent } from "@/lib/prompts";
 import { useRef, useState, useCallback, useEffect, useMemo, useSyncExternalStore } from "react";
 import { extractZoteroItemText } from "@/lib/extract-text";
 import { isStale } from "@/lib/takeaways";
@@ -587,7 +588,7 @@ export default function Home() {
     async (
       annotationId: string,
       ask: {
-        kind: "explain" | "question" | "figure" | "followup";
+        kind: AskKind;
         selected_text?: string;
         question?: string;
         page_number?: number;
@@ -747,14 +748,14 @@ export default function Home() {
       const viewer = pdfViewerRef.current;
       if (!viewer) return;
 
-      let landedOn: number | null = (await viewer.highlightText(page, quote)) ? page : null;
-      if (landedOn === null) {
+      let located = await viewer.highlightText(page, quote);
+      if (!located) {
         // The page number may simply be wrong; the words are what matter
         const found = await viewer.locateText?.(quote);
-        if (found && found !== page && (await viewer.highlightText(found, quote))) landedOn = found;
+        if (found && found !== page) located = await viewer.highlightText(found, quote);
       }
 
-      if (landedOn === null) {
+      if (!located) {
         setCiteMiss("Those exact words aren't in the paper — the model paraphrased its citation.");
         setTimeout(() => setCiteMiss(null), 6000);
         return;
@@ -763,16 +764,25 @@ export default function Home() {
       // Marked only once it has actually been found, so the trail on the page
       // never contains a passage nobody was shown
       setCitedPassages((prev) => {
-        if (prev.some((p) => p.text === quote && p.pageNumber === landedOn)) return prev;
+        const existing = prev.find((p) => p.text === quote && p.pageNumber === located.pageNumber);
+        // Upgrade a citation made before exact geometry was available instead
+        // of keeping its old text-layer-derived position for the session.
+        if (existing) {
+          return prev.map((passage) => passage.id === existing.id
+            ? { ...passage, occurrence: located.occurrence, position: located.position }
+            : passage);
+        }
         const label = session.annotations.find((a) => a.id === fromAnnotationId)?.label;
         return [
           ...prev,
           {
             id: `cited:${fromAnnotationId ?? "?"}:${prev.length}`,
             text: quote,
-            pageNumber: landedOn ?? undefined,
+            pageNumber: located.pageNumber,
             label,
             kind: "cited" as const,
+            occurrence: located.occurrence,
+            position: located.position,
           },
         ];
       });
@@ -790,11 +800,14 @@ export default function Home() {
     [session.annotations, recordJump]
   );
 
+  // "Explain" reads the passage in the paper; "Define" asks what the term is
+  // on its own, with the paper left out — for the reader stuck on a word
+  // rather than on the argument.
   const handleTextSelected = useCallback(
-    (text: string, pageNumber?: number, occurrence = 0, position?: PdfRects) => {
+    (text: string, pageNumber?: number, occurrence = 0, position?: PdfRects, intent: SelectionIntent = "explain") => {
       const id = addAnnotation({ type: "text", selectedText: text, pageNumber, occurrence, position, messages: [{ role: "assistant", content: "" }] });
       setActiveAnnotationId(id);
-      streamAsk(id, { kind: "explain", selected_text: text, page_number: pageNumber });
+      streamAsk(id, { kind: intent, selected_text: text, page_number: pageNumber });
     },
     [addAnnotation, streamAsk]
   );

@@ -1,4 +1,5 @@
 "use client";
+import type { SelectionIntent } from "@/lib/prompts";
 import { useRef, useState, useCallback, useEffect, forwardRef, useImperativeHandle } from "react";
 import { AnnotationMode, getDocument, GlobalWorkerOptions } from "pdfjs-dist";
 import type { PDFDocumentProxy } from "pdfjs-dist";
@@ -10,7 +11,7 @@ import { loadReadingPosition, saveReadingPosition } from "@/lib/reading-position
 import { useTextSelection } from "@/hooks/useTextSelection";
 import { useRegionDrag } from "@/hooks/useRegionDrag";
 import { RegionResult } from "@/hooks/useRegionDrag";
-import { markTextInContainer, clearMarks, rangeForText, findIgnoringWhitespace, occurrenceAt } from "@/lib/highlight-dom";
+import { markTextInContainer, clearMarks, findIgnoringWhitespace, occurrenceAt } from "@/lib/highlight-dom";
 import { chooseInkRun, mergeIntoLines, nearestInkRun, nearestStoredLine, relativeToPage, type InkRun } from "@/lib/ink-bands";
 import { logicalSelectionBands } from "@/lib/selection-geometry";
 import { alignRectsToZoteroLines, type PdfTextItem, type PdfTextStyle } from "@/lib/zotero-selection-geometry";
@@ -18,6 +19,7 @@ import {
   buildPdfSelectionModel,
   hitTestPdfSelection,
   pdfSelectionRange,
+  pdfSelectionRangeForText,
   type PdfSelectionModel,
   type PdfSelectionRange,
 } from "@/lib/pdf-selection-model";
@@ -389,7 +391,7 @@ const PDF_MAX_SCALE = 10;
 
 type Props = {
   pdfDataUrl: string;
-  onTextSelected: (text: string, pageNumber?: number, occurrence?: number, position?: AnnotationPosition) => void;
+  onTextSelected: (text: string, pageNumber?: number, occurrence?: number, position?: AnnotationPosition, intent?: SelectionIntent) => void;
   onAskAboutSelection: (text: string, question: string, pageNumber?: number, occurrence?: number, position?: AnnotationPosition) => void;
   onRegionCaptured: (result: RegionResult) => void;
   // `occurrence` is which of the identical passages on that page was selected.
@@ -420,6 +422,13 @@ type Props = {
 
 // Zotero-compatible annotation position: PDF-space rects on a zero-based page
 export type AnnotationPosition = { pageIndex: number; rects: number[][] };
+
+export type LocatedPdfPassage = {
+  pageNumber: number;
+  occurrence: number;
+  // HTML snapshots can locate prose but have no PDF coordinate system.
+  position?: AnnotationPosition;
+};
 
 type SelectionPageEntry = {
   pageNumber: number;
@@ -514,9 +523,9 @@ function selectionBoundaryPoint(entry: SelectionPageEntry, boundary: number): [N
 }
 
 export type PdfViewerHandle = {
-  // Resolves true when the passage was found and lit up, false when only the
-  // page could be reached — the caller decides what to say about that
-  highlightText: (pageNumber: number, text: string) => boolean | Promise<boolean> | void;
+  // Resolves the passage to the same PDF-space position as a pointer selection.
+  // The caller can retain that geometry for a stable citation mark.
+  highlightText: (pageNumber: number, text: string) => LocatedPdfPassage | Promise<LocatedPdfPassage | null> | null | void;
   // Which page a passage is actually on, read from the document's own text.
   // A citation whose page number is wrong is still a citation worth following.
   locateText?: (text: string) => Promise<number | null>;
@@ -1125,14 +1134,17 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
   }, []);
 
   const flashBands = useCallback(
-    (clientRects: DOMRect[] | SelectionRect[]) => {
+    (clientRects: DOMRect[] | SelectionRect[], exact = false) => {
       const bands = mergeIntoLines(
         Array.from(clientRects)
           .filter((r) => r.width > 0.5 && r.height > 0.5)
           .map((r) => ({ left: r.left, top: r.top, width: r.width, height: r.height }))
       );
       if (bands.length === 0) return;
-      setFlashRects(toContentSpace(snapBands(bands)));
+      // PDF-space positions have already gone through Zotero's line geometry.
+      // Snapping them to raster ink again can choose a neighbouring line; only
+      // legacy DOM measurements need that display-time correction.
+      setFlashRects(toContentSpace(exact ? bands : snapBands(bands)));
       clearTimeout(flashTimer.current);
       flashTimer.current = setTimeout(() => setFlashRects([]), FLASH_MS);
     },
@@ -1897,13 +1909,15 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
       : selectionPositionRef.current;
   }, []);
 
-  const handleExplain = useCallback(async () => {
+  const handleIntent = useCallback(async (intent: SelectionIntent) => {
     if (selection) {
       const position = await resolvedSelectionPosition();
-      onTextSelected(selection.text, selectionPageRef.current, selectionOccurrenceRef.current, position);
+      onTextSelected(selection.text, selectionPageRef.current, selectionOccurrenceRef.current, position, intent);
       clearSelection();
     }
   }, [selection, onTextSelected, clearSelection, resolvedSelectionPosition]);
+  const handleExplain = useCallback(() => handleIntent("explain"), [handleIntent]);
+  const handleDefine = useCallback(() => handleIntent("define"), [handleIntent]);
 
   const handleAsk = useCallback(
     async (question: string) => {
@@ -1964,27 +1978,32 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
     ) as [number, number];
   }, []);
 
-  const clientRectForPosition = useCallback((position: AnnotationPosition): DOMRect | null => {
+  const clientRectsForPosition = useCallback((position: AnnotationPosition): DOMRect[] => {
     const pageView = viewerRef.current?.getPageView(position.pageIndex) as PdfPageView | undefined;
     const wrapper = pageView?.div?.querySelector(".canvasWrapper") as HTMLElement | null;
     const viewport = pageView?.viewport;
-    if (!wrapper || !viewport || !position.rects.length) return null;
+    if (!wrapper || !viewport || !position.rects.length) return [];
     const box = wrapper.getBoundingClientRect();
-    const clientRects = position.rects.map((rect) => {
+    return position.rects.map((rect) => {
       const [ax, ay] = viewport.convertToViewportPoint(rect[0], rect[1]);
       const [bx, by] = viewport.convertToViewportPoint(rect[2], rect[3]);
       const left = box.left + (Math.min(ax, bx) / viewport.width) * box.width;
       const top = box.top + (Math.min(ay, by) / viewport.height) * box.height;
       const right = box.left + (Math.max(ax, bx) / viewport.width) * box.width;
       const bottom = box.top + (Math.max(ay, by) / viewport.height) * box.height;
-      return { left, top, right, bottom };
+      return new DOMRect(left, top, right - left, bottom - top);
     });
+  }, []);
+
+  const clientRectForPosition = useCallback((position: AnnotationPosition): DOMRect | null => {
+    const clientRects = clientRectsForPosition(position);
+    if (!clientRects.length) return null;
     const left = Math.min(...clientRects.map((rect) => rect.left));
     const top = Math.min(...clientRects.map((rect) => rect.top));
     const right = Math.max(...clientRects.map((rect) => rect.right));
     const bottom = Math.max(...clientRects.map((rect) => rect.bottom));
     return new DOMRect(left, top, right - left, bottom - top);
-  }, []);
+  }, [clientRectsForPosition]);
 
   const updatePdfSelection = useCallback((active: ActivePdfSelection): ControlledPdfSelection | null => {
     const selected = pdfSelectionRange(active.entry.model, active.anchorBoundary, active.focusBoundary);
@@ -2135,25 +2154,23 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
   useImperativeHandle(ref, () => ({
     getScroll: () => containerRef.current?.scrollTop ?? 0,
     setScroll: (top: number) => containerRef.current?.scrollTo({ top, behavior: "smooth" }),
-    // Jumps to a passage by searching the page's text layer ourselves. pdf.js's
-    // find controller used to do this, but it paints its own per-span highlight
-    // — a second, ragged highlight style on top of ours — and its matching
-    // fails on CJK for the same whitespace reasons ours once did.
-    async highlightText(pageNumber: number, text: string): Promise<boolean> {
+    // Resolve a quote with the PDF character model used by pointer selection.
+    // The brief flash and retained citation underline therefore share one
+    // PDF-space position at every zoom level.
+    async highlightText(pageNumber: number, text: string): Promise<LocatedPdfPassage | null> {
       const viewer = viewerRef.current;
       const container = containerRef.current;
-      if (!viewer || !container || !text.trim()) return false;
+      if (!viewer || !container || !text.trim()) return null;
       if (pageNumber >= 1 && pageNumber <= viewer.pagesCount) {
         viewer.currentPageNumber = pageNumber;
       }
       for (let attempt = 0; attempt < 25; attempt++) {
-        const layer = container.querySelector(
-          `.page[data-page-number="${pageNumber}"] .textLayer`
-        ) as HTMLElement | null;
-        const range = layer ? rangeForText(layer, text) : null;
-        if (range) {
-          const rects: DOMRect[] = Array.from(range.getClientRects());
-          const first = rects.find((r) => r.width > 0.5 && r.height > 0.5);
+        const entry = await prepareSelectionPage(pageNumber);
+        const selected = entry ? pdfSelectionRangeForText(entry.model, text) : null;
+        if (selected) {
+          const position: AnnotationPosition = { pageIndex: pageNumber - 1, rects: selected.rects };
+          const rects = clientRectsForPosition(position);
+          const first = rects[0];
           if (first) {
             const target = container.querySelector(
               `.page[data-page-number="${pageNumber}"]`
@@ -2163,13 +2180,13 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
               top: container.scrollTop + (first.top - box.top) - container.clientHeight / 2,
               behavior: target ? "smooth" : "auto",
             });
-            flashBands(rects);
+            flashBands(rects, true);
           }
-          return true;
+          return { pageNumber, occurrence: 0, position };
         }
         await new Promise((resolve) => setTimeout(resolve, 80));
       }
-      return false;
+      return null;
     },
 
     // Scans the document's own text rather than the rendered layers: only a
@@ -2357,6 +2374,7 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
             rect={selection.rect}
             selectedText={selection.text}
             onExplain={handleExplain}
+            onDefine={handleDefine}
             onAsk={handleAsk}
             onHighlight={handleHighlight}
             onNote={handleNote}

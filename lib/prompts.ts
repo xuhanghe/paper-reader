@@ -89,7 +89,7 @@ Ground rules:
   3. Ignore the language of the paper and the language of these instructions. They are in English because the app writes them, which tells you nothing about what I want.
   Re-decide this each turn; I may switch languages mid-conversation and you should switch with me.
 - Explain plainly with no assumed knowledge; be direct and factual; do not judge the paper's claims.
-- When I give you a selected passage, explain what it means AND what role it plays in the paper.
+- When I give you a selected passage, explain the idea itself first — self-contained, as if I had never opened this paper — and only then, briefly, what it is doing here. When I ask what something *is* or *means*, the idea itself is the whole answer: leave the paper out unless I ask about it.
 - When I give you a figure, explain how to read it and what it shows.
 - Point to specific parts of the paper (sections/pages) when relevant.
 - CITE WHAT YOU ARE POINTING AT, as a markdown link. Two kinds, and only these two:
@@ -154,8 +154,45 @@ function languageDirective(question?: string, passage?: string): string {
 export const CITATION_DIRECTIVE =
   "\n\nWhere you draw on the paper, link the words themselves: the link text is the quote, copied off the page character for character, e.g. [shared load bank conflicts = 20,666,167](paper:12) — never a description like [verbatim excerpt](paper:12), and never the quote sitting next to the link instead of inside it. Where you build on something earlier in our conversation, link it: [short phrase](turn:N), N being the number in my [turn N] marker. Only where it genuinely helps.";
 
+// What the reader wants from a turn. The bootstrap carries the general
+// manners; the intent decides the shape of one answer, and travels on the
+// message itself so it is in front of the model rather than a long
+// conversation behind it.
+//
+// - explain:  a passage, in the reading — the idea first, then its role here
+// - define:   a term, on its own — what it is, as a textbook would put it,
+//             with the paper left out; the reader is stuck on a word, not on
+//             the argument
+// - question: the reader's own question about a passage (or the paper)
+// - figure:   a captured region
+// - followup: continuing a conversation
+export type AskKind = "explain" | "define" | "question" | "figure" | "followup";
+// The two things the selection popover offers for a passage without a question
+export type SelectionIntent = "explain" | "define";
+
+// "What does this mean?" is a request for the meaning, not for the passage's
+// place in the paper — and the paper-focused default answers it with the
+// latter. Recognised conservatively: a bare what-is / what-does-it-mean /
+// define question, with nothing in it that points at the paper ("here",
+// "in this paper", "for the results", "why"). Anything else keeps the
+// ordinary question path, where the paper is fair game.
+const DEFINITION_ASK = /^\s*(what\s+(is|are|was|were|does|do)\b|what'?s\b|define\b|definition\s+of\b|meaning\s+of\b)/i;
+// Chinese puts the term first ("Lorenzo是什么"), so these are not anchored
+const DEFINITION_ASK_CJK = /(什么是|是什么|什么意思|啥意思|是啥|何谓)/;
+const PAPER_POINTER =
+  /\b(here|in\s+(this|the|their)\s+(paper|section|context|method|setting|experiment|work|case)|for\s+(the|this|their|our|these|those)\b|why|result|the\s+authors?|this\s+paper)\b|论文|文中|本文|这里|作者|为什么|结果/i;
+
+export function isDefinitionQuestion(question: string | undefined): boolean {
+  const asked = (question ?? "").trim();
+  if (!asked) return false;
+  if (!DEFINITION_ASK.test(asked) && !DEFINITION_ASK_CJK.test(asked)) return false;
+  // "what does X mean" needs "mean" at the end; "what is X" does not
+  if (/^\s*what\s+(does|do)\b/i.test(asked) && !/\bmean(s|t)?\b\s*[?？.!]*\s*$/i.test(asked)) return false;
+  return !PAPER_POINTER.test(asked);
+}
+
 export function buildAskMessage(opts: {
-  kind: "explain" | "question" | "figure" | "followup";
+  kind: AskKind;
   selectedText?: string;
   question?: string;
   pageNumber?: number;
@@ -165,8 +202,14 @@ export function buildAskMessage(opts: {
   return body.trim() ? `${body}${CITATION_DIRECTIVE}` : body;
 }
 
+// The shape of a definition: the idea on its own terms, the paper left out.
+// Short by design — the reader is stuck on a word and wants to get back to
+// the page, not to read a second paper about it.
+const DEFINE_CONTRACT =
+  "Explain what this is on its own terms, the way a good textbook would: what it means, the intuition behind it, one small concrete example, and the words people use around it. Draw on general knowledge, not on this paper. Do not explain what it does in this paper and do not cite the paper for it — at most one closing sentence if this paper uses it in an unusual way. Keep it short.";
+
 function askBody(opts: {
-  kind: "explain" | "question" | "figure" | "followup";
+  kind: AskKind;
   selectedText?: string;
   question?: string;
   pageNumber?: number;
@@ -175,8 +218,13 @@ function askBody(opts: {
   const language = languageDirective(opts.question, opts.selectedText);
   switch (opts.kind) {
     case "explain":
-      return `I selected this passage${page}:\n\n"${opts.selectedText}"\n\nExplain it.${language}`;
+      return `I selected this passage${page}:\n\n"${opts.selectedText}"\n\nExplain it: first what it means on its own, self-contained, as if I had never opened this paper; then, briefly, what it is doing here.${language}`;
+    case "define":
+      return `I selected this term${page}:\n\n"${opts.selectedText}"\n\n${DEFINE_CONTRACT}${language}`;
     case "question":
+      if (opts.selectedText && isDefinitionQuestion(opts.question)) {
+        return `About this term${page}:\n\n"${opts.selectedText}"\n\nMy question: ${opts.question}\n\nThis is a question about the term itself. ${DEFINE_CONTRACT}${language}`;
+      }
       return opts.selectedText
         ? `About this passage${page}:\n\n"${opts.selectedText}"\n\nMy question: ${opts.question}${language}`
         : `${opts.question}`;

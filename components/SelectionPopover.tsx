@@ -8,13 +8,15 @@ type Props = {
   rect: DOMRect;
   selectedText: string;
   onExplain: () => void;
+  // The term on its own, with the paper left out
+  onDefine?: () => void;
   onAsk: (question: string) => void;
   onHighlight?: (color: string) => void;
   onNote?: (note: string, color: string) => void;
   onDismiss: () => void;
 };
 
-export function SelectionPopover({ rect, selectedText, onExplain, onAsk, onHighlight, onNote, onDismiss }: Props) {
+export function SelectionPopover({ rect, selectedText, onExplain, onDefine, onAsk, onHighlight, onNote, onDismiss }: Props) {
   const [question, setQuestion] = useState("");
   const [noteMode, setNoteMode] = useState(false);
   const [noteText, setNoteText] = useState("");
@@ -58,6 +60,16 @@ export function SelectionPopover({ rect, selectedText, onExplain, onAsk, onHighl
         >
           Explain ↗
         </button>
+        {onDefine && (
+          <button
+            onClick={onDefine}
+            className="text-sm font-medium transition-opacity hover:opacity-80 px-1"
+            style={{ color: "var(--accent)", fontFamily: "var(--font-geist-sans), system-ui, sans-serif" }}
+            title="What this term is, on its own — the paper left out"
+          >
+            Define ↗
+          </button>
+        )}
         {onHighlight && (
           <>
             <span style={{ color: "var(--border)" }}>|</span>

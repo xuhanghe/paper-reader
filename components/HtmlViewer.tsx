@@ -1,4 +1,5 @@
 "use client";
+import type { SelectionIntent } from "@/lib/prompts";
 import { useRef, useState, useCallback, useEffect, forwardRef, useImperativeHandle } from "react";
 import { SelectionPopover } from "./SelectionPopover";
 import { CollectionChip } from "./CollectionChip";
@@ -16,7 +17,7 @@ const FLASH_MS = 1700;
 
 type Props = {
   html: string;
-  onTextSelected: (text: string, pageNumber?: number, occurrence?: number) => void;
+  onTextSelected: (text: string, pageNumber?: number, occurrence?: number, position?: undefined, intent?: SelectionIntent) => void;
   onAskAboutSelection: (text: string, question: string, pageNumber?: number, occurrence?: number) => void;
   // Highlights on a snapshot have no PDF page or rects, so these are called
   // without a position — which is exactly what keeps them out of Zotero (see
@@ -296,18 +297,17 @@ export const HtmlViewer = forwardRef<PdfViewerHandle, Props>(function HtmlViewer
     setScroll: (top: number) => iframeRef.current?.contentWindow?.scrollTo({ top, behavior: "smooth" }),
     // Flash a passage that has no persistent highlight — a mindmap quote, or a
     // highlight whose text no longer matches the snapshot
-    highlightText(_pageNumber: number, text: string): boolean {
+    highlightText(pageNumber: number, text: string) {
       const body = iframeRef.current?.contentDocument?.body;
-      if (!body) return false;
+      if (!body) return null;
       clearMarks(body, "pr-temp-flash");
       const range = rangeForText(body, text);
       if (!range) {
         const win = iframeRef.current?.contentWindow;
-        return (
-          (win as (Window & { find?: (...args: unknown[]) => boolean }) | null)?.find?.(
-            text, false, false, true, false, false, false
-          ) ?? false
+        const found = (win as (Window & { find?: (...args: unknown[]) => boolean }) | null)?.find?.(
+          text, false, false, true, false, false, false
         );
+        return found ? { pageNumber, occurrence: 0 } : null;
       }
       (range.startContainer.parentElement ?? body).scrollIntoView({ behavior: "smooth", block: "center" });
       markTextInContainer(body, text, "pr-temp-flash");
@@ -315,7 +315,7 @@ export const HtmlViewer = forwardRef<PdfViewerHandle, Props>(function HtmlViewer
         const stillThere = iframeRef.current?.contentDocument?.body;
         if (stillThere) clearMarks(stillThere, "pr-temp-flash");
       }, FLASH_MS);
-      return true;
+      return { pageNumber, occurrence: 0 };
     },
     async scrollToHighlight(id: string) {
       const doc = iframeRef.current?.contentDocument;
@@ -366,6 +366,7 @@ export const HtmlViewer = forwardRef<PdfViewerHandle, Props>(function HtmlViewer
           rect={selection.rect}
           selectedText={selection.text}
           onExplain={() => { onTextSelected(selection.text, undefined, selection.occurrence); clearSelection(); }}
+          onDefine={() => { onTextSelected(selection.text, undefined, selection.occurrence, undefined, "define"); clearSelection(); }}
           onAsk={(q) => { onAskAboutSelection(selection.text, q, undefined, selection.occurrence); clearSelection(); }}
           onHighlight={onHighlight && ((color) => { onHighlight(selection.text, undefined, undefined, color, selection.occurrence); clearSelection(); })}
           onNote={onNote && ((note, color) => { onNote(selection.text, note, undefined, undefined, color, selection.occurrence); clearSelection(); })}

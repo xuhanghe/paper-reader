@@ -1,6 +1,52 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
-import { buildTextPrompt, buildImagePrompt, buildAskMessage, buildSessionBootstrap, SYSTEM_PROMPT_TEXT, SYSTEM_PROMPT_IMAGE } from "../lib/prompts.js";
+import { buildTextPrompt, buildImagePrompt, buildAskMessage, buildSessionBootstrap, isDefinitionQuestion, SYSTEM_PROMPT_TEXT, SYSTEM_PROMPT_IMAGE } from "../lib/prompts.js";
+
+// A reader stuck on a term wants the term, not its place in the argument. The
+// paper-focused default used to answer "what does this mean?" with the latter.
+describe("the intent of an ask shapes its message", () => {
+  test("Explain puts the idea first and the paper's use of it second", () => {
+    const msg = buildAskMessage({ kind: "explain", selectedText: "Lorenzo prediction", pageNumber: 2 });
+    assert.match(msg, /first what it means on its own/);
+    assert.match(msg, /then, briefly, what it is doing here/);
+  });
+
+  test("Define asks for the term on its own terms and keeps the paper out", () => {
+    const msg = buildAskMessage({ kind: "define", selectedText: "Lorenzo prediction", pageNumber: 2 });
+    assert.match(msg, /the way a good textbook would/);
+    assert.match(msg, /Do not explain what it does in this paper/);
+    assert.match(msg, /Keep it short/);
+    assert.doesNotMatch(msg, /what it is doing here/);
+  });
+
+  test("a bare 'what does this mean' on a passage is treated as a definition", () => {
+    const msg = buildAskMessage({ kind: "question", selectedText: "Lorenzo prediction", question: "what does this mean?" });
+    assert.match(msg, /My question: what does this mean\?/);
+    assert.match(msg, /the way a good textbook would/);
+  });
+
+  test("a question that points at the paper keeps the ordinary path", () => {
+    const msg = buildAskMessage({ kind: "question", selectedText: "Lorenzo prediction", question: "what does this mean for the results?" });
+    assert.match(msg, /My question: what does this mean for the results\?/);
+    assert.doesNotMatch(msg, /textbook/);
+  });
+
+  test("the definition detector is conservative", () => {
+    for (const q of ["what is this", "What is a Lorenzo predictor?", "what does this mean", "What does 'homomorphic' mean?", "what's this", "define this", "meaning of this term", "这是什么意思", "什么是同态加法", "Lorenzo是什么"]) {
+      assert.equal(isDefinitionQuestion(q), true, q);
+    }
+    for (const q of ["what does this mean for the results", "what is this doing here", "why is this here", "what does the author claim", "what is the role of this in the paper", "what does this do", "how does this work", "这在论文里是什么意思", "为什么这里用这个", "", undefined]) {
+      assert.equal(isDefinitionQuestion(q), false, String(q));
+    }
+  });
+
+  test("the bootstrap no longer demands the paper's role for every passage", () => {
+    const boot = buildSessionBootstrap({ title: "A paper", agentic: true, paperPath: "/p/paper.md" });
+    assert.doesNotMatch(boot, /what it means AND what role it plays/);
+    assert.match(boot, /the idea itself first/);
+    assert.match(boot, /leave the paper out unless I ask/);
+  });
+});
 
 describe("buildTextPrompt", () => {
   test("wraps selected text in quotes", () => {
