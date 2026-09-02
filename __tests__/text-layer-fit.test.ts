@@ -8,8 +8,17 @@ describe("text-layer fit", () => {
     assert.equal(parseScaleX(" scaleX(1.02) "), 1.02);
     assert.equal(parseScaleX(""), null);
     assert.equal(parseScaleX("rotate(90deg) scaleX(0.9)"), null);
-    assert.equal(parseScaleX("scaleX(0.9) scale(0.5)"), null);
     assert.equal(parseScaleX("scaleX(0)"), null);
+  });
+
+  test("a minimum-font-size scale rides along unchanged", () => {
+    // Safari with "Never use font sizes smaller than 9": pdf.js sets the font
+    // nine times larger and adds scale(1/9). The fit must keep that suffix.
+    assert.equal(parseScaleX("scaleX(0.9) scale(0.1111111)"), 0.9);
+    const fitted = fittedTransform("scaleX(0.9) scale(0.1111111)", 400, 360);
+    assert.ok(fitted);
+    assert.ok(fitted!.endsWith(" scale(0.1111111)"), fitted);
+    assert.ok(Math.abs(parseScaleX(fitted!)! - 1.0) < 1e-9);
   });
 
   test("a span the DOM renders as measured needs nothing", () => {

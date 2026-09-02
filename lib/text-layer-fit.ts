@@ -18,16 +18,23 @@
 // with the canvas measures a ratio of 1 and is left alone, which is every
 // span on a machine where nothing interferes.
 
-const MATCH_SCALE_X = /^scaleX\(([\d.eE+-]+)\)$/;
+// `scaleX(k)`, optionally followed by the uniform `scale(1/m)` pdf.js adds
+// when the browser enforces a minimum font size (Safari's "Never use font
+// sizes smaller than", Firefox's equivalent): it sets the span's font m
+// times larger and scales it back down, and that suffix has to survive a fit.
+const MATCH_SCALE_X = /^scaleX\(([\d.eE+-]+)\)(\s+scale\([\d.eE+-]+\))?$/;
 
-// The horizontal scale pdf.js applied, when the transform is nothing but
-// that. Rotated runs and browsers that add a minimum-font-size scale are
-// left to pdf.js — the fit would have to reason about the whole transform.
-export function parseScaleX(transform: string): number | null {
+function splitScaleX(transform: string): { k: number; suffix: string } | null {
   const match = MATCH_SCALE_X.exec(transform.trim());
   if (!match) return null;
   const k = Number(match[1]);
-  return Number.isFinite(k) && k > 0 ? k : null;
+  return Number.isFinite(k) && k > 0 ? { k, suffix: match[2] ?? "" } : null;
+}
+
+// The horizontal scale pdf.js applied. Rotated runs are left to pdf.js — the
+// fit would have to reason about the whole transform.
+export function parseScaleX(transform: string): number | null {
+  return splitScaleX(transform)?.k ?? null;
 }
 
 // How far the DOM's rendering of a span departs from pdf.js's measurement of
@@ -45,9 +52,9 @@ export function fitRatio(measured: number, rendered: number): number | null {
 // The transform that puts the span at the width pdf.js intended, or null when
 // it already is (or cannot be fitted).
 export function fittedTransform(transform: string, measured: number, rendered: number): string | null {
-  const k = parseScaleX(transform);
-  if (k === null) return null;
+  const parts = splitScaleX(transform);
+  if (!parts) return null;
   const ratio = fitRatio(measured, rendered);
   if (ratio === null) return null;
-  return `scaleX(${k * ratio})`;
+  return `scaleX(${parts.k * ratio})${parts.suffix}`;
 }
