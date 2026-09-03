@@ -20,7 +20,7 @@ import { DEFAULT_HIGHLIGHT_COLOR } from "@/lib/highlight-colors";
 import { createZoteroHighlight } from "@/lib/zotero-highlight-api";
 import { providerIdFor } from "@/lib/provider-id";
 import { RegionResult } from "@/hooks/useRegionDrag";
-import type { PdfViewerHandle, AskedPassage } from "@/components/PdfViewer";
+import type { PdfViewerHandle, AskedPassage, SelectionSegment } from "@/components/PdfViewer";
 import type { PanelScroll } from "@/components/ExplainPanel";
 import { SkillsDrawer } from "@/components/SkillsDrawer";
 import { SetupDialog } from "@/components/SetupDialog";
@@ -487,6 +487,7 @@ export default function Home() {
           kind: "asked",
           occurrence: a.occurrence,
           position: a.position,
+          positions: a.positions,
         }))
         .concat(citedPassages),
     [session.annotations, citedPassages]
@@ -803,9 +804,13 @@ export default function Home() {
   // "Explain" reads the passage in the paper; "Define" asks what the term is
   // on its own, with the paper left out — for the reader stuck on a word
   // rather than on the argument.
+  // A selection made across pages arrives as one share per page. The
+  // conversation is one — the passage is one — and every page's share is kept
+  // so each can be marked; `pageNumber` and `position` are the first share's.
   const handleTextSelected = useCallback(
-    (text: string, pageNumber?: number, occurrence = 0, position?: PdfRects, intent: SelectionIntent = "explain") => {
-      const id = addAnnotation({ type: "text", selectedText: text, pageNumber, occurrence, position, messages: [{ role: "assistant", content: "" }] });
+    (text: string, pageNumber?: number, occurrence = 0, position?: PdfRects, intent: SelectionIntent = "explain", segments?: SelectionSegment[]) => {
+      const positions = segments && segments.length > 1 ? segments : undefined;
+      const id = addAnnotation({ type: "text", selectedText: text, pageNumber, occurrence, position, positions, messages: [{ role: "assistant", content: "" }] });
       setActiveAnnotationId(id);
       streamAsk(id, { kind: intent, selected_text: text, page_number: pageNumber });
     },
@@ -813,13 +818,15 @@ export default function Home() {
   );
 
   const handleAskAboutSelection = useCallback(
-    (text: string, question: string, pageNumber?: number, occurrence = 0, position?: PdfRects) => {
+    (text: string, question: string, pageNumber?: number, occurrence = 0, position?: PdfRects, segments?: SelectionSegment[]) => {
+      const positions = segments && segments.length > 1 ? segments : undefined;
       const id = addAnnotation({
         type: "text",
         selectedText: text,
         pageNumber,
         occurrence,
         position,
+        positions,
         messages: [{ role: "user", content: question }, { role: "assistant", content: "" }],
       });
       setActiveAnnotationId(id);
@@ -926,22 +933,33 @@ export default function Home() {
     highlightUndo.current = [];
   }, [paperId]);
 
-  const handleHighlight = useCallback(
-    (text: string, pageNumber?: number, position?: { pageIndex: number; rects: number[][] }, color = DEFAULT_HIGHLIGHT_COLOR, occurrence = 0) => {
-      const id = addHighlight({ text, pageNumber, color, occurrence, position });
-      highlightUndo.current.push(id);
-      if (position) syncHighlightToZotero(id, text, undefined, position, color);
+  // A highlight lives on one page — Zotero's annotations do — so a selection
+  // made across pages becomes one highlight per page, each with its own words
+  // and geometry. A note goes on the first; the rest carry the colour only.
+  const highlightShares = useCallback(
+    (text: string, note: string | undefined, pageNumber: number | undefined, position: PdfRects | undefined, color: string, occurrence: number, segments?: SelectionSegment[]) => {
+      const shares = segments && segments.length > 1
+        ? segments.map((s, index) => ({ text: s.text, note: index === 0 ? note : undefined, pageNumber: s.pageIndex + 1, position: { pageIndex: s.pageIndex, rects: s.rects }, occurrence: 0 }))
+        : [{ text, note, pageNumber, position, occurrence }];
+      for (const share of shares) {
+        const id = addHighlight({ text: share.text, note: share.note, pageNumber: share.pageNumber, color, occurrence: share.occurrence, position: share.position });
+        highlightUndo.current.push(id);
+        if (share.position) syncHighlightToZotero(id, share.text, share.note, share.position, color);
+      }
     },
     [addHighlight, syncHighlightToZotero]
   );
 
+  const handleHighlight = useCallback(
+    (text: string, pageNumber?: number, position?: PdfRects, color = DEFAULT_HIGHLIGHT_COLOR, occurrence = 0, segments?: SelectionSegment[]) =>
+      highlightShares(text, undefined, pageNumber, position, color, occurrence, segments),
+    [highlightShares]
+  );
+
   const handleNote = useCallback(
-    (text: string, note: string, pageNumber?: number, position?: { pageIndex: number; rects: number[][] }, color = DEFAULT_HIGHLIGHT_COLOR, occurrence = 0) => {
-      const id = addHighlight({ text, note, pageNumber, color, occurrence, position });
-      highlightUndo.current.push(id);
-      if (position) syncHighlightToZotero(id, text, note, position, color);
-    },
-    [addHighlight, syncHighlightToZotero]
+    (text: string, note: string, pageNumber?: number, position?: PdfRects, color = DEFAULT_HIGHLIGHT_COLOR, occurrence = 0, segments?: SelectionSegment[]) =>
+      highlightShares(text, note, pageNumber, position, color, occurrence, segments),
+    [highlightShares]
   );
 
   // Edit a question already asked and send it again, dropping the answer it

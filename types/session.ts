@@ -29,6 +29,10 @@ export type Annotation = {
   // Which of the identical passages on that page it was; see Highlight
   occurrence?: number;
   position?: PdfRects; // where it sits, recorded when it was selected
+  // A passage selected across pages: where each page's share sits, and the
+  // words on that page, so every page can be marked. `position` and
+  // `pageNumber` describe the first of these.
+  positions?: (PdfRects & { text?: string })[];
 };
 
 export type ConceptEntry = {

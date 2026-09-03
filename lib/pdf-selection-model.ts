@@ -42,6 +42,14 @@ export type PdfSelectionRange = {
   text: string;
 };
 
+// Lowercase without changing the number of UTF-16 code units. Some Unicode
+// characters expand when lowercased; retaining the original in that case
+// keeps every normalized unit mapped to the PDF character that produced it.
+function foldCharacter(text: string): string {
+  const lower = text.toLowerCase();
+  return lower.length === text.length ? lower : text;
+}
+
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
 const round3 = (value: number) => Math.round(value * 1000) / 1000;
 
@@ -218,10 +226,103 @@ export function pdfSelectionRange(
     ]);
   }
 
-  return {
-    start,
-    end,
-    rects,
-    text: selected.map((character) => character.text).join(""),
-  };
+  // Items on different lines carry no whitespace between them, so a line
+  // break becomes a space — the way the browser reads the same selection.
+  // A hyphen at the line's end is kept as it is: the browser does the same.
+  let text = "";
+  let previous: PdfSelectionCharacter | null = null;
+  for (const character of selected) {
+    if (previous && character.lineIndex !== previous.lineIndex && !/[\s-]$/u.test(text) && !/^\s/u.test(character.text)) {
+      text += " ";
+    }
+    text += character.text;
+    previous = character;
+  }
+
+  return { start, end, rects, text };
+}
+
+/**
+ * Find quoted prose in the PDF character model and return the same exact
+ * PDF-space range produced by a pointer selection. Whitespace is ignored
+ * because PDF text items routinely split words and lines differently from the
+ * model's quote. `occurrence` disambiguates repeated prose on one page.
+ */
+export function pdfSelectionRangeForText(
+  model: PdfSelectionModel,
+  query: string,
+  occurrence = 0
+): PdfSelectionRange | null {
+  let normalizedQuery = "";
+  for (const character of query) {
+    if (!/\s/u.test(character)) normalizedQuery += foldCharacter(character);
+  }
+  if (!normalizedQuery) return null;
+
+  let normalizedText = "";
+  const normalizedToCharacter: number[] = [];
+  for (let characterIndex = 0; characterIndex < model.characters.length; characterIndex++) {
+    const character = model.characters[characterIndex].text;
+    if (/^\s+$/u.test(character)) continue;
+    const folded = foldCharacter(character);
+    normalizedText += folded;
+    for (let unit = 0; unit < folded.length; unit++) normalizedToCharacter.push(characterIndex);
+  }
+
+  const hits: number[] = [];
+  for (
+    let at = normalizedText.indexOf(normalizedQuery);
+    at !== -1;
+    at = normalizedText.indexOf(normalizedQuery, at + normalizedQuery.length)
+  ) {
+    hits.push(at);
+  }
+  const at = hits[occurrence] ?? hits[0];
+  if (at === undefined) return null;
+  const firstCharacter = normalizedToCharacter[at];
+  const lastCharacter = normalizedToCharacter[at + normalizedQuery.length - 1];
+  if (firstCharacter === undefined || lastCharacter === undefined) return null;
+  return pdfSelectionRange(model, firstCharacter, lastCharacter + 1);
+}
+
+// ── A selection that runs across pages ───────────────────────────────
+//
+// A pointer selection has an anchor and a focus, and nothing says they sit on
+// the same page. Each page contributes one range: the first page from its
+// boundary to its end, every page in between whole, the last page from its
+// start to its boundary — or the reverse when the selection was dragged
+// upwards. The segments come back in reading order whichever way it was
+// dragged, so a highlight per page and the text as one passage both fall out.
+
+export type PdfSelectionEnd = { pageNumber: number; boundary: number };
+export type PdfSelectionPage = { pageNumber: number; model: PdfSelectionModel };
+export type PdfSelectionSegment = { pageNumber: number; range: PdfSelectionRange };
+
+export function pdfSelectionAcrossPages(
+  pages: PdfSelectionPage[],
+  anchor: PdfSelectionEnd,
+  focus: PdfSelectionEnd
+): PdfSelectionSegment[] | null {
+  const forward =
+    anchor.pageNumber < focus.pageNumber ||
+    (anchor.pageNumber === focus.pageNumber && anchor.boundary <= focus.boundary);
+  const first = forward ? anchor : focus;
+  const last = forward ? focus : anchor;
+
+  const segments: PdfSelectionSegment[] = [];
+  for (const page of [...pages].sort((a, b) => a.pageNumber - b.pageNumber)) {
+    if (page.pageNumber < first.pageNumber || page.pageNumber > last.pageNumber) continue;
+    const start = page.pageNumber === first.pageNumber ? first.boundary : 0;
+    const end = page.pageNumber === last.pageNumber ? last.boundary : page.model.characters.length;
+    const range = pdfSelectionRange(page.model, start, end);
+    if (range) segments.push({ pageNumber: page.pageNumber, range });
+  }
+  return segments.length ? segments : null;
+}
+
+// The passage as one piece of text: pages joined by a line break, since the
+// last line of one page and the first of the next are never one sentence's
+// worth of whitespace apart.
+export function selectionSegmentsText(segments: PdfSelectionSegment[]): string {
+  return segments.map((segment) => segment.range.text.trim()).filter(Boolean).join("\n");
 }

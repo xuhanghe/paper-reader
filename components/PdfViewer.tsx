@@ -18,10 +18,10 @@ import { alignRectsToZoteroLines, type PdfTextItem, type PdfTextStyle } from "@/
 import {
   buildPdfSelectionModel,
   hitTestPdfSelection,
-  pdfSelectionRange,
   pdfSelectionRangeForText,
+  pdfSelectionAcrossPages,
+  selectionSegmentsText,
   type PdfSelectionModel,
-  type PdfSelectionRange,
 } from "@/lib/pdf-selection-model";
 import { alignReferenceLink, referenceRectFractions } from "@/lib/pdf-reference-geometry";
 import { verticalNudge, horizontalNudge } from "@/lib/text-layer-calibration";
@@ -301,7 +301,24 @@ export type AskedPassage = {
   occurrence?: number;
   // Where it sits, recorded when it was selected; see Highlight
   position?: AnnotationPosition;
+  // A passage selected across pages: each page's share, with its words
+  positions?: (AnnotationPosition & { text?: string })[];
 };
+
+// Which of a passage's shares falls on this page, and the words of that share
+function shareOnPage<T extends { position?: AnnotationPosition; positions?: (AnnotationPosition & { text?: string })[]; text: string }>(
+  item: T,
+  pageNumber: number
+): { position?: AnnotationPosition; text: string } {
+  const share = item.positions?.find((p) => p.pageIndex === pageNumber - 1);
+  if (share) return { position: { pageIndex: share.pageIndex, rects: share.rects }, text: share.text ?? item.text };
+  return { position: item.position, text: item.text };
+}
+
+function fallsOnPage(item: { pageNumber?: number; positions?: { pageIndex: number }[] }, pageNumber: number): boolean {
+  if (item.positions?.length) return item.positions.some((p) => p.pageIndex === pageNumber - 1);
+  return !item.pageNumber || item.pageNumber === pageNumber;
+}
 
 // Snaps a selection band to the glyphs it covers.
 //
@@ -391,14 +408,16 @@ const PDF_MAX_SCALE = 10;
 
 type Props = {
   pdfDataUrl: string;
-  onTextSelected: (text: string, pageNumber?: number, occurrence?: number, position?: AnnotationPosition, intent?: SelectionIntent) => void;
-  onAskAboutSelection: (text: string, question: string, pageNumber?: number, occurrence?: number, position?: AnnotationPosition) => void;
+  // `segments` is present only for a selection that runs across pages: each
+  // page's share, in reading order. `pageNumber` and `position` are its first.
+  onTextSelected: (text: string, pageNumber?: number, occurrence?: number, position?: AnnotationPosition, intent?: SelectionIntent, segments?: SelectionSegment[]) => void;
+  onAskAboutSelection: (text: string, question: string, pageNumber?: number, occurrence?: number, position?: AnnotationPosition, segments?: SelectionSegment[]) => void;
   onRegionCaptured: (result: RegionResult) => void;
   // `occurrence` is which of the identical passages on that page was selected.
   // Without it a phrase that appears twice — an abstract and a contributions
   // list saying the same words — is always painted on the first one.
-  onHighlight?: (text: string, pageNumber?: number, position?: AnnotationPosition, color?: string, occurrence?: number) => void;
-  onNote?: (text: string, note: string, pageNumber?: number, position?: AnnotationPosition, color?: string, occurrence?: number) => void;
+  onHighlight?: (text: string, pageNumber?: number, position?: AnnotationPosition, color?: string, occurrence?: number, segments?: SelectionSegment[]) => void;
+  onNote?: (text: string, note: string, pageNumber?: number, position?: AnnotationPosition, color?: string, occurrence?: number, segments?: SelectionSegment[]) => void;
   onRemoveHighlight?: (id: string) => void;
   onRecolorHighlight?: (id: string, color: string) => void;
   onEditHighlightNote?: (id: string, note: string) => void;
@@ -437,16 +456,24 @@ type SelectionPageEntry = {
   model: PdfSelectionModel;
 };
 
+// One page's share of a selection: where it sits on that page, and its words.
+// A selection dragged across pages is a list of these in reading order.
+export type SelectionSegment = { pageIndex: number; rects: number[][]; text: string };
+
+type SelectionEnd = { entry: SelectionPageEntry; boundary: number };
+
+// A selection in progress. The anchor is where the drag began; the focus
+// follows the pointer, onto whatever page it is over.
 type ActivePdfSelection = {
-  entry: SelectionPageEntry;
-  anchorBoundary: number;
-  focusBoundary: number;
+  anchor: SelectionEnd;
+  focus: SelectionEnd;
 };
 
 type ControlledPdfSelection = {
+  // The first page, and the share on it: what a single-page consumer sees
   pageNumber: number;
   position: AnnotationPosition;
-  range: PdfSelectionRange;
+  segments: SelectionSegment[];
   text: string;
 };
 
@@ -753,9 +780,7 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
     const pageHighlights = highlightsRef.current.filter(
       (highlight) => !highlight.pageNumber || highlight.pageNumber === pageNumber
     );
-    const pageAsked = askedRef.current.filter(
-      (passage) => !passage.pageNumber || passage.pageNumber === pageNumber
-    );
+    const pageAsked = askedRef.current.filter((passage) => fallsOnPage(passage, pageNumber));
     const wrapper = pageEl.querySelector(".canvasWrapper") as HTMLElement | null;
     if (pageHighlights.length === 0 && pageAsked.length === 0) {
       clearMarks(layer, "pr-highlight");
@@ -782,7 +807,8 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
         : a.label
           ? `Asked about: ${a.label}`
           : "You asked about this — click to open the conversation";
-      markTextInContainer(layer, a.text, "pr-asked", title, { id: a.id, occurrence: a.occurrence });
+      // A passage selected across pages is matched by its words on this page
+      markTextInContainer(layer, shareOnPage(a, pageNumber).text, "pr-asked", title, { id: a.id, occurrence: a.occurrence });
     }
     for (const h of pageHighlights) {
       const cls = ["pr-highlight", h.note ? "pr-has-note" : ""].filter(Boolean).join(" ");
@@ -857,7 +883,7 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
         selector: "pr-asked",
         color: a.kind === "cited" ? "var(--quote)" : "var(--accent)",
         underline: true,
-        stored: storedLinesFor(a.position),
+        stored: storedLinesFor(shareOnPage(a, pageNumber).position),
       })),
     ];
 
@@ -1409,21 +1435,24 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
     const controlled = controlledPdfSelectionRef.current;
     if (container && controlled) {
       clear();
-      const pageView = viewerRef.current?.getPageView(controlled.pageNumber - 1) as PdfPageView | undefined;
-      const wrapper = pageView?.div?.querySelector(".canvasWrapper") as HTMLElement | null;
-      const viewport = pageView?.viewport;
-      if (!wrapper || !viewport || viewport.width <= 0 || viewport.height <= 0) return;
-      const bands = controlled.position.rects.map((rect) => {
-        const [ax, ay] = viewport.convertToViewportPoint(rect[0], rect[1]);
-        const [bx, by] = viewport.convertToViewportPoint(rect[2], rect[3]);
-        return {
-          left: Math.min(ax, bx) / viewport.width,
-          top: Math.min(ay, by) / viewport.height,
-          width: Math.abs(bx - ax) / viewport.width,
-          height: Math.abs(by - ay) / viewport.height,
-        };
-      });
-      renderPageSelection(wrapper, bands);
+      // Every page the selection touches gets its own ribbon
+      for (const segment of controlled.segments) {
+        const pageView = viewerRef.current?.getPageView(segment.pageIndex) as PdfPageView | undefined;
+        const wrapper = pageView?.div?.querySelector(".canvasWrapper") as HTMLElement | null;
+        const viewport = pageView?.viewport;
+        if (!wrapper || !viewport || viewport.width <= 0 || viewport.height <= 0) continue;
+        const bands = segment.rects.map((rect) => {
+          const [ax, ay] = viewport.convertToViewportPoint(rect[0], rect[1]);
+          const [bx, by] = viewport.convertToViewportPoint(rect[2], rect[3]);
+          return {
+            left: Math.min(ax, bx) / viewport.width,
+            top: Math.min(ay, by) / viewport.height,
+            width: Math.abs(bx - ax) / viewport.width,
+            height: Math.abs(by - ay) / viewport.height,
+          };
+        });
+        renderPageSelection(wrapper, bands);
+      }
       return;
     }
 
@@ -1788,6 +1817,9 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
   const selectionPositionRef = useRef<AnnotationPosition | undefined>(undefined);
   const selectionPositionPromiseRef = useRef<Promise<AnnotationPosition | undefined> | null>(null);
   const selectionOccurrenceRef = useRef(0);
+  // Set only when the selection runs across pages; single-page consumers
+  // keep working from the page and position above
+  const selectionSegmentsRef = useRef<SelectionSegment[] | undefined>(undefined);
 
   const clearSelection = useCallback(() => {
     activePdfSelectionRef.current = null;
@@ -1795,6 +1827,7 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
     selectionPageRef.current = undefined;
     selectionPositionRef.current = undefined;
     selectionPositionPromiseRef.current = null;
+    selectionSegmentsRef.current = undefined;
     containerRef.current?.querySelectorAll(".pr-page-selection").forEach((overlay) => overlay.remove());
     clearNativeSelection();
   }, [clearNativeSelection]);
@@ -1912,7 +1945,7 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
   const handleIntent = useCallback(async (intent: SelectionIntent) => {
     if (selection) {
       const position = await resolvedSelectionPosition();
-      onTextSelected(selection.text, selectionPageRef.current, selectionOccurrenceRef.current, position, intent);
+      onTextSelected(selection.text, selectionPageRef.current, selectionOccurrenceRef.current, position, intent, selectionSegmentsRef.current);
       clearSelection();
     }
   }, [selection, onTextSelected, clearSelection, resolvedSelectionPosition]);
@@ -1923,7 +1956,7 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
     async (question: string) => {
       if (selection) {
         const position = await resolvedSelectionPosition();
-        onAskAboutSelection(selection.text, question, selectionPageRef.current, selectionOccurrenceRef.current, position);
+        onAskAboutSelection(selection.text, question, selectionPageRef.current, selectionOccurrenceRef.current, position, selectionSegmentsRef.current);
         clearSelection();
       }
     },
@@ -1934,7 +1967,7 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
     async (color: string) => {
       if (selection && onHighlight) {
         const position = await resolvedSelectionPosition();
-        onHighlight(selection.text, selectionPageRef.current, position, color, selectionOccurrenceRef.current);
+        onHighlight(selection.text, selectionPageRef.current, position, color, selectionOccurrenceRef.current, selectionSegmentsRef.current);
         clearSelection();
       }
     },
@@ -1945,7 +1978,7 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
     async (note: string, color: string) => {
       if (selection && onNote) {
         const position = await resolvedSelectionPosition();
-        onNote(selection.text, note, selectionPageRef.current, position, color, selectionOccurrenceRef.current);
+        onNote(selection.text, note, selectionPageRef.current, position, color, selectionOccurrenceRef.current, selectionSegmentsRef.current);
         clearSelection();
       }
     },
@@ -2006,11 +2039,23 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
   }, [clientRectsForPosition]);
 
   const updatePdfSelection = useCallback((active: ActivePdfSelection): ControlledPdfSelection | null => {
-    const selected = pdfSelectionRange(active.entry.model, active.anchorBoundary, active.focusBoundary);
-    if (!selected) {
+    const { anchor, focus } = active;
+    // Every prepared page from the anchor's to the focus's takes part; a page
+    // in between whose model is not ready yet simply contributes nothing
+    const low = Math.min(anchor.entry.pageNumber, focus.entry.pageNumber);
+    const high = Math.max(anchor.entry.pageNumber, focus.entry.pageNumber);
+    const pages = Array.from(selectionPageCacheRef.current.values())
+      .filter((entry) => entry.pageNumber >= low && entry.pageNumber <= high && entry.layer.isConnected)
+      .map((entry) => ({ pageNumber: entry.pageNumber, model: entry.model }));
+    const segments = pdfSelectionAcrossPages(
+      pages,
+      { pageNumber: anchor.entry.pageNumber, boundary: anchor.boundary },
+      { pageNumber: focus.entry.pageNumber, boundary: focus.boundary }
+    );
+    const domSelection = window.getSelection();
+    if (!segments) {
       controlledPdfSelectionRef.current = null;
-      const point = selectionBoundaryPoint(active.entry, active.anchorBoundary);
-      const domSelection = window.getSelection();
+      const point = selectionBoundaryPoint(anchor.entry, anchor.boundary);
       if (point && domSelection) {
         const range = document.createRange();
         range.setStart(point[0], point[1]);
@@ -2022,36 +2067,84 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
       return null;
     }
 
-    const anchor = selectionBoundaryPoint(active.entry, active.anchorBoundary);
-    const focus = selectionBoundaryPoint(active.entry, active.focusBoundary);
-    const domSelection = window.getSelection();
-    if (anchor && focus && domSelection) {
+    const anchorPoint = selectionBoundaryPoint(anchor.entry, anchor.boundary);
+    const focusPoint = selectionBoundaryPoint(focus.entry, focus.boundary);
+    if (anchorPoint && focusPoint && domSelection) {
       try {
-        domSelection.setBaseAndExtent(anchor[0], anchor[1], focus[0], focus[1]);
+        domSelection.setBaseAndExtent(anchorPoint[0], anchorPoint[1], focusPoint[0], focusPoint[1]);
       } catch {
         const range = document.createRange();
-        const forward = active.anchorBoundary <= active.focusBoundary;
-        range.setStart(...(forward ? anchor : focus));
-        range.setEnd(...(forward ? focus : anchor));
+        const forward =
+          anchor.entry.pageNumber < focus.entry.pageNumber ||
+          (anchor.entry.pageNumber === focus.entry.pageNumber && anchor.boundary <= focus.boundary);
+        range.setStart(...(forward ? anchorPoint : focusPoint));
+        range.setEnd(...(forward ? focusPoint : anchorPoint));
         domSelection.removeAllRanges();
         domSelection.addRange(range);
       }
     }
 
-    const text = domSelection?.toString().trim() || selected.text.trim();
+    // On one page the browser's own reading of the selection is the text, as
+    // it always was. Across pages the DOM range sweeps up whatever sits
+    // between the pages, so the text comes from the model instead.
+    const single = segments.length === 1;
+    const text = (single ? domSelection?.toString().trim() : "") || selectionSegmentsText(segments);
     if (!text) return null;
+    const shares: SelectionSegment[] = segments.map((segment) => ({
+      pageIndex: segment.pageNumber - 1,
+      rects: segment.range.rects,
+      text: segment.range.text.trim(),
+    }));
     const controlled: ControlledPdfSelection = {
-      pageNumber: active.entry.pageNumber,
-      position: { pageIndex: active.entry.pageNumber - 1, rects: selected.rects },
-      range: selected,
+      pageNumber: shares[0].pageIndex + 1,
+      position: { pageIndex: shares[0].pageIndex, rects: shares[0].rects },
+      segments: shares,
       text,
     };
     controlledPdfSelectionRef.current = controlled;
-    active.entry.layer.dataset.prSelectionText = text;
-    active.entry.layer.dataset.prSelectionRects = JSON.stringify(selected.rects);
+    for (const share of shares) {
+      const layer = selectionPageCacheRef.current.get(share.pageIndex + 1)?.layer;
+      if (!layer) continue;
+      layer.dataset.prSelectionText = share.text;
+      layer.dataset.prSelectionRects = JSON.stringify(share.rects);
+    }
     paintSelection();
     return controlled;
   }, [paintSelection]);
+
+  // The page the pointer is over — or, between pages and in the margins, the
+  // nearest one — so a drag can leave the page it started on.
+  const pageNumberAtPointer = useCallback((clientY: number): number | undefined => {
+    const container = containerRef.current;
+    if (!container) return undefined;
+    let nearest: number | undefined;
+    let nearestDistance = Infinity;
+    for (const page of Array.from(container.querySelectorAll(".page[data-page-number]"))) {
+      const rect = page.getBoundingClientRect();
+      if (rect.height <= 0) continue;
+      const distance = clientY < rect.top ? rect.top - clientY : clientY > rect.bottom ? clientY - rect.bottom : 0;
+      if (distance < nearestDistance) {
+        nearestDistance = distance;
+        nearest = Number(page.getAttribute("data-page-number")) || undefined;
+      }
+    }
+    return nearest;
+  }, []);
+
+  // Where the pointer is as a selection end, on whichever page it is over. A
+  // page whose model is still being prepared gives nothing back, and the
+  // focus stays where it was until the model is ready.
+  const selectionEndAtPointer = useCallback((e: React.MouseEvent, fallback: SelectionEnd, tolerance: number): SelectionEnd | null => {
+    const pageNumber = pageNumberAtPointer(e.clientY) ?? fallback.entry.pageNumber;
+    let entry = selectionPageCacheRef.current.get(pageNumber);
+    if (!entry || !entry.layer.isConnected) {
+      if (pageNumber !== fallback.entry.pageNumber) void prepareSelectionPage(pageNumber);
+      entry = fallback.entry;
+    }
+    const point = pdfPointForMouse(entry, e);
+    const hit = point && hitTestPdfSelection(entry.model, point[0], point[1], tolerance);
+    return hit ? { entry, boundary: hit.boundary } : null;
+  }, [pageNumberAtPointer, prepareSelectionPage, pdfPointForMouse]);
 
   const handleContainerMouseDown = useCallback((e: React.MouseEvent) => {
     const parts = findPageParts(e.target);
@@ -2078,7 +2171,8 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
     e.preventDefault();
     clearSelection();
     setHighlightMenu(null);
-    const active = { entry, anchorBoundary: hit.boundary, focusBoundary: hit.boundary };
+    const end = { entry, boundary: hit.boundary };
+    const active: ActivePdfSelection = { anchor: end, focus: { ...end } };
     activePdfSelectionRef.current = active;
     updatePdfSelection(active);
   }, [findPageParts, captureMode, onMouseDown, prepareSelectionPage, pdfPointForMouse, clearSelection, updatePdfSelection]);
@@ -2090,13 +2184,12 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
     }
     const active = activePdfSelectionRef.current;
     if (!active) return;
-    const point = pdfPointForMouse(active.entry, e);
-    const hit = point && hitTestPdfSelection(active.entry.model, point[0], point[1], 4);
-    if (!hit) return;
+    const focus = selectionEndAtPointer(e, active.focus, 4);
+    if (!focus) return;
     e.preventDefault();
-    active.focusBoundary = hit.boundary;
+    active.focus = focus;
     updatePdfSelection(active);
-  }, [isDragging, onMouseMove, pdfPointForMouse, updatePdfSelection]);
+  }, [isDragging, onMouseMove, selectionEndAtPointer, updatePdfSelection]);
 
   const handleContainerMouseUp = useCallback((e: React.MouseEvent) => {
     if (isDragging && dragPageRef.current) {
@@ -2113,16 +2206,18 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
     }
     const active = activePdfSelectionRef.current;
     if (active) {
-      const point = pdfPointForMouse(active.entry, e);
-      const hit = point && hitTestPdfSelection(active.entry.model, point[0], point[1], 4);
-      if (hit) active.focusBoundary = hit.boundary;
+      const focus = selectionEndAtPointer(e, active.focus, 4);
+      if (focus) active.focus = focus;
       const controlled = updatePdfSelection(active);
       activePdfSelectionRef.current = null;
       if (!controlled) {
         clearSelection();
         return;
       }
-      const rect = clientRectForPosition(controlled.position);
+      // The popover sits under where the selection ends, which across pages
+      // is the last page's share rather than the first's
+      const last = controlled.segments[controlled.segments.length - 1];
+      const rect = clientRectForPosition({ pageIndex: last.pageIndex, rects: last.rects });
       if (!rect) {
         clearSelection();
         return;
@@ -2131,12 +2226,13 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
       selectionPageRef.current = controlled.pageNumber;
       selectionPositionRef.current = controlled.position;
       selectionPositionPromiseRef.current = Promise.resolve(controlled.position);
-      selectionOccurrenceRef.current = computeSelectionOccurrence(controlled.text);
+      selectionSegmentsRef.current = controlled.segments.length > 1 ? controlled.segments : undefined;
+      selectionOccurrenceRef.current = controlled.segments.length > 1 ? 0 : computeSelectionOccurrence(controlled.text);
       setSelectionInfo({ text: controlled.text, rect });
       return;
     }
     handleNativeMouseUp();
-  }, [isDragging, onMouseUp, onRegionCaptured, pdfPointForMouse, updatePdfSelection, clientRectForPosition, clearSelection, computeSelectionOccurrence, setSelectionInfo, handleNativeMouseUp]);
+  }, [isDragging, onMouseUp, onRegionCaptured, selectionEndAtPointer, updatePdfSelection, clientRectForPosition, clearSelection, computeSelectionOccurrence, setSelectionInfo, handleNativeMouseUp]);
 
   // Viewport position of the drag rectangle (dragRegion is page-relative)
   const dragRect = (() => {
