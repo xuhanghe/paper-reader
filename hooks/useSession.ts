@@ -3,6 +3,7 @@ import { useState, useCallback, useEffect, useRef } from "react";
 import { SessionState, Annotation, ConceptEntry, Model, Effort, Mindmap, DocType, Highlight, Message } from "@/types/session";
 import { makeLabel } from "@/lib/session-utils";
 import { cacheDocument, getCachedDocument } from "@/lib/document-cache";
+import { sessionIdFor, legacySessionIdFor } from "@/lib/session-id";
 
 const DEFAULT_STATE: SessionState = {
   pdfName: "",
@@ -19,11 +20,9 @@ const LAST_SESSION_KEY = "paper-reader:last-session";
 const AUTOSAVE_DELAY_MS = 800;
 
 // Stable per-paper session id: the Zotero item key when the paper lives in
-// Zotero (survives renames, consistent everywhere), else a name slug.
-export function sessionIdFor(pdfName: string, zoteroKey?: string): string {
-  if (zoteroKey) return zoteroKey;
-  return pdfName.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 120) || "untitled";
-}
+// Zotero (survives renames, consistent everywhere), else a name slug. Lives
+// in lib/session-id.ts; re-exported so callers keep importing it from here.
+export { sessionIdFor };
 
 export function useSession() {
   const [session, setSession] = useState<SessionState>(DEFAULT_STATE);
@@ -142,9 +141,10 @@ export function useSession() {
     setRestoring(true);
     (async () => {
       try {
-        // legacy = the old name-slug id, so pre-zoteroKey sessions migrate over
+        // legacy = the id this name had under the old ASCII-only slug, so a
+        // session saved before other scripts counted migrates over
         const res = await fetch(
-          `/api/sessions?id=${encodeURIComponent(sessionIdFor(name, zoteroKey))}&legacy=${encodeURIComponent(sessionIdFor(name))}&lean=1`
+          `/api/sessions?id=${encodeURIComponent(sessionIdFor(name, zoteroKey))}&legacy=${encodeURIComponent(legacySessionIdFor(name))}&lean=1`
         );
         if (!res.ok) return;
         const data = await res.json();

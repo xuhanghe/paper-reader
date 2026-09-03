@@ -29,6 +29,17 @@ export function SaveToZoteroModal({ fileName, dataUrl, docType = "pdf", sourceUr
     let stale = false;
     (async () => {
       try {
+        // A page fetched from the web is identified by its URL, which is
+        // exact; a title match is the fallback for everything else
+        if (sourceUrl) {
+          const byUrl = await fetch(`/api/zotero/by-url?url=${encodeURIComponent(sourceUrl)}`);
+          const found = await byUrl.json();
+          if (stale) return;
+          if (byUrl.ok && Array.isArray(found.items) && found.items.length > 0) {
+            setInLibrary({ title: found.items[0].title });
+            return;
+          }
+        }
         const q = fileName.replace(/\.pdf$/i, "").slice(0, 80);
         const res = await fetch(`/api/zotero/items?q=${encodeURIComponent(q)}`);
         const data = await res.json();
@@ -49,7 +60,7 @@ export function SaveToZoteroModal({ fileName, dataUrl, docType = "pdf", sourceUr
       }
     })();
     return () => { stale = true; };
-  }, [fileName]);
+  }, [fileName, sourceUrl]);
 
   useEffect(() => {
     (async () => {
@@ -110,7 +121,14 @@ export function SaveToZoteroModal({ fileName, dataUrl, docType = "pdf", sourceUr
           : await fetch("/api/zotero/save", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ name: fileName, data_base64: dataUrl, target: resolvedTarget }),
+              body: JSON.stringify({
+                name: fileName,
+                data_base64: dataUrl,
+                target: resolvedTarget,
+                // A page rendered to PDF is saved as a webpage item with the
+                // PDF attached; a paper from disk goes to Zotero's recogniser
+                ...(pageUrl.trim() ? { source_url: pageUrl.trim(), as: "webpage" } : {}),
+              }),
             });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Save failed");

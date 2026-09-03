@@ -85,6 +85,9 @@ export function OpenUrlModal({ onOpen, onClose, onSaved }: Props) {
                 data_base64: content,
                 target: resolvedTarget,
                 source_url: data.finalUrl,
+                // A rendered page is saved as a webpage item with the PDF
+                // attached — never as a bare PDF for Zotero to "recognise"
+                as: "webpage",
               }),
             })
           : await fetch("/api/zotero/save-page", {

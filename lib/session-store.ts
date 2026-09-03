@@ -11,7 +11,11 @@ import path from "node:path";
 
 export const SESSIONS_ROOT = path.join(process.cwd(), ".paper-reader-sessions");
 
-export const safeId = (id: string) => id.replace(/[^a-zA-Z0-9-_]/g, "").slice(0, 140);
+// A directory name: letters and digits of any script, dashes and underscores.
+// Path separators, dots and everything else are dropped, so an id can never
+// escape the sessions root. Names are keyed by their own words (see
+// lib/session-id.ts), and a Chinese title's words have to survive here too.
+export const safeId = (id: string) => id.replace(/[^\p{L}\p{N}\-_]/gu, "").slice(0, 140);
 
 export const dirFor = (id: string) => path.join(SESSIONS_ROOT, safeId(id));
 export const paperPathFor = (id: string) => path.join(dirFor(id), "paper.md");
