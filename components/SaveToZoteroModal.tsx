@@ -296,8 +296,8 @@ export function SaveToZoteroModal({ fileName, dataUrl, docType = "pdf", sourceUr
           {misfiled.length > 0 && (
             <div className="rounded-md px-2.5 py-2 space-y-1.5" style={{ border: "1px solid var(--border)", background: "var(--paper)" }}>
               <p className="text-[11px] leading-relaxed" style={{ color: "var(--ink-muted)" }}>
-                {misfiled.length === 1 ? "This entry was" : "These entries were"} made from this page but mis-recognised as a
-                paper — the only attachment is this page&apos;s PDF:
+                {misfiled.length === 1 ? "This entry was " : "These entries were "}
+                made from this page but mis-recognised as a paper — the only attachment is this page&apos;s PDF:
               </p>
               <ul className="text-[11px] leading-relaxed pl-3 list-disc" style={{ color: "var(--ink)" }}>
                 {misfiled.map((entry) => (
@@ -306,10 +306,13 @@ export function SaveToZoteroModal({ fileName, dataUrl, docType = "pdf", sourceUr
                   </li>
                 ))}
               </ul>
-              <label className="flex items-start gap-2 text-[11px] cursor-pointer" style={{ color: "var(--ink)" }}>
-                <input type="checkbox" className="mt-0.5" checked={replaceOld} onChange={(e) => setReplaceOld(e.target.checked)} />
-                <span>Move {misfiled.length === 1 ? "it" : "them"} to Zotero&apos;s trash after saving</span>
-              </label>
+              {/* With the page already filed, the trash button below does this */}
+              {!alreadySaved && (
+                <label className="flex items-start gap-2 text-[11px] cursor-pointer" style={{ color: "var(--ink)" }}>
+                  <input type="checkbox" className="mt-0.5" checked={replaceOld} onChange={(e) => setReplaceOld(e.target.checked)} />
+                  <span>Move {misfiled.length === 1 ? "it" : "them"} to Zotero&apos;s trash after saving</span>
+                </label>
+              )}
             </div>
           )}
 
@@ -331,18 +334,18 @@ export function SaveToZoteroModal({ fileName, dataUrl, docType = "pdf", sourceUr
             </button>
           ) : (
             <>
-              <button onClick={onDone} disabled={saving} className="btn-ghost text-xs px-3 py-1.5">
+              <button onClick={onDone} disabled={saving} className="btn-ghost text-xs px-3 py-1.5 whitespace-nowrap">
                 Don&apos;t save
               </button>
               {/* Already filed as a page: cleaning up the mis-recognised copies is
                   the likely intent, and saving again is a second copy */}
               {alreadySaved && misfiled.length > 0 ? (
                 <>
-                  <button onClick={handleSave} disabled={saving || loading} className="btn-ghost text-xs px-3 py-1.5">
+                  <button onClick={handleSave} disabled={saving || loading} className="btn-ghost text-xs px-3 py-1.5 whitespace-nowrap">
                     Save another copy
                   </button>
-                  <button onClick={handleTrashOnly} disabled={saving} className="btn-primary text-xs px-4 py-1.5">
-                    {saving ? status || "Working…" : misfiled.length === 1 ? "Trash the mis-filed entry" : "Trash the mis-filed entries"}
+                  <button onClick={handleTrashOnly} disabled={saving} className="btn-primary text-xs px-4 py-1.5 whitespace-nowrap">
+                    {saving ? status || "Working…" : misfiled.length === 1 ? "Trash mis-filed entry" : "Trash mis-filed entries"}
                   </button>
                 </>
               ) : (
