@@ -49,13 +49,13 @@ export function SelectionPopover({ rect, selectedText, onExplain, onDefine, onAs
         borderRadius: "6px",
         boxShadow: "0 8px 24px rgba(0,0,0,0.5)",
         padding: "6px 8px",
-        width: "290px",
+        width: "320px",
       }}
     >
       <div className="flex items-center gap-0.5">
         <button
           onClick={onExplain}
-          className="text-sm font-medium transition-opacity hover:opacity-80 px-1"
+          className="text-sm font-medium transition-opacity hover:opacity-80 px-1 whitespace-nowrap"
           style={{ color: "var(--accent)", fontFamily: "var(--font-geist-sans), system-ui, sans-serif" }}
         >
           Explain ↗
@@ -63,7 +63,7 @@ export function SelectionPopover({ rect, selectedText, onExplain, onDefine, onAs
         {onDefine && (
           <button
             onClick={onDefine}
-            className="text-sm font-medium transition-opacity hover:opacity-80 px-1"
+            className="text-sm font-medium transition-opacity hover:opacity-80 px-1 whitespace-nowrap"
             style={{ color: "var(--accent)", fontFamily: "var(--font-geist-sans), system-ui, sans-serif" }}
             title="What this term is, on its own — the paper left out"
           >
