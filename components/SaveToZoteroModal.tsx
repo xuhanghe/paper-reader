@@ -22,8 +22,17 @@ export function SaveToZoteroModal({ fileName, dataUrl, docType = "pdf", sourceUr
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [pageUrl, setPageUrl] = useState(sourceUrl || "");
-  // null = checking; false = not in library; {title} = probable existing match
-  const [inLibrary, setInLibrary] = useState<null | false | { title: string }>(null);
+  // null = checking; false = not in library; otherwise the entry that has it.
+  // A match by URL is exact and names the entry; a match by title is a guess.
+  type LibraryMatch = { title: string; key?: string; itemType?: string; byUrl?: boolean };
+  const [inLibrary, setInLibrary] = useState<null | false | LibraryMatch>(null);
+  // URL-matched entries that are not webpage items: each was made from this
+  // very page but mis-recognised as a paper (see lib/zotero-webpage.ts).
+  // Saving files the page correctly; ticking the box moves these to the trash.
+  const [misfiled, setMisfiled] = useState<{ key: string; title: string; itemType: string }[]>([]);
+  const [replaceOld, setReplaceOld] = useState(true);
+  // Already filed correctly: saving again would only make a second copy
+  const alreadySaved = !!inLibrary && !!inLibrary.byUrl && inLibrary.itemType === "webpage";
 
   useEffect(() => {
     let stale = false;
@@ -36,7 +45,12 @@ export function SaveToZoteroModal({ fileName, dataUrl, docType = "pdf", sourceUr
           const found = await byUrl.json();
           if (stale) return;
           if (byUrl.ok && Array.isArray(found.items) && found.items.length > 0) {
-            setInLibrary({ title: found.items[0].title });
+            const hits = found.items as { key: string; title: string; itemType: string }[];
+            // The entry the reader should see is the page filed as a page,
+            // when there is one; the rest are mis-recognised copies of it
+            const page = hits.find((h) => h.itemType === "webpage") ?? hits[0];
+            setInLibrary({ title: page.title, key: page.key, itemType: page.itemType, byUrl: true });
+            setMisfiled(hits.filter((h) => h.itemType !== "webpage"));
             return;
           }
         }
@@ -83,6 +97,27 @@ export function SaveToZoteroModal({ fileName, dataUrl, docType = "pdf", sourceUr
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
   }, [onDone]);
+
+  // The page is already filed correctly and only the mis-recognised copies
+  // remain: clean up without making a second copy of the page.
+  const handleTrashOnly = async () => {
+    setSaving(true);
+    setError(null);
+    setStatus(misfiled.length === 1 ? "Moving the old entry to the trash…" : "Moving the old entries to the trash…");
+    const failed: string[] = [];
+    for (const entry of misfiled) {
+      const trashed = await fetch(`/api/zotero/items?key=${encodeURIComponent(entry.key)}`, { method: "DELETE" }).catch(() => null);
+      if (!trashed?.ok) failed.push(entry.title.slice(0, 40));
+    }
+    setSaving(false);
+    setStatus(null);
+    if (failed.length) {
+      setError(`Could not move to the trash: ${failed.map((t) => `“${t}”`).join(", ")} — remove in Zotero.`);
+      return;
+    }
+    onSaved?.();
+    setNotice(misfiled.length === 1 ? "The mis-filed entry is in Zotero's trash. The page stays saved as a web page." : "The mis-filed entries are in Zotero's trash. The page stays saved as a web page.");
+  };
 
   const handleSave = async () => {
     setSaving(true);
@@ -133,6 +168,17 @@ export function SaveToZoteroModal({ fileName, dataUrl, docType = "pdf", sourceUr
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Save failed");
 
+      // The page is now filed correctly; the mis-recognised entries can go
+      if (replaceOld && misfiled.length > 0) {
+        setStatus(misfiled.length === 1 ? "Moving the old entry to the trash…" : "Moving the old entries to the trash…");
+        for (const entry of misfiled) {
+          const trashed = await fetch(`/api/zotero/items?key=${encodeURIComponent(entry.key)}`, { method: "DELETE" });
+          if (!trashed.ok) {
+            warning = warning ?? `Saved, but “${entry.title.slice(0, 40)}” could not be moved to the trash — remove it in Zotero.`;
+          }
+        }
+      }
+
       onSaved?.();
       const finalNotice = warning || data.warning;
       if (finalNotice) {
@@ -172,7 +218,9 @@ export function SaveToZoteroModal({ fileName, dataUrl, docType = "pdf", sourceUr
               <span style={{ color: "var(--ink-faint)" }}>Checking your library…</span>
             ) : inLibrary ? (
               <span style={{ color: "var(--badge-text-fg)" }} title={inLibrary.title}>
-                ⚠ Probably already in your library as “{inLibrary.title.length > 48 ? inLibrary.title.slice(0, 48) + "…" : inLibrary.title}”
+                ⚠ {inLibrary.byUrl ? "This page is already in your library, filed as" : "Probably already in your library as"}{" "}
+                “{inLibrary.title.length > 48 ? inLibrary.title.slice(0, 48) + "…" : inLibrary.title}”
+                {inLibrary.byUrl && inLibrary.itemType ? ` (${inLibrary.itemType})` : ""}
               </span>
             ) : (
               <span style={{ color: "var(--ink-muted)" }}>
@@ -245,10 +293,34 @@ export function SaveToZoteroModal({ fileName, dataUrl, docType = "pdf", sourceUr
             <p className="text-[11px] leading-relaxed" style={{ color: "#F87171" }}>{error}</p>
           )}
 
+          {misfiled.length > 0 && (
+            <div className="rounded-md px-2.5 py-2 space-y-1.5" style={{ border: "1px solid var(--border)", background: "var(--paper)" }}>
+              <p className="text-[11px] leading-relaxed" style={{ color: "var(--ink-muted)" }}>
+                {misfiled.length === 1 ? "This entry was" : "These entries were"} made from this page but mis-recognised as a
+                paper — the only attachment is this page&apos;s PDF:
+              </p>
+              <ul className="text-[11px] leading-relaxed pl-3 list-disc" style={{ color: "var(--ink)" }}>
+                {misfiled.map((entry) => (
+                  <li key={entry.key} title={entry.title}>
+                    “{entry.title.length > 56 ? entry.title.slice(0, 56) + "…" : entry.title}” <span style={{ color: "var(--ink-faint)" }}>({entry.itemType})</span>
+                  </li>
+                ))}
+              </ul>
+              <label className="flex items-start gap-2 text-[11px] cursor-pointer" style={{ color: "var(--ink)" }}>
+                <input type="checkbox" className="mt-0.5" checked={replaceOld} onChange={(e) => setReplaceOld(e.target.checked)} />
+                <span>Move {misfiled.length === 1 ? "it" : "them"} to Zotero&apos;s trash after saving</span>
+              </label>
+            </div>
+          )}
+
           <p className="text-[10px] leading-relaxed" style={{ color: "var(--ink-faint)" }}>
-            {docType === "html"
-              ? "Saved as a web page snapshot — the library updates automatically."
-              : "Zotero runs metadata recognition on the PDF — the library updates automatically."}
+            {alreadySaved
+              ? "Already in your library as a web page — saving again makes a second copy."
+              : docType === "html"
+                ? "Saved as a web page snapshot — the library updates automatically."
+                : pageUrl.trim()
+                  ? "Saved as a web page, with the rendered PDF attached — the library updates automatically."
+                  : "Zotero runs metadata recognition on the PDF — the library updates automatically."}
           </p>
         </div>
 
@@ -262,9 +334,22 @@ export function SaveToZoteroModal({ fileName, dataUrl, docType = "pdf", sourceUr
               <button onClick={onDone} disabled={saving} className="btn-ghost text-xs px-3 py-1.5">
                 Don&apos;t save
               </button>
-              <button onClick={handleSave} disabled={saving || loading || !!(!targets.length && !loading)} className="btn-primary text-xs px-4 py-1.5">
-                {saving ? status || "Saving…" : "Save to Zotero"}
-              </button>
+              {/* Already filed as a page: cleaning up the mis-recognised copies is
+                  the likely intent, and saving again is a second copy */}
+              {alreadySaved && misfiled.length > 0 ? (
+                <>
+                  <button onClick={handleSave} disabled={saving || loading} className="btn-ghost text-xs px-3 py-1.5">
+                    Save another copy
+                  </button>
+                  <button onClick={handleTrashOnly} disabled={saving} className="btn-primary text-xs px-4 py-1.5">
+                    {saving ? status || "Working…" : misfiled.length === 1 ? "Trash the mis-filed entry" : "Trash the mis-filed entries"}
+                  </button>
+                </>
+              ) : (
+                <button onClick={handleSave} disabled={saving || loading || !!(!targets.length && !loading)} className="btn-primary text-xs px-4 py-1.5">
+                  {saving ? status || "Saving…" : alreadySaved ? "Save another copy" : "Save to Zotero"}
+                </button>
+              )}
             </>
           )}
         </div>
