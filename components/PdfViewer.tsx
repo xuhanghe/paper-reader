@@ -104,6 +104,37 @@ type ReferencePreviewState = {
 // width/height. PDF.js can CSS-scale the page immediately and redraw it later;
 // the annotation and canvas therefore move as one object with no pixel-space
 // repaint race during zoom.
+// Two rules on one line — a passage asked about that the model then cited,
+// or two citations that overlap — stacked into one twice as thick. Rules
+// that share a line and overlap sideways become one rule spanning both; the
+// first one's colour stands. Washes are left alone: overlapping tints are
+// meant to read as overlapping.
+function mergeRules(bands: HighlightBand[]): HighlightBand[] {
+  const out: HighlightBand[] = [];
+  for (const band of bands) {
+    if (!band.underline) {
+      out.push(band);
+      continue;
+    }
+    const baseline = band.inkBottom ?? band.top + band.height;
+    const same = out.find((other) => {
+      if (!other.underline) return false;
+      const otherBaseline = other.inkBottom ?? other.top + other.height;
+      const sameLine = Math.abs(otherBaseline - baseline) < Math.min(band.height, other.height) * 0.6;
+      const overlap = band.left < other.left + other.width && other.left < band.left + band.width;
+      return sameLine && overlap;
+    });
+    if (!same) {
+      out.push({ ...band });
+      continue;
+    }
+    const left = Math.min(same.left, band.left);
+    same.width = Math.max(same.left + same.width, band.left + band.width) - left;
+    same.left = left;
+  }
+  return out;
+}
+
 function renderPageBands(wrapper: HTMLElement, bands: HighlightBand[]) {
   let overlay = Array.from(wrapper.children).find((el) => el.classList.contains("pr-page-bands")) as
     | HTMLDivElement
@@ -116,7 +147,7 @@ function renderPageBands(wrapper: HTMLElement, bands: HighlightBand[]) {
   }
 
   const fragment = document.createDocumentFragment();
-  for (const band of bands) {
+  for (const band of mergeRules(bands)) {
     const el = document.createElement("div");
     el.dataset.highlightId = band.id;
     el.className = band.underline ? "pr-band pr-asked-rule" : "pr-band";

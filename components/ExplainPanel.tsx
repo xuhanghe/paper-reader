@@ -1,5 +1,5 @@
 "use client";
-import { useRef, useEffect, useLayoutEffect, useMemo, useState, memo, useImperativeHandle } from "react";
+import { useRef, useEffect, useLayoutEffect, useMemo, useState, useCallback, memo, useImperativeHandle } from "react";
 import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
@@ -688,6 +688,20 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
   const lastActiveId = useRef<string | null>(null);
   // The question just asked, kept at the top while its answer streams
   const pinned = useRef<{ id: string; index: number } | null>(null);
+
+  // Room under the list so a question can sit at the top of the panel the
+  // moment it is asked, before any answer exists under it. Sized to what the
+  // question lacks beneath it, so it shrinks to nothing as the answer grows.
+  const spacerRef = useRef<HTMLDivElement | null>(null);
+  const padBelow = useCallback((question: HTMLElement) => {
+    const list = scrollRef.current;
+    const spacer = spacerRef.current;
+    if (!list || !spacer) return;
+    const current = spacer.getBoundingClientRect().height;
+    const questionTop = question.getBoundingClientRect().top - list.getBoundingClientRect().top + list.scrollTop;
+    const below = list.scrollHeight - current - questionTop;
+    spacer.style.height = `${Math.max(0, list.clientHeight - below - 12)}px`;
+  }, []);
   useEffect(() => {
     const lastQuestion = (a: Annotation) => a.messages.map((m) => m.role).lastIndexOf("user");
     const shape = (a: Annotation) => {
@@ -722,14 +736,19 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
       // moment it is asked, so it cannot yet reach the top; it is pinned
       // there and followed as the answer fills in (see below).
       const target = messageRefs.current[`${activeId}:${asked}`] || card;
+      padBelow(target);
       target.scrollIntoView({ behavior: "auto", block: "start" });
       pinned.current = { id: activeId, index: asked };
       return;
     }
     // Merely arrived — clicked, or a passage explained with no question of
     // the reader's own — so its beginning is the place
-    if (switched) card.scrollIntoView({ behavior: "smooth", block: "start" });
+    if (switched) {
+      if (spacerRef.current) spacerRef.current.style.height = "0px";
+      card.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
   }, [activeId, annotations, annotationRefs]);
+
 
   // While the answer streams, keep the question at the top of the panel until
   // it gets there. This is not following the answer's end — the reader's own
@@ -740,15 +759,25 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
     const list = scrollRef.current;
     if (!pin || !list) return;
     const el = messageRefs.current[`${pin.id}:${pin.index}`];
-    if (el) {
+    if (!el) return;
+    const settle = () => {
+      padBelow(el);
       const want = list.scrollTop + (el.getBoundingClientRect().top - list.getBoundingClientRect().top) - 12;
       const reachable = Math.min(want, list.scrollHeight - list.clientHeight);
-      if (reachable > list.scrollTop + 1) list.scrollTop = reachable;
-      if (list.scrollTop >= want - 1) pinned.current = null;
+      if (Math.abs(reachable - list.scrollTop) > 1) list.scrollTop = reachable;
+      return list.scrollTop >= want - 1;
+    };
+    if (settle()) pinned.current = null;
+    // The answer is complete. WebKit re-anchors the scroll after the spacer
+    // shrinks under it, a frame after this runs — so the last word is had one
+    // frame later, and only then is the pin let go.
+    if (!streamingIds.has(pin.id)) {
+      requestAnimationFrame(() => {
+        if (pinned.current?.id === pin.id) settle();
+        pinned.current = null;
+      });
     }
-    // The answer is complete: whatever was reachable has been reached
-    if (!streamingIds.has(pin.id)) pinned.current = null;
-  }, [annotations, streamingIds]);
+  }, [annotations, streamingIds, padBelow]);
   useEffect(() => {
     const list = scrollRef.current;
     if (!list) return;
@@ -1509,6 +1538,7 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
           );
         })}
         <div ref={bottomRef} />
+        <div ref={spacerRef} aria-hidden="true" style={{ height: 0 }} />
       </div>
       {pendingQuote && (
         <button
