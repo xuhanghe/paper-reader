@@ -8,6 +8,7 @@ import { normalizeMathDelimiters } from "@/lib/math-delimiters";
 import { Annotation, Model } from "@/types/session";
 import { isSubmitKey } from "@/lib/keys";
 import { loadPanelScroll, savePanelScroll } from "@/lib/panel-scroll";
+import { trace, traceEnabled, describeForTrace } from "@/lib/panel-trace";
 import { withQuotes, quotePreview, quoteLabel, parseQuotes, addQuote as pushQuote, type Quote, type QuotedPassage } from "@/lib/quotes";
 import { clearMarks, markTextInContainer } from "@/lib/highlight-dom";
 import { parseCitation, citationLabel } from "@/lib/citations";
@@ -368,6 +369,10 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
   // conversations are added, which must not yank the reader back), and saved
   // while scrolling and at teardown so the last position wins.
   const restoredScrollFor = useRef<string | null>(null);
+  // The offset as of the last scroll event. Scroll events are delivered a
+  // frame late, so inside a commit this is still the offset from before it —
+  // what the reader was looking at, before the browser had its say.
+  const settledScrollTop = useRef<number | null>(null);
   useEffect(() => {
     const el = scrollRef.current;
     const key = positionKey;
@@ -375,18 +380,32 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
     if (restoredScrollFor.current !== key) {
       restoredScrollFor.current = key;
       const top = loadPanelScroll(key);
+      trace("list-mounted", { key, restoreTo: top, scrollTop: el.scrollTop, height: el.scrollHeight, conversations: annotations.length });
       // One frame later: the list has to lay out before it can be scrolled
-      if (top !== null) requestAnimationFrame(() => { if (el.isConnected) el.scrollTop = top; });
+      if (top !== null) requestAnimationFrame(() => { if (el.isConnected) { trace("restore", { from: el.scrollTop, to: top }); el.scrollTop = top; } });
     }
     let timer = 0;
     // The offset as last seen while the list was still in the document. By
     // the time the cleanup runs on collapse or unmount the element has been
     // detached, and a detached element reports a scrollTop of 0.
     let last = el.scrollTop;
+    settledScrollTop.current = last;
+    let traced = false;
     const onScroll = () => {
       last = el.scrollTop;
+      settledScrollTop.current = last;
       clearTimeout(timer);
       timer = window.setTimeout(() => savePanelScroll(key, last), 300);
+      // At most one line per frame, with what sits at the top edge then
+      if (traceEnabled() && !traced) {
+        traced = true;
+        requestAnimationFrame(() => {
+          traced = false;
+          const box = el.getBoundingClientRect();
+          const at = document.elementFromPoint(box.left + box.width / 2, box.top + 16);
+          trace("scroll", { top: Math.round(el.scrollTop), max: Math.round(el.scrollHeight - el.clientHeight), atTop: describeForTrace(at?.closest('[style*="scroll-margin"]') ?? at) });
+        });
+      }
     };
     el.addEventListener("scroll", onScroll, { passive: true });
     return () => {
@@ -394,7 +413,7 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
       el.removeEventListener("scroll", onScroll);
       savePanelScroll(key, el.isConnected ? el.scrollTop : last);
       // Once the list is gone, the next one must restore again
-      if (!el.isConnected) restoredScrollFor.current = null;
+      if (!el.isConnected) { trace("list-unmounted", { key, last }); restoredScrollFor.current = null; }
     };
   }, [isOpen, annotations.length, positionKey]);
 
@@ -585,6 +604,7 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
     requestAnimationFrame(() => {
       const el = find() ?? annotationRefs.current[annotationId];
       if (!el) return;
+      trace("scrollIntoView", { reason: "jump to a linked passage", target: describeForTrace(el), block: "center" });
       el.scrollIntoView({ behavior: "smooth", block: "center" });
       flash(el);
     });
@@ -689,7 +709,9 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
   const lastActiveId = useRef<string | null>(null);
   // The question just asked, followed while its answer streams: it stays in
   // the window, rises as the answer grows beneath it, and stops at the top.
-  const pinned = useRef<{ id: string; index: number; since: number } | null>(null);
+  // Where the question sat in the window, and how tall the answer was, when
+  // it was asked: it is held at that place, rising by what the answer grows.
+  const pinned = useRef<{ id: string; index: number; since: number; questionTop: number; answerHeight: number | null } | null>(null);
   useEffect(() => {
     const lastQuestion = (a: Annotation) => a.messages.map((m) => m.role).lastIndexOf("user");
     const shape = (a: Annotation) => {
@@ -716,6 +738,8 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
 
     const asked = lastQuestion(active);
     const askedNow = asked >= 0 && shape(active) !== before;
+    const list = scrollRef.current;
+    trace("landing", { conversation: activeId.slice(0, 8), switched, askedNow, asked, before: before?.slice(0, 48) ?? null, now: shape(active).slice(0, 48), scrollTop: list ? Math.round(list.scrollTop) : null });
     if (askedNow) {
       // Just asked, wherever it was asked: the question is brought into the
       // window if it is not already there — and no further. Nothing is
@@ -723,19 +747,42 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
       // question up (see below). Instant: Safari abandons a smooth scroll
       // whose target moves, and the panel's end moves while an answer streams.
       const target = messageRefs.current[`${activeId}:${asked}`] || card;
+      // WebKit moves a scroller of its own accord when its content changes
+      // under it — the old answer removed by an edit, the arriving one — by
+      // amounts that follow no rule of ours, in either direction. The offset
+      // from before the commit is still on record; go back to it first.
+      const before = settledScrollTop.current;
+      if (list && before !== null && Math.abs(list.scrollTop - before) > 1) {
+        trace("undo-shift", { from: Math.round(list.scrollTop), to: Math.round(before) });
+        list.scrollTop = before;
+      }
       target.scrollIntoView({ behavior: "auto", block: "nearest" });
-      pinned.current = { id: activeId, index: asked, since: Date.now() };
+      const answer = messageRefs.current[`${activeId}:${asked + 1}`];
+      const questionTop = list ? target.getBoundingClientRect().top - list.getBoundingClientRect().top : 0;
+      pinned.current = {
+        id: activeId,
+        index: asked,
+        since: Date.now(),
+        questionTop,
+        answerHeight: answer ? answer.getBoundingClientRect().height : null,
+      };
+      trace("scrollIntoView", { reason: "asked", target: describeForTrace(target), block: "nearest", scrollTopAfter: list ? Math.round(list.scrollTop) : null, questionTop: Math.round(questionTop), answerHeight: pinned.current.answerHeight });
       return;
     }
     // Merely arrived — clicked, or a passage explained with no question of
     // the reader's own — so its beginning is the place
-    if (switched) card.scrollIntoView({ behavior: "smooth", block: "start" });
+    if (switched) {
+      trace("scrollIntoView", { reason: "switched to a conversation", target: describeForTrace(card), block: "start" });
+      card.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
   }, [activeId, annotations, annotationRefs]);
 
   // While the answer streams, the question rises with it: the list scrolls
-  // down exactly as much as the answer grows, until the question reaches the
-  // top, and then no further — the rest of the answer arrives below the fold,
-  // for the reader to scroll to. The reader scrolling on their own ends it.
+  // down exactly as much as the answer has grown, until the question reaches
+  // the top, and then no further — the rest of the answer arrives below the
+  // fold, for the reader to scroll to. Growth, not room: with another
+  // conversation below, there is room to put the question at the top at once,
+  // and that is a jump, not a rise. The reader scrolling on their own ends it.
   useEffect(() => {
     const pin = pinned.current;
     const list = scrollRef.current;
@@ -743,11 +790,22 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
     const el = messageRefs.current[`${pin.id}:${pin.index}`];
     if (!el) return;
     const settle = () => {
-      const want = list.scrollTop + (el.getBoundingClientRect().top - list.getBoundingClientRect().top) - 12;
-      const reachable = Math.min(want, list.scrollHeight - list.clientHeight);
-      // Only ever downwards: the question rises, it is never pushed back
-      if (reachable > list.scrollTop + 1) list.scrollTop = reachable;
-      return list.scrollTop >= want - 1;
+      const answer = messageRefs.current[`${pin.id}:${pin.index + 1}`];
+      const answerHeight = answer ? answer.getBoundingClientRect().height : 0;
+      // First sight of the answer's bubble is the baseline it grows from
+      if (pin.answerHeight === null) pin.answerHeight = answerHeight;
+      const grown = Math.max(0, answerHeight - pin.answerHeight);
+      // Where the question belongs now: where it was, less what the answer
+      // has grown, and never above the top. Held there in both directions —
+      // the browser's own shifts (see above) are undone, not followed.
+      const wanted = Math.max(12, pin.questionTop - grown);
+      const actual = el.getBoundingClientRect().top - list.getBoundingClientRect().top;
+      const from = list.scrollTop;
+      if (Math.abs(actual - wanted) > 1) list.scrollTop = Math.max(0, Math.min(from + (actual - wanted), list.scrollHeight - list.clientHeight));
+      // At the top: the rest of the answer forms below the fold, unfollowed
+      const done = wanted <= 12;
+      if (traceEnabled() && (Math.round(list.scrollTop) !== Math.round(from) || done)) trace("settle", { from: Math.round(from), to: Math.round(list.scrollTop), grown: Math.round(grown), questionWas: Math.round(actual), questionNow: Math.round(el.getBoundingClientRect().top - list.getBoundingClientRect().top), wanted: Math.round(wanted), max: Math.round(list.scrollHeight - list.clientHeight), done });
+      return done;
     };
     if (settle()) pinned.current = null;
     // The answer is complete. WebKit re-anchors the scroll a frame after
@@ -764,18 +822,23 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
     if (!list) return;
     // A trackpad keeps sending the tail of an earlier flick for a moment;
     // that is not the reader taking over
-    const release = () => { if (pinned.current && Date.now() - pinned.current.since > 800) pinned.current = null; };
-    const onKey = (e: KeyboardEvent) => {
-      if (["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "].includes(e.key)) release();
+    const release = (via: string) => {
+      if (pinned.current && Date.now() - pinned.current.since > 800) { trace("release", { via }); pinned.current = null; }
     };
-    list.addEventListener("wheel", release, { passive: true });
-    list.addEventListener("touchstart", release, { passive: true });
-    list.addEventListener("mousedown", release);
+    const onWheel = () => release("wheel");
+    const onTouch = () => release("touch");
+    const onMouse = () => release("mousedown");
+    const onKey = (e: KeyboardEvent) => {
+      if (["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "].includes(e.key)) release(`key ${e.key}`);
+    };
+    list.addEventListener("wheel", onWheel, { passive: true });
+    list.addEventListener("touchstart", onTouch, { passive: true });
+    list.addEventListener("mousedown", onMouse);
     list.addEventListener("keydown", onKey);
     return () => {
-      list.removeEventListener("wheel", release);
-      list.removeEventListener("touchstart", release);
-      list.removeEventListener("mousedown", release);
+      list.removeEventListener("wheel", onWheel);
+      list.removeEventListener("touchstart", onTouch);
+      list.removeEventListener("mousedown", onMouse);
       list.removeEventListener("keydown", onKey);
     };
   }, [isOpen, annotations.length]);
@@ -877,7 +940,7 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
     <div className="flex items-center gap-1.5 mb-1.5">
       <span className="text-[10px] uppercase tracking-widest shrink-0" style={{ color: "var(--ink-faint)" }}>Follow up on</span>
       <button
-        onClick={() => { annotationRefs.current[annotation.id]?.scrollIntoView({ behavior: "smooth", block: "start" }); }}
+        onClick={() => { trace("scrollIntoView", { reason: "follow-up bar label clicked", conversation: annotation.id.slice(0, 8), block: "start" }); annotationRefs.current[annotation.id]?.scrollIntoView({ behavior: "smooth", block: "start" }); }}
         className="text-[11px] min-w-0 truncate transition-opacity hover:opacity-70"
         style={{ color: "var(--accent)" }}
         title="Scroll to this conversation"

@@ -495,6 +495,8 @@ export default function Home() {
 
   const annotationRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const pdfViewerRef = useRef<PdfViewerHandle>(null);
+  // Where I have read up to when nothing else says: the page in view
+  const readingPage = useCallback(() => pdfViewerRef.current?.getCurrentPage?.() ?? undefined, []);
 
   // Clicking a highlight in the paper reveals its entry in the Notes panel.
   // The counter distinguishes repeat clicks on the same highlight.
@@ -596,6 +598,8 @@ export default function Home() {
         selected_text?: string;
         question?: string;
         page_number?: number;
+        // Where I have read up to; the model answers from there back
+        read_up_to?: number;
         image_base64?: string;
         web_search?: boolean;
       }
@@ -815,7 +819,7 @@ export default function Home() {
       const positions = segments && segments.length > 1 ? segments : undefined;
       const id = addAnnotation({ type: "text", selectedText: text, pageNumber, occurrence, position, positions, messages: [{ role: "assistant", content: "" }] });
       setActiveAnnotationId(id);
-      streamAsk(id, { kind: intent, selected_text: text, page_number: pageNumber });
+      streamAsk(id, { kind: intent, selected_text: text, page_number: pageNumber, read_up_to: pageNumber });
     },
     [addAnnotation, streamAsk]
   );
@@ -840,7 +844,7 @@ export default function Home() {
         messages: [{ role: "user", content: question }, { role: "assistant", content: "" }],
       });
       setActiveAnnotationId(id);
-      streamAsk(id, { kind: "question", selected_text: text, question, page_number: pageNumber });
+      streamAsk(id, { kind: "question", selected_text: text, question, page_number: pageNumber, read_up_to: pageNumber });
     },
     [addAnnotation, streamAsk]
   );
@@ -875,9 +879,10 @@ export default function Home() {
         question: fusedQuestion,
         image_base64: imageDataUrl,
         web_search: webSearch,
+        read_up_to: readingPage(),
       });
     },
-    [addAnnotation, streamAsk]
+    [addAnnotation, streamAsk, readingPage]
   );
 
   // Zero-copy annotations: for Zotero papers, highlights are written into
@@ -998,12 +1003,13 @@ export default function Home() {
         selected_text: opening ? annotation.selectedText : undefined,
         page_number: opening ? annotation.pageNumber : undefined,
         image_base64: previous.imageDataUrl,
+        read_up_to: annotation.pageNumber ?? readingPage(),
         // The provider session still holds the first wording and its answer;
         // the model is told this replaces them rather than repeats them
         rewrite_of_turn: previous.turn ?? null,
       });
     },
-    [session.annotations, replaceMessageFrom, stopAsk, streamAsk]
+    [session.annotations, replaceMessageFrom, stopAsk, streamAsk, readingPage]
   );
 
   const handleRemoveZoteroAnnotation = useCallback(
@@ -1258,9 +1264,9 @@ export default function Home() {
 
       // Follow-ups continue the fused paper conversation — the model already
       // has this card's context from earlier turns
-      streamAsk(annotationId, { kind: "followup", question, image_base64: imageDataUrl });
+      streamAsk(annotationId, { kind: "followup", question, image_base64: imageDataUrl, read_up_to: annotation.pageNumber ?? readingPage() });
     },
-    [appendMessage, session.annotations, streamAsk]
+    [appendMessage, session.annotations, streamAsk, readingPage]
   );
 
   const handlePdfUpload = useCallback(

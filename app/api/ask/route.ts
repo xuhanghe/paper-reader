@@ -103,7 +103,7 @@ function teeToThread(source: ReadableStream, opts: TeeOpts): ReadableStream {
 
 export async function POST(req: Request) {
   const {
-    paper_id, paper_title, kind, selected_text, question, page_number, rewrite_of_turn,
+    paper_id, paper_title, kind, selected_text, question, page_number, read_up_to, rewrite_of_turn,
     image_base64, annotation_id, model, effort, custom, session_id, skills,
   } = await req.json();
 
@@ -117,6 +117,7 @@ export async function POST(req: Request) {
     selectedText: selected_text,
     question,
     pageNumber: page_number,
+    readUpTo: typeof read_up_to === "number" && read_up_to > 0 ? read_up_to : undefined,
     // null marks a rewrite whose original was never numbered
     rewriteOfTurn: rewrite_of_turn === undefined ? undefined : typeof rewrite_of_turn === "number" ? rewrite_of_turn : null,
   });

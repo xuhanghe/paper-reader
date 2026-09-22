@@ -1,6 +1,6 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
-import { buildTextPrompt, buildImagePrompt, buildAskMessage, buildSessionBootstrap, isDefinitionQuestion, SYSTEM_PROMPT_TEXT, SYSTEM_PROMPT_IMAGE } from "../lib/prompts.js";
+import { buildTextPrompt, buildImagePrompt, buildAskMessage, buildSessionBootstrap, isDefinitionQuestion, wantsWholePaper, SYSTEM_PROMPT_TEXT, SYSTEM_PROMPT_IMAGE } from "../lib/prompts.js";
 
 // A reader stuck on a term wants the term, not its place in the argument. The
 // paper-focused default used to answer "what does this mean?" with the latter.
@@ -8,7 +8,7 @@ describe("the intent of an ask shapes its message", () => {
   test("Explain puts the idea first and the paper's use of it second", () => {
     const msg = buildAskMessage({ kind: "explain", selectedText: "Lorenzo prediction", pageNumber: 2 });
     assert.match(msg, /first what it means on its own/);
-    assert.match(msg, /then, briefly, what it is doing here/);
+    assert.match(msg, /then, briefly, what it is doing at this point, given what came before/);
   });
 
   test("Define asks for the term on its own terms and keeps the paper out", () => {
@@ -154,5 +154,55 @@ describe("a question asked again after editing", () => {
 
   test("an ordinary ask carries no such note", () => {
     assert.doesNotMatch(buildAskMessage({ kind: "followup", question: "why?" }), /This replaces/);
+  });
+});
+
+// A reader checking their understanding page by page does not want the
+// paper's later sections in the answer: the ask says where they are, and the
+// model stands on what came before it plus general knowledge — unless the
+// reader asks for the paper as a whole, in so many words.
+describe("the answer stands on what the reader has read", () => {
+  test("an ask says where the reader is and what to leave out", () => {
+    const msg = buildAskMessage({ kind: "question", selectedText: "the kernel", question: "why is this here?", pageNumber: 4, readUpTo: 4 });
+    assert.match(msg, /I am at page 4 of the paper/);
+    assert.match(msg, /leave what the paper says after it out/);
+    assert.match(msg, /say only that it comes later and where/);
+  });
+
+  test("a follow-up carries it too, with the page its conversation is on", () => {
+    const msg = buildAskMessage({ kind: "followup", question: "and then?", readUpTo: 7 });
+    assert.match(msg, /I am at page 7/);
+  });
+
+  test("with no page known, nothing is claimed", () => {
+    assert.doesNotMatch(buildAskMessage({ kind: "followup", question: "and then?" }), /I am at page/);
+  });
+
+  test("a definition leaves the paper out already, so it says nothing about pages", () => {
+    assert.doesNotMatch(buildAskMessage({ kind: "define", selectedText: "MPKI", readUpTo: 3 }), /I am at page/);
+  });
+
+  test("asking for the paper as a whole lifts the limit", () => {
+    for (const q of ["how does this fit the whole paper?", "overall picture of the method?", "globally, what is the contribution?", "what does the rest of the paper do with it?", "这个在整篇论文里是什么作用", "从全文来看这个方法怎么样", "后文有没有解决这个问题"]) {
+      assert.equal(wantsWholePaper(q), true, q);
+      assert.match(buildAskMessage({ kind: "followup", question: q, readUpTo: 2 }), /the paper as a whole: draw on all of it/, q);
+    }
+  });
+
+  test("a passing 'overall' or 'later' is not a request for the whole paper", () => {
+    for (const q of ["what is the overall throughput here?", "is this later replaced by a cache?", "what is this?", "这里的latency是单程吗", "why does the author say this?"]) {
+      assert.equal(wantsWholePaper(q), false, q);
+    }
+  });
+
+  test("the bootstrap sets the rule, and keeps the map from answering ahead", () => {
+    const boot = buildSessionBootstrap({ title: "A paper", agentic: true, paperPath: "/p/paper.md", mindmapJson: "{}" });
+    assert.match(boot, /READ ALONG WITH ME/);
+    assert.match(boot, /read no further than the end of page N/);
+    assert.match(boot, /not to answer ahead of where I am/);
+  });
+
+  test("explain asks for the passage's role given what came before, not what comes after", () => {
+    assert.match(buildAskMessage({ kind: "explain", selectedText: "x", pageNumber: 2 }), /at this point, given what came before/);
   });
 });

@@ -89,7 +89,8 @@ Ground rules:
   3. Ignore the language of the paper and the language of these instructions. They are in English because the app writes them, which tells you nothing about what I want.
   Re-decide this each turn; I may switch languages mid-conversation and you should switch with me.
 - Explain plainly with no assumed knowledge; be direct and factual; do not judge the paper's claims.
-- When I give you a selected passage, explain the idea itself first — self-contained, as if I had never opened this paper — and only then, briefly, what it is doing here. When I ask what something *is* or *means*, the idea itself is the whole answer: leave the paper out unless I ask about it.
+- READ ALONG WITH ME. I read the paper in order, checking my understanding as I go, and each ask says where I am (a page). Stand on what comes before that point — the paper up to there, and general knowledge (the web, when I ask for something outside the paper). What the paper says after that point stays out: I have not read it yet, and being told it is not what I asked. Where a question can only be settled by something later, say only that the paper comes to it later, naming the section or page, without explaining it. The one exception is when I ask for the paper as a whole — "overall", "in the whole paper", "整篇" — and then all of it is fair game.
+- When I give you a selected passage, explain the idea itself first — self-contained, as if I had never opened this paper — and only then, briefly, what it is doing at this point, given what came before. When I ask what something *is* or *means*, the idea itself is the whole answer: leave the paper out unless I ask about it.
 - When I give you a figure, explain how to read it and what it shows.
 - Point to specific parts of the paper (sections/pages) when relevant.
 - CITE WHAT YOU ARE POINTING AT, as a markdown link. Two kinds, and only these two:
@@ -101,11 +102,11 @@ Ground rules:
 The paper: "${opts.title}"`,
   ];
   if (opts.mindmapJson) {
-    parts.push(`Structure map of the paper (generated earlier):\n${opts.mindmapJson}`);
+    parts.push(`Structure map of the paper (generated earlier). It covers the whole paper: use it to find your way around, not to answer ahead of where I am.\n${opts.mindmapJson}`);
   }
   if (opts.agentic && opts.paperPath) {
     parts.push(
-      `The paper's full extracted text is in this file — read it (or the relevant parts) with your file tools whenever you need more context than I quote:\n${opts.paperPath}\n\nIf you have Zotero MCP tools available, you may also use them to look up related papers in my library.`
+      `The paper's full extracted text is in this file — read it (or the relevant parts) with your file tools whenever you need more context than I quote:\n${opts.paperPath}\nIt is marked up with [page N] markers. When I am at page N, read no further than the end of page N unless I have asked for the paper as a whole.\n\nIf you have Zotero MCP tools available, you may also use them to look up related papers in my library.`
     );
     if (opts.pagesDir && opts.pagesCount) {
       parts.push(
@@ -200,11 +201,33 @@ export function rewriteDirective(turn?: number): string {
   return `This replaces ${which}: I have rewritten it. Answer this version on its own terms, in full, as if the earlier wording and your answer to it had never been given — do not refer back to them or say it was already explained.\n\n`;
 }
 
+// A reader checking their understanding as they go does not want to be told
+// what the paper says next. Unless they ask for the paper as a whole, in so
+// many words — these, conservatively; a passing "overall" is not a request
+// for the whole paper.
+const WHOLE_PAPER =
+  /\b(whole|entire|full)\s+(paper|article|work|thing)\b|\bpaper[- ]level\b|\bas\s+a\s+whole\b|\bglobal(ly)?\b|\b(rest|remainder)\s+of\s+the\s+paper\b|\blater\s+(in|on\s+in)\s+the\s+paper\b|\bbig\s+picture\b|\boverall\s+(picture|argument|story|structure|view|take)\b|整篇|全文|通篇|全局|整体上|整个论文|整个文章|后文|后面的(部分|章节|内容)|从整篇来看/i;
+
+export function wantsWholePaper(question: string | undefined): boolean {
+  return WHOLE_PAPER.test((question ?? "").trim());
+}
+
+// Where the reader is, restated on the message: the bootstrap's rule is far
+// behind on a long conversation, and this is what actually holds.
+export function readingDirective(readUpTo: number | undefined, question: string | undefined): string {
+  if (wantsWholePaper(question)) return "\n\nHere I am asking about the paper as a whole: draw on all of it.";
+  if (!readUpTo) return "";
+  return `\n\nI am at page ${readUpTo} of the paper. Stand on what comes before this point in the paper and on general knowledge; leave what the paper says after it out — if the answer needs something later, say only that it comes later and where.`;
+}
+
 export function buildAskMessage(opts: {
   kind: AskKind;
   selectedText?: string;
   question?: string;
   pageNumber?: number;
+  // The page the reader has read up to: the passage's page, the page a
+  // conversation started on, or the page in view for a general question
+  readUpTo?: number;
   // The turn this question replaces, when it is a rewrite of one already asked
   rewriteOfTurn?: number | null;
 }): string {
@@ -212,7 +235,9 @@ export function buildAskMessage(opts: {
   // An empty follow-up has to stay empty; the caller rejects it
   if (!body.trim()) return body;
   const rewrite = opts.rewriteOfTurn !== undefined ? rewriteDirective(opts.rewriteOfTurn ?? undefined) : "";
-  return `${rewrite}${body}${CITATION_DIRECTIVE}`;
+  // A definition already leaves the paper out altogether
+  const reading = opts.kind === "define" ? "" : readingDirective(opts.readUpTo, opts.question);
+  return `${rewrite}${body}${reading}${CITATION_DIRECTIVE}`;
 }
 
 // The shape of a definition: the idea on its own terms, the paper left out.
@@ -231,7 +256,7 @@ function askBody(opts: {
   const language = languageDirective(opts.question, opts.selectedText);
   switch (opts.kind) {
     case "explain":
-      return `I selected this passage${page}:\n\n"${opts.selectedText}"\n\nExplain it: first what it means on its own, self-contained, as if I had never opened this paper; then, briefly, what it is doing here.${language}`;
+      return `I selected this passage${page}:\n\n"${opts.selectedText}"\n\nExplain it: first what it means on its own, self-contained, as if I had never opened this paper; then, briefly, what it is doing at this point, given what came before.${language}`;
     case "define":
       return `I selected this term${page}:\n\n"${opts.selectedText}"\n\n${DEFINE_CONTRACT}${language}`;
     case "question":

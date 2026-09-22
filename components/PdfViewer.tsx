@@ -1,5 +1,6 @@
 "use client";
 import type { SelectionIntent } from "@/lib/prompts";
+import { trace, traceEnabled } from "@/lib/panel-trace";
 import { useRef, useState, useCallback, useEffect, forwardRef, useImperativeHandle } from "react";
 import { AnnotationMode, getDocument, GlobalWorkerOptions } from "pdfjs-dist";
 import type { PDFDocumentProxy } from "pdfjs-dist";
@@ -136,6 +137,14 @@ function mergeRules(bands: HighlightBand[]): HighlightBand[] {
 }
 
 function renderPageBands(wrapper: HTMLElement, bands: HighlightBand[]) {
+  const merged = mergeRules(bands);
+  if (traceEnabled()) {
+    // Every rule as it will be painted, in CSS px of the page, with the raw
+    // count before merging — for a report of a rule that looks wrong
+    const box = wrapper.getBoundingClientRect();
+    const px = (b: HighlightBand) => ({ id: b.id.slice(0, 8), left: +(b.left * box.width).toFixed(1), top: +((b.inkBottom ?? b.top + b.height) * box.height).toFixed(2), width: +(b.width * box.width).toFixed(1), lineHeight: +(b.height * box.height).toFixed(1), color: b.color });
+    trace("bands", { page: wrapper.dataset.pageNumber ?? wrapper.closest(".page")?.getAttribute("data-page-number"), dpr: window.devicePixelRatio, pageWidth: +box.width.toFixed(1), pageHeight: +box.height.toFixed(1), rulesBefore: bands.filter((b) => b.underline).length, rules: merged.filter((b) => b.underline).map(px), washes: merged.filter((b) => !b.underline).length });
+  }
   let overlay = Array.from(wrapper.children).find((el) => el.classList.contains("pr-page-bands")) as
     | HTMLDivElement
     | undefined;
@@ -147,7 +156,7 @@ function renderPageBands(wrapper: HTMLElement, bands: HighlightBand[]) {
   }
 
   const fragment = document.createDocumentFragment();
-  for (const band of mergeRules(bands)) {
+  for (const band of merged) {
     const el = document.createElement("div");
     el.dataset.highlightId = band.id;
     el.className = band.underline ? "pr-band pr-asked-rule" : "pr-band";
@@ -604,6 +613,9 @@ export type PdfViewerHandle = {
   // what "go back to where I came from" needs from this pane
   getScroll?: () => number;
   setScroll?: (top: number) => void;
+  // The page in view — where the reader has read up to, for a question asked
+  // with no passage to say so
+  getCurrentPage?: () => number | undefined;
 };
 
 // Built on the official PDF.js viewer component (the same one Overleaf uses):
@@ -2293,6 +2305,7 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
   // ── Imperative handle ───────────────────────────────────────────
   useImperativeHandle(ref, () => ({
     getScroll: () => containerRef.current?.scrollTop ?? 0,
+    getCurrentPage: () => viewerRef.current?.currentPageNumber || undefined,
     setScroll: (top: number) => containerRef.current?.scrollTo({ top, behavior: "smooth" }),
     // Resolve a quote with the PDF character model used by pointer selection.
     // The brief flash and retained citation underline therefore share one
