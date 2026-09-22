@@ -51,10 +51,15 @@ export function SelectionPopover({ rect, selectedText, onExplain, onDefine, onQu
         borderRadius: "6px",
         boxShadow: "0 8px 24px rgba(0,0,0,0.5)",
         padding: "6px 8px",
-        width: "320px",
+        // As wide as its toolbar needs — the verbs, the swatches and Note grew
+        // past a fixed width and spilled out of the box — and no wider than
+        // the window; only then does the toolbar wrap onto a second line
+        width: "max-content",
+        minWidth: "320px",
+        maxWidth: "min(92vw, 560px)",
       }}
     >
-      <div className="flex items-center gap-0.5">
+      <div className="flex flex-wrap items-center gap-x-0.5 gap-y-1">
         <button
           onClick={onExplain}
           className="text-sm font-medium transition-opacity hover:opacity-80 px-1 whitespace-nowrap"
