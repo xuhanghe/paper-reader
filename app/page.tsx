@@ -590,6 +590,9 @@ export default function Home() {
       annotationId: string,
       ask: {
         kind: AskKind;
+        // Present when the question replaces one already asked: the turn it
+        // replaces, or null when that one was never numbered
+        rewrite_of_turn?: number | null;
         selected_text?: string;
         question?: string;
         page_number?: number;
@@ -995,6 +998,9 @@ export default function Home() {
         selected_text: opening ? annotation.selectedText : undefined,
         page_number: opening ? annotation.pageNumber : undefined,
         image_base64: previous.imageDataUrl,
+        // The provider session still holds the first wording and its answer;
+        // the model is told this replaces them rather than repeats them
+        rewrite_of_turn: previous.turn ?? null,
       });
     },
     [session.annotations, replaceMessageFrom, stopAsk, streamAsk]

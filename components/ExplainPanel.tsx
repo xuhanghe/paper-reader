@@ -326,7 +326,7 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
     // back, so rewording a question never silently drops what it pointed at
     const restored = withQuotes(
       editDraft.trim(),
-      editing.quotes.map((q, n) => ({ id: String(n), text: q.text, source: q.source }))
+      editing.quotes.map((q, n) => ({ id: String(n), text: q.text, source: q.source, origin: q.origin, page: q.page }))
     );
     onEditMessage?.(annotationId, editing.index, restored);
     setEditing(null);
@@ -681,52 +681,54 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
   // to one for the first time, you want its beginning. Having just asked
   // something, you want the end — the question you typed and the answer forming
   // under it, not the top of a thread you have already read.
-  const seenTurns = useRef<Map<string, number>>(new Map());
+  // What a conversation looked like when last seen: how long it is, and its
+  // last question. Asking changes that — a new question, a rewritten one, a
+  // conversation opened with one — and a streaming answer does not.
+  const seenShape = useRef<Map<string, string>>(new Map());
   const lastActiveId = useRef<string | null>(null);
   // The question just asked, kept at the top while its answer streams
   const pinned = useRef<{ id: string; index: number } | null>(null);
   useEffect(() => {
-    // Every conversation's length is tracked, not just the active one. The
-    // follow-up box belongs to whichever conversation you are reading, which
-    // is often not the one that was last clicked — and tracking only the
-    // active one made asking in any other look like arriving there for the
-    // first time, which lands at the top of a thread you just wrote into.
-    const before = activeId ? seenTurns.current.get(activeId) : undefined;
-    const counts = new Map<string, number>();
-    for (const a of annotations) counts.set(a.id, a.messages.length);
-    seenTurns.current = counts;
+    const lastQuestion = (a: Annotation) => a.messages.map((m) => m.role).lastIndexOf("user");
+    const shape = (a: Annotation) => {
+      const asked = lastQuestion(a);
+      return `${a.messages.length}:${asked}:${asked >= 0 ? a.messages[asked].content : ""}`;
+    };
+    // Every conversation is tracked, not just the active one: the follow-up
+    // box belongs to whichever conversation is nearest it, often not the one
+    // last clicked, and asking there must read as asking, not as arriving.
+    const before = activeId ? seenShape.current.get(activeId) : undefined;
+    const shapes = new Map<string, string>();
+    for (const a of annotations) shapes.set(a.id, shape(a));
+    seenShape.current = shapes;
 
     if (!activeId) {
       lastActiveId.current = null;
       return;
     }
     const card = annotationRefs.current[activeId];
-    const turns = counts.get(activeId) ?? 0;
+    const active = annotations.find((a) => a.id === activeId);
     const switched = lastActiveId.current !== activeId;
-    const grew = before !== undefined && turns > before;
     lastActiveId.current = activeId;
-    // A streaming answer rewrites its message without adding one, so this does
-    // not fight the reader for the scrollbar while text arrives
-    if (!card || (!switched && !grew)) return;
-    if (!grew) {
-      card.scrollIntoView({ behavior: "smooth", block: "start" });
+    if (!card || !active) return;
+
+    const asked = lastQuestion(active);
+    const askedNow = asked >= 0 && shape(active) !== before;
+    if (askedNow) {
+      // Just asked, wherever it was asked: the question goes to the top of
+      // the panel, with the answer forming under it. Instant — Safari
+      // abandons a smooth scroll whose target moves, and the panel's end
+      // moves while an answer streams. Nothing sits under a question the
+      // moment it is asked, so it cannot yet reach the top; it is pinned
+      // there and followed as the answer fills in (see below).
+      const target = messageRefs.current[`${activeId}:${asked}`] || card;
+      target.scrollIntoView({ behavior: "auto", block: "start" });
+      pinned.current = { id: activeId, index: asked };
       return;
     }
-    // Just asked: put the question at the top of the panel, with the answer
-    // forming under it. Aligning the card's *end* used to be the target, and
-    // the end is exactly what moves while the answer streams in — Safari
-    // abandons a smooth scroll whose target keeps moving and leaves the list
-    // wherever it was, often on the thread above the question. The question
-    // itself does not move, and an instant scroll cannot be interrupted, nor
-    // does it drag the panel through pages of unpainted tiles.
-    const messages = annotations.find((a) => a.id === activeId)?.messages ?? [];
-    const asked = messages.map((m) => m.role).lastIndexOf("user");
-    const target = (asked >= 0 && messageRefs.current[`${activeId}:${asked}`]) || card;
-    target.scrollIntoView({ behavior: "auto", block: "start" });
-    // Nothing sits under a question the moment it is asked, so it cannot yet
-    // reach the top; it is pinned there instead and followed as the answer
-    // fills in beneath it (see below)
-    pinned.current = asked >= 0 ? { id: activeId, index: asked } : null;
+    // Merely arrived — clicked, or a passage explained with no question of
+    // the reader's own — so its beginning is the place
+    if (switched) card.scrollIntoView({ behavior: "smooth", block: "start" });
   }, [activeId, annotations, annotationRefs]);
 
   // While the answer streams, keep the question at the top of the panel until

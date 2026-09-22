@@ -103,7 +103,7 @@ function teeToThread(source: ReadableStream, opts: TeeOpts): ReadableStream {
 
 export async function POST(req: Request) {
   const {
-    paper_id, paper_title, kind, selected_text, question, page_number,
+    paper_id, paper_title, kind, selected_text, question, page_number, rewrite_of_turn,
     image_base64, annotation_id, model, effort, custom, session_id, skills,
   } = await req.json();
 
@@ -112,7 +112,14 @@ export async function POST(req: Request) {
   }
 
   const provider = resolveProvider(model);
-  let message = buildAskMessage({ kind, selectedText: selected_text, question, pageNumber: page_number });
+  let message = buildAskMessage({
+    kind,
+    selectedText: selected_text,
+    question,
+    pageNumber: page_number,
+    // null marks a rewrite whose original was never numbered
+    rewriteOfTurn: rewrite_of_turn === undefined ? undefined : typeof rewrite_of_turn === "number" ? rewrite_of_turn : null,
+  });
   if (!message.trim() && !image_base64) return new Response("empty request", { status: 400 });
 
   // Web access is a capability of the reader, not a per-message mode. Agentic

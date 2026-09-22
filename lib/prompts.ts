@@ -191,15 +191,28 @@ export function isDefinitionQuestion(question: string | undefined): boolean {
   return !PAPER_POINTER.test(asked);
 }
 
+// A question rewritten and asked again. The conversation is one provider
+// session that already holds the first wording and its answer, and cannot
+// forget them — so the model was answering "I explained this already". It is
+// told what happened instead.
+export function rewriteDirective(turn?: number): string {
+  const which = turn ? `my question in [turn ${turn}]` : "an earlier question of mine";
+  return `This replaces ${which}: I have rewritten it. Answer this version on its own terms, in full, as if the earlier wording and your answer to it had never been given — do not refer back to them or say it was already explained.\n\n`;
+}
+
 export function buildAskMessage(opts: {
   kind: AskKind;
   selectedText?: string;
   question?: string;
   pageNumber?: number;
+  // The turn this question replaces, when it is a rewrite of one already asked
+  rewriteOfTurn?: number | null;
 }): string {
   const body = askBody(opts);
   // An empty follow-up has to stay empty; the caller rejects it
-  return body.trim() ? `${body}${CITATION_DIRECTIVE}` : body;
+  if (!body.trim()) return body;
+  const rewrite = opts.rewriteOfTurn !== undefined ? rewriteDirective(opts.rewriteOfTurn ?? undefined) : "";
+  return `${rewrite}${body}${CITATION_DIRECTIVE}`;
 }
 
 // The shape of a definition: the idea on its own terms, the paper left out.

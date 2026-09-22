@@ -1004,11 +1004,39 @@ describe("landing after asking in a conversation you had not clicked", () => {
     assert.deepEqual(scrolls.map((s) => s.block), ["start"]);
   });
 
-  test("a brand-new conversation lands at its beginning too", () => {
+  test("a fresh explain — no question of the reader's own — lands at its beginning", () => {
     setup();
     show([turns(4, "a1")], "a1");
     scrolls.length = 0;
-    show([turns(4, "a1"), turns(2, "c3")], "c3");   // a fresh explain
-    assert.deepEqual(scrolls.map((s) => s.block), ["start"]);
+    show([turns(4, "a1"), thread([{ role: "assistant", content: "" }], "c3", "conversation c3")], "c3");
+    assert.equal(scrolls.length, 1);
+    assert.equal(scrolls[0].block, "start");
+    assert.equal(scrolls[0].card, true);
+  });
+
+  test("a fresh general question lands on the question, like any other ask", () => {
+    setup();
+    show([turns(4, "a1")], "a1");
+    scrolls.length = 0;
+    show([turns(4, "a1"), turns(2, "c3")], "c3");   // [user q0, assistant …]
+    assert.equal(scrolls.length, 1);
+    assert.equal(scrolls[0].block, "start");
+    assert.equal(scrolls[0].card, false);
+    assert.match(scrolls[0].text, /q0/);
+  });
+
+  test("a question rewritten and asked again lands on the rewrite", () => {
+    setup();
+    show([turns(4, "a1")], "a1");
+    scrolls.length = 0;
+    // Same length: the last question replaced, its answer forming again
+    const rewritten = thread([
+      { role: "user", content: "q0" }, { role: "assistant", content: "a1" },
+      { role: "user", content: "q2, put better" }, { role: "assistant", content: "" },
+    ], "a1", "conversation a1");
+    show([rewritten], "a1");
+    assert.equal(scrolls.length, 1);
+    assert.equal(scrolls[0].card, false);
+    assert.match(scrolls[0].text, /q2, put better/);
   });
 });

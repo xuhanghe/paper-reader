@@ -135,3 +135,24 @@ describe("citations reach every ask, not just the first", () => {
     assert.match(boot, /\[turn N\]/);
   });
 });
+
+// A rewritten question goes into a provider session that already holds the
+// first wording and its answer. Left unsaid, the model answered "I already
+// explained this".
+describe("a question asked again after editing", () => {
+  test("says it replaces the earlier turn and asks for a fresh answer", () => {
+    const msg = buildAskMessage({ kind: "followup", question: "so what is the residual?", rewriteOfTurn: 7 });
+    assert.match(msg, /^This replaces my question in \[turn 7\]: I have rewritten it\./);
+    assert.match(msg, /as if the earlier wording and your answer to it had never been given/);
+    assert.ok(msg.includes("so what is the residual?"));
+  });
+
+  test("an original that was never numbered is still replaced", () => {
+    const msg = buildAskMessage({ kind: "followup", question: "why?", rewriteOfTurn: null });
+    assert.match(msg, /^This replaces an earlier question of mine/);
+  });
+
+  test("an ordinary ask carries no such note", () => {
+    assert.doesNotMatch(buildAskMessage({ kind: "followup", question: "why?" }), /This replaces/);
+  });
+});
