@@ -206,3 +206,19 @@ describe("quotes from the paper", () => {
     assert.deepEqual(parseQuotes(old), { quotes: [{ label: "[1]", text: "words", source: "Old" }], question: "why?" });
   });
 });
+
+// Rewording a question keeps the passages it carried and takes on anything
+// quoted since, numbered after them — the same as a fresh question would.
+describe("quotes carried into an edited question", () => {
+  test("held quotes join the carried ones, and a duplicate is not repeated", () => {
+    type Q = Parameters<typeof addQuote>[1];
+    const carried: Q[] = [{ id: "carried-0", text: "old passage", source: "A" }];
+    const held: Q[] = [{ id: "h1", text: "from the page", origin: "paper", page: 4 }, { id: "h2", text: "old passage", source: "A" }];
+    const all = held.reduce<Q[]>((acc, q) => addQuote(acc, q), carried);
+    const out = withQuotes("reworded?", all);
+    assert.ok(out.includes("[1] from “A”\n> old passage"));
+    assert.ok(out.includes("[2] from the paper, page 4\n> from the page"));
+    assert.ok(!out.includes("[3]"));
+    assert.deepEqual(parseQuotes(out).quotes.map((q) => q.label), ["[1]", "[2]"]);
+  });
+});

@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { createElement, act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
-import { ExplainPanel } from "../components/ExplainPanel.js";
+import { ExplainPanel } from "../components/AskPanel.js";
 import type { Annotation, Message } from "../types/session.js";
 import { withQuotes } from "../lib/quotes.js";
 
@@ -716,7 +716,7 @@ describe("landing point after a turn", () => {
     show([withTurns(6)], "a1");        // a follow-up adds a turn
     assert.equal(scrolls.length, 1);
     const [landed] = scrolls;
-    assert.equal(landed.block, "start", "the question sits at the top of the panel");
+    assert.equal(landed.block, "nearest", "brought into the window, and no further — the answer pushes it up");
     assert.equal(landed.card, false, "the question itself, not the whole card — the card's end moves as the answer streams");
     assert.match(landed.text, /q4/, "the question that was just asked");
     // Instant: a smooth scroll to a moving target is abandoned by Safari
@@ -730,7 +730,7 @@ describe("landing point after a turn", () => {
     scrolls.length = 0;
     show([withTurns(4, "a1"), withTurns(6, "b2")], "b2");   // ask in B
     assert.equal(scrolls.length, 1);
-    assert.equal(scrolls[0].block, "start");
+    assert.equal(scrolls[0].block, "nearest");
     assert.equal(scrolls[0].card, false);
     assert.match(scrolls[0].text, /q4/);
   });
@@ -991,7 +991,7 @@ describe("landing after asking in a conversation you had not clicked", () => {
     // A follow-up asked in B: two messages appear and B becomes active
     show([turns(4, "a1"), turns(6, "b2")], "b2");
     assert.equal(scrolls.length, 1);
-    assert.equal(scrolls[0].block, "start");
+    assert.equal(scrolls[0].block, "nearest");
     assert.equal(scrolls[0].card, false, "the question, not B's beginning");
     assert.match(scrolls[0].text, /q4/);
   });
@@ -1020,7 +1020,7 @@ describe("landing after asking in a conversation you had not clicked", () => {
     scrolls.length = 0;
     show([turns(4, "a1"), turns(2, "c3")], "c3");   // [user q0, assistant …]
     assert.equal(scrolls.length, 1);
-    assert.equal(scrolls[0].block, "start");
+    assert.equal(scrolls[0].block, "nearest");
     assert.equal(scrolls[0].card, false);
     assert.match(scrolls[0].text, /q0/);
   });

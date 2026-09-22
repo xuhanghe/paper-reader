@@ -8,7 +8,7 @@ import { emptyNav, record as recordSpot, back as navBack, forward as navForward,
 import dynamic from "next/dynamic";
 import { useSession, sessionIdFor } from "@/hooks/useSession";
 import { MindmapSidebar } from "@/components/MindmapSidebar";
-import { ExplainPanel } from "@/components/ExplainPanel";
+import { ExplainPanel } from "@/components/AskPanel";
 import { ZoteroLibrary } from "@/components/ZoteroLibrary";
 import { SaveToZoteroModal } from "@/components/SaveToZoteroModal";
 import { OpenUrlModal } from "@/components/OpenUrlModal";
@@ -21,7 +21,7 @@ import { createZoteroHighlight } from "@/lib/zotero-highlight-api";
 import { providerIdFor } from "@/lib/provider-id";
 import { RegionResult } from "@/hooks/useRegionDrag";
 import type { PdfViewerHandle, AskedPassage, SelectionSegment } from "@/components/PdfViewer";
-import type { PanelScroll } from "@/components/ExplainPanel";
+import type { PanelScroll } from "@/components/AskPanel";
 import { SkillsDrawer } from "@/components/SkillsDrawer";
 import { SetupDialog } from "@/components/SetupDialog";
 import { loadOpenTabs, saveOpenTabs, subscribeOpenTabs, upsertOpenTab } from "@/lib/open-tabs";

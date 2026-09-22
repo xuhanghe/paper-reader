@@ -5,7 +5,7 @@ import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import { createElement, act } from "react";
 import { createRoot } from "react-dom/client";
-import { ExplainPanel } from "../components/ExplainPanel.js";
+import { ExplainPanel } from "../components/AskPanel.js";
 import type { Annotation, Message } from "../types/session.js";
 
 const thread = (messages: Message[], id = "a1", label = "conversation A"): Annotation => ({

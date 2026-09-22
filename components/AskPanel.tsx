@@ -1,5 +1,5 @@
 "use client";
-import { useRef, useEffect, useLayoutEffect, useMemo, useState, useCallback, memo, useImperativeHandle } from "react";
+import { useRef, useEffect, useLayoutEffect, useMemo, useState, memo, useImperativeHandle } from "react";
 import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
@@ -323,12 +323,13 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
   const resendEdit = (annotationId: string) => {
     if (!editing || !editDraft.trim()) return;
     // The editor shows the question alone; the passages it carried are put
-    // back, so rewording a question never silently drops what it pointed at
-    const restored = withQuotes(
-      editDraft.trim(),
-      editing.quotes.map((q, n) => ({ id: String(n), text: q.text, source: q.source, origin: q.origin, page: q.page }))
-    );
-    onEditMessage?.(annotationId, editing.index, restored);
+    // back, so rewording a question never silently drops what it pointed at —
+    // and anything quoted since (from the paper or an answer) joins them,
+    // numbered after them, exactly as it would join a new question
+    const carried: Quote[] = editing.quotes.map((q, n) => ({ id: `carried-${n}`, text: q.text, source: q.source, origin: q.origin, page: q.page }));
+    const all = quotes.reduce((acc, q) => pushQuote(acc, q), carried);
+    onEditMessage?.(annotationId, editing.index, withQuotes(editDraft.trim(), all));
+    setQuotes([]);
     setEditing(null);
   };
 
@@ -686,22 +687,9 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
   // conversation opened with one — and a streaming answer does not.
   const seenShape = useRef<Map<string, string>>(new Map());
   const lastActiveId = useRef<string | null>(null);
-  // The question just asked, kept at the top while its answer streams
-  const pinned = useRef<{ id: string; index: number } | null>(null);
-
-  // Room under the list so a question can sit at the top of the panel the
-  // moment it is asked, before any answer exists under it. Sized to what the
-  // question lacks beneath it, so it shrinks to nothing as the answer grows.
-  const spacerRef = useRef<HTMLDivElement | null>(null);
-  const padBelow = useCallback((question: HTMLElement) => {
-    const list = scrollRef.current;
-    const spacer = spacerRef.current;
-    if (!list || !spacer) return;
-    const current = spacer.getBoundingClientRect().height;
-    const questionTop = question.getBoundingClientRect().top - list.getBoundingClientRect().top + list.scrollTop;
-    const below = list.scrollHeight - current - questionTop;
-    spacer.style.height = `${Math.max(0, list.clientHeight - below - 12)}px`;
-  }, []);
+  // The question just asked, followed while its answer streams: it stays in
+  // the window, rises as the answer grows beneath it, and stops at the top.
+  const pinned = useRef<{ id: string; index: number; since: number } | null>(null);
   useEffect(() => {
     const lastQuestion = (a: Annotation) => a.messages.map((m) => m.role).lastIndexOf("user");
     const shape = (a: Annotation) => {
@@ -729,31 +717,25 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
     const asked = lastQuestion(active);
     const askedNow = asked >= 0 && shape(active) !== before;
     if (askedNow) {
-      // Just asked, wherever it was asked: the question goes to the top of
-      // the panel, with the answer forming under it. Instant — Safari
-      // abandons a smooth scroll whose target moves, and the panel's end
-      // moves while an answer streams. Nothing sits under a question the
-      // moment it is asked, so it cannot yet reach the top; it is pinned
-      // there and followed as the answer fills in (see below).
+      // Just asked, wherever it was asked: the question is brought into the
+      // window if it is not already there — and no further. Nothing is
+      // forced to the top; the answer, as it arrives, is what pushes the
+      // question up (see below). Instant: Safari abandons a smooth scroll
+      // whose target moves, and the panel's end moves while an answer streams.
       const target = messageRefs.current[`${activeId}:${asked}`] || card;
-      padBelow(target);
-      target.scrollIntoView({ behavior: "auto", block: "start" });
-      pinned.current = { id: activeId, index: asked };
+      target.scrollIntoView({ behavior: "auto", block: "nearest" });
+      pinned.current = { id: activeId, index: asked, since: Date.now() };
       return;
     }
     // Merely arrived — clicked, or a passage explained with no question of
     // the reader's own — so its beginning is the place
-    if (switched) {
-      if (spacerRef.current) spacerRef.current.style.height = "0px";
-      card.scrollIntoView({ behavior: "smooth", block: "start" });
-    }
+    if (switched) card.scrollIntoView({ behavior: "smooth", block: "start" });
   }, [activeId, annotations, annotationRefs]);
 
-
-  // While the answer streams, keep the question at the top of the panel until
-  // it gets there. This is not following the answer's end — the reader's own
-  // position never moves once the question is at the top, however long the
-  // answer grows — and it stops the moment the reader scrolls for themselves.
+  // While the answer streams, the question rises with it: the list scrolls
+  // down exactly as much as the answer grows, until the question reaches the
+  // top, and then no further — the rest of the answer arrives below the fold,
+  // for the reader to scroll to. The reader scrolling on their own ends it.
   useEffect(() => {
     const pin = pinned.current;
     const list = scrollRef.current;
@@ -761,34 +743,40 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
     const el = messageRefs.current[`${pin.id}:${pin.index}`];
     if (!el) return;
     const settle = () => {
-      padBelow(el);
       const want = list.scrollTop + (el.getBoundingClientRect().top - list.getBoundingClientRect().top) - 12;
       const reachable = Math.min(want, list.scrollHeight - list.clientHeight);
-      if (Math.abs(reachable - list.scrollTop) > 1) list.scrollTop = reachable;
+      // Only ever downwards: the question rises, it is never pushed back
+      if (reachable > list.scrollTop + 1) list.scrollTop = reachable;
       return list.scrollTop >= want - 1;
     };
     if (settle()) pinned.current = null;
-    // The answer is complete. WebKit re-anchors the scroll after the spacer
-    // shrinks under it, a frame after this runs — so the last word is had one
-    // frame later, and only then is the pin let go.
+    // The answer is complete. WebKit re-anchors the scroll a frame after
+    // content changes under it, so the last word is had one frame later.
     if (!streamingIds.has(pin.id)) {
       requestAnimationFrame(() => {
         if (pinned.current?.id === pin.id) settle();
         pinned.current = null;
       });
     }
-  }, [annotations, streamingIds, padBelow]);
+  }, [annotations, streamingIds]);
   useEffect(() => {
     const list = scrollRef.current;
     if (!list) return;
-    const release = () => { pinned.current = null; };
+    // A trackpad keeps sending the tail of an earlier flick for a moment;
+    // that is not the reader taking over
+    const release = () => { if (pinned.current && Date.now() - pinned.current.since > 800) pinned.current = null; };
+    const onKey = (e: KeyboardEvent) => {
+      if (["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "].includes(e.key)) release();
+    };
     list.addEventListener("wheel", release, { passive: true });
     list.addEventListener("touchstart", release, { passive: true });
     list.addEventListener("mousedown", release);
+    list.addEventListener("keydown", onKey);
     return () => {
       list.removeEventListener("wheel", release);
       list.removeEventListener("touchstart", release);
       list.removeEventListener("mousedown", release);
+      list.removeEventListener("keydown", onKey);
     };
   }, [isOpen, annotations.length]);
 
@@ -1433,6 +1421,12 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
                                   if (isSubmitKey(e)) { e.preventDefault(); resendEdit(annotation.id); }
                                   if (e.key === "Escape") setEditing(null);
                                 }}
+                                // The box being typed in, so clicking a held quote drops its
+                                // label here like in any other box
+                                onFocus={(e) => {
+                                  const el = e.currentTarget;
+                                  lastBox.current = { el, setText: (update) => setEditDraft((prev) => update(prev)) };
+                                }}
                                 className="w-full text-sm px-2 py-1.5 rounded resize-none focus:outline-none"
                                 style={{
                                   border: "1px solid var(--accent)",
@@ -1538,7 +1532,6 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
           );
         })}
         <div ref={bottomRef} />
-        <div ref={spacerRef} aria-hidden="true" style={{ height: 0 }} />
       </div>
       {pendingQuote && (
         <button
