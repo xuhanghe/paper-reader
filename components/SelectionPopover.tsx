@@ -10,13 +10,15 @@ type Props = {
   onExplain: () => void;
   // The term on its own, with the paper left out
   onDefine?: () => void;
+  // Carry the passage into the conversation's next question, as a quote
+  onQuote?: () => void;
   onAsk: (question: string) => void;
   onHighlight?: (color: string) => void;
   onNote?: (note: string, color: string) => void;
   onDismiss: () => void;
 };
 
-export function SelectionPopover({ rect, selectedText, onExplain, onDefine, onAsk, onHighlight, onNote, onDismiss }: Props) {
+export function SelectionPopover({ rect, selectedText, onExplain, onDefine, onQuote, onAsk, onHighlight, onNote, onDismiss }: Props) {
   const [question, setQuestion] = useState("");
   const [noteMode, setNoteMode] = useState(false);
   const [noteText, setNoteText] = useState("");
@@ -68,6 +70,16 @@ export function SelectionPopover({ rect, selectedText, onExplain, onDefine, onAs
             title="What this term is, on its own — the paper left out"
           >
             Define ↗
+          </button>
+        )}
+        {onQuote && (
+          <button
+            onClick={onQuote}
+            className="text-sm font-medium transition-opacity hover:opacity-80 px-1 whitespace-nowrap"
+            style={{ color: "var(--quote)", fontFamily: "var(--font-geist-sans), system-ui, sans-serif" }}
+            title="Quote this passage into your next question in the conversation"
+          >
+            ❝ Quote
           </button>
         )}
         {onHighlight && (

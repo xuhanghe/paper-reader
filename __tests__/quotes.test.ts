@@ -165,3 +165,44 @@ describe("parseQuotes", () => {
     assert.deepEqual(parseQuotes(own), { quotes: [], question: own });
   });
 });
+
+// A passage can be lifted from the paper itself, not only from an answer. It
+// is credited to the paper and its page, and reads back the same way so the
+// chip on the asked question can lead back to the page.
+describe("quotes from the paper", () => {
+  const paper = (text: string, page?: number) => ({ id: "p", text, origin: "paper" as const, page });
+
+  test("is credited to the paper and its page", () => {
+    const out = withQuotes("what does this assume?", [paper("the 8-point stencil factors exactly", 3)]);
+    assert.match(out, /^A passage I selected from the paper, labelled/);
+    assert.ok(out.includes("[1] from the paper, page 3\n> the 8-point stencil factors exactly"));
+  });
+
+  test("a page-less quote is still from the paper", () => {
+    const out = withQuotes("hm?", [paper("some words")]);
+    assert.ok(out.includes("[1] from the paper\n> some words"));
+  });
+
+  test("mixed origins say so, and each block keeps its own credit", () => {
+    const out = withQuotes("do these agree?", [paper("from the page", 2), q("from the answer", "Lorenzo")]);
+    assert.match(out, /^Passages I selected from the paper and from our conversation, labelled/);
+    assert.ok(out.includes("[1] from the paper, page 2"));
+    assert.ok(out.includes("[2] from “Lorenzo”"));
+  });
+
+  test("reads back with origin and page, and conversation quotes as before", () => {
+    const out = withQuotes("do these agree?", [paper("from the page", 2), q("from the answer", "Lorenzo"), paper("no page")]);
+    const parsed = parseQuotes(out);
+    assert.equal(parsed.question, "do these agree?");
+    assert.deepEqual(parsed.quotes, [
+      { label: "[1]", text: "from the page", source: undefined, origin: "paper", page: 2 },
+      { label: "[2]", text: "from the answer", source: "Lorenzo" },
+      { label: "[3]", text: "no page", source: undefined, origin: "paper", page: undefined },
+    ]);
+  });
+
+  test("questions saved before paper quotes existed still parse", () => {
+    const old = "A passage I selected from our conversation, labelled so I can refer to it:\n\n[1] from “Old”\n> words\n\nwhy?";
+    assert.deepEqual(parseQuotes(old), { quotes: [{ label: "[1]", text: "words", source: "Old" }], question: "why?" });
+  });
+});

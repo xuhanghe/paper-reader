@@ -817,6 +817,13 @@ export default function Home() {
     [addAnnotation, streamAsk]
   );
 
+  // A passage of the paper, held for the next question asked in the panel —
+  // a follow-up in any conversation, or a fresh general question
+  const handleQuoteSelection = useCallback((text: string, pageNumber?: number) => {
+    panelScroll.current?.quote(text, pageNumber);
+    setExplainOpen(true);
+  }, []);
+
   const handleAskAboutSelection = useCallback(
     (text: string, question: string, pageNumber?: number, occurrence = 0, position?: PdfRects, segments?: SelectionSegment[]) => {
       const positions = segments && segments.length > 1 ? segments : undefined;
@@ -1470,6 +1477,7 @@ export default function Home() {
               html={session.pdfDataUrl}
               onTextSelected={handleTextSelected}
               onAskAboutSelection={handleAskAboutSelection}
+              onQuoteSelection={handleQuoteSelection}
               onHighlight={handleHighlight}
               onNote={handleNote}
               onRemoveHighlight={handleRemoveHighlight}
@@ -1492,6 +1500,7 @@ export default function Home() {
               pdfDataUrl={session.pdfDataUrl}
               onTextSelected={handleTextSelected}
               onAskAboutSelection={handleAskAboutSelection}
+              onQuoteSelection={handleQuoteSelection}
               onRegionCaptured={handleRegionCaptured}
               onHighlight={handleHighlight}
               onNote={handleNote}

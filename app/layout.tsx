@@ -1,5 +1,7 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono, Lora } from "next/font/google";
+import "highlight.js/styles/github-dark.css";
+import "katex/dist/katex.min.css";
 import "./globals.css";
 
 const geistSans = Geist({

@@ -121,15 +121,19 @@ function renderPageBands(wrapper: HTMLElement, bands: HighlightBand[]) {
     el.dataset.highlightId = band.id;
     el.className = band.underline ? "pr-band pr-asked-rule" : "pr-band";
     const pad = band.underline ? 0 : band.height * 0.16;
-    const top = band.underline
-      ? (band.inkBottom ?? band.top + band.height) + band.height * 0.1
-      : band.top - pad;
-    const height = band.underline ? band.height * 0.14 : band.height + pad * 2;
+    const top = band.underline ? (band.inkBottom ?? band.top + band.height) : band.top - pad;
+    // A rule is the same thickness on every line. Sized from the line's own
+    // height it came out heavier under a heading than under body text, and
+    // under a line whose band had merged two text runs of different sizes;
+    // and a fraction of the page rounds to a different pixel count at every
+    // zoom. So: a fixed 2 CSS px, sitting a fixed 1.5px under the letters.
     Object.assign(el.style, {
       left: `${band.left * 100}%`,
       top: `${top * 100}%`,
       width: `${band.width * 100}%`,
-      height: `${height * 100}%`,
+      ...(band.underline
+        ? { height: "2px", marginTop: "1.5px" }
+        : { height: `${(band.height + pad * 2) * 100}%` }),
       background: band.color,
     });
     fragment.appendChild(el);
@@ -412,6 +416,8 @@ type Props = {
   // page's share, in reading order. `pageNumber` and `position` are its first.
   onTextSelected: (text: string, pageNumber?: number, occurrence?: number, position?: AnnotationPosition, intent?: SelectionIntent, segments?: SelectionSegment[]) => void;
   onAskAboutSelection: (text: string, question: string, pageNumber?: number, occurrence?: number, position?: AnnotationPosition, segments?: SelectionSegment[]) => void;
+  // Carry the selection into the Ask panel as a quote for the next question
+  onQuoteSelection?: (text: string, pageNumber?: number, position?: AnnotationPosition, segments?: SelectionSegment[]) => void;
   onRegionCaptured: (result: RegionResult) => void;
   // `occurrence` is which of the identical passages on that page was selected.
   // Without it a phrase that appears twice — an abstract and a contributions
@@ -573,7 +579,7 @@ export type PdfViewerHandle = {
 // virtualized page rendering, cursor-anchored CSS-first zoom with delayed
 // redraw, and a find controller for jump-and-highlight.
 export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
-  { pdfDataUrl, onTextSelected, onAskAboutSelection, onRegionCaptured, onHighlight, onNote, onRemoveHighlight, onRecolorHighlight, onEditHighlightNote, onHighlightClick, highlights = [], askedPassages = [], onAskedClick, onReload, reloading, zoteroKey, onRevealCollection, positionKey },
+  { pdfDataUrl, onTextSelected, onAskAboutSelection, onQuoteSelection, onRegionCaptured, onHighlight, onNote, onRemoveHighlight, onRecolorHighlight, onEditHighlightNote, onHighlightClick, highlights = [], askedPassages = [], onAskedClick, onReload, reloading, zoteroKey, onRevealCollection, positionKey },
   ref
 ) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -1951,6 +1957,13 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
   }, [selection, onTextSelected, clearSelection, resolvedSelectionPosition]);
   const handleExplain = useCallback(() => handleIntent("explain"), [handleIntent]);
   const handleDefine = useCallback(() => handleIntent("define"), [handleIntent]);
+  const handleQuote = useCallback(async () => {
+    if (selection && onQuoteSelection) {
+      const position = await resolvedSelectionPosition();
+      onQuoteSelection(selection.text, selectionPageRef.current, position, selectionSegmentsRef.current);
+      clearSelection();
+    }
+  }, [selection, onQuoteSelection, clearSelection, resolvedSelectionPosition]);
 
   const handleAsk = useCallback(
     async (question: string) => {
@@ -2471,6 +2484,7 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
             selectedText={selection.text}
             onExplain={handleExplain}
             onDefine={handleDefine}
+            onQuote={onQuoteSelection ? handleQuote : undefined}
             onAsk={handleAsk}
             onHighlight={handleHighlight}
             onNote={handleNote}

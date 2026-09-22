@@ -658,13 +658,14 @@ describe("holding several quotes at once", () => {
 describe("landing point after a turn", () => {
   let host: HTMLElement;
   let root: Root;
-  let scrolls: { block?: string }[];
+  let scrolls: { block?: string; behavior?: string; card: boolean; text: string }[];
   const refs = { current: {} as Record<string, HTMLDivElement | null> };
 
   const setup = () => {
     scrolls = [];
-    dom.window.Element.prototype.scrollIntoView = function (opts?: boolean | ScrollIntoViewOptions) {
-      scrolls.push(typeof opts === "object" && opts ? opts : {});
+    dom.window.Element.prototype.scrollIntoView = function (this: Element, opts?: boolean | ScrollIntoViewOptions) {
+      const o = typeof opts === "object" && opts ? opts : {};
+      scrolls.push({ block: o.block, behavior: o.behavior, card: this.hasAttribute("data-annotation-id"), text: (this.textContent || "").slice(0, 60) });
     };
     refs.current = {};
     host = freshRoot();
@@ -708,21 +709,30 @@ describe("landing point after a turn", () => {
     assert.deepEqual(scrolls.map((s) => s.block), ["start"]);
   });
 
-  test("asking something lands at the end, where the answer is forming", () => {
+  test("asking something lands on the question just asked, with the answer forming under it", () => {
     setup();
     show([withTurns(4)], "a1");        // arrive
     scrolls.length = 0;
     show([withTurns(6)], "a1");        // a follow-up adds a turn
-    assert.deepEqual(scrolls.map((s) => s.block), ["end"], "not the top of a thread already read");
+    assert.equal(scrolls.length, 1);
+    const [landed] = scrolls;
+    assert.equal(landed.block, "start", "the question sits at the top of the panel");
+    assert.equal(landed.card, false, "the question itself, not the whole card — the card's end moves as the answer streams");
+    assert.match(landed.text, /q4/, "the question that was just asked");
+    // Instant: a smooth scroll to a moving target is abandoned by Safari
+    assert.equal(landed.behavior, "auto");
   });
 
-  test("asking in another conversation lands at that one's end", () => {
+  test("asking in another conversation lands on the question asked there", () => {
     setup();
     show([withTurns(4, "a1"), withTurns(4, "b2")], "a1");
     show([withTurns(4, "a1"), withTurns(4, "b2")], "b2");   // visit B
     scrolls.length = 0;
     show([withTurns(4, "a1"), withTurns(6, "b2")], "b2");   // ask in B
-    assert.deepEqual(scrolls.map((s) => s.block), ["end"]);
+    assert.equal(scrolls.length, 1);
+    assert.equal(scrolls[0].block, "start");
+    assert.equal(scrolls[0].card, false);
+    assert.match(scrolls[0].text, /q4/);
   });
 
   test("a streaming answer does not drag the scrollbar around", () => {
@@ -937,13 +947,14 @@ describe("jumping between a passage and the question that quoted it", () => {
 describe("landing after asking in a conversation you had not clicked", () => {
   let host: HTMLElement;
   let root: Root;
-  let scrolls: { block?: string }[];
+  let scrolls: { block?: string; behavior?: string; card: boolean; text: string }[];
   const refs = { current: {} as Record<string, HTMLDivElement | null> };
 
   const setup = () => {
     scrolls = [];
-    dom.window.Element.prototype.scrollIntoView = function (opts?: boolean | ScrollIntoViewOptions) {
-      scrolls.push(typeof opts === "object" && opts ? opts : {});
+    dom.window.Element.prototype.scrollIntoView = function (this: Element, opts?: boolean | ScrollIntoViewOptions) {
+      const o = typeof opts === "object" && opts ? opts : {};
+      scrolls.push({ block: o.block, behavior: o.behavior, card: this.hasAttribute("data-annotation-id"), text: (this.textContent || "").slice(0, 60) });
     };
     refs.current = {};
     host = freshRoot();
@@ -972,14 +983,17 @@ describe("landing after asking in a conversation you had not clicked", () => {
       `conversation ${id}`
     );
 
-  test("lands at the end, not the top of the thread just written into", () => {
+  test("lands on the question just asked, not the top of the thread written into", () => {
     setup();
     // Reading A; B is on screen further down and is where the box is bound
     show([turns(4, "a1"), turns(4, "b2")], "a1");
     scrolls.length = 0;
     // A follow-up asked in B: two messages appear and B becomes active
     show([turns(4, "a1"), turns(6, "b2")], "b2");
-    assert.deepEqual(scrolls.map((s) => s.block), ["end"]);
+    assert.equal(scrolls.length, 1);
+    assert.equal(scrolls[0].block, "start");
+    assert.equal(scrolls[0].card, false, "the question, not B's beginning");
+    assert.match(scrolls[0].text, /q4/);
   });
 
   test("but a conversation merely opened still lands at its beginning", () => {

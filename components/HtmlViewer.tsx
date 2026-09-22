@@ -19,6 +19,7 @@ type Props = {
   html: string;
   onTextSelected: (text: string, pageNumber?: number, occurrence?: number, position?: undefined, intent?: SelectionIntent) => void;
   onAskAboutSelection: (text: string, question: string, pageNumber?: number, occurrence?: number) => void;
+  onQuoteSelection?: (text: string) => void;
   // Highlights on a snapshot have no PDF page or rects, so these are called
   // without a position — which is exactly what keeps them out of Zotero (see
   // the note on the highlight stylesheet below).
@@ -86,6 +87,7 @@ export const HtmlViewer = forwardRef<PdfViewerHandle, Props>(function HtmlViewer
     html,
     onTextSelected,
     onAskAboutSelection,
+    onQuoteSelection,
     onHighlight,
     onNote,
     onRemoveHighlight,
@@ -367,6 +369,7 @@ export const HtmlViewer = forwardRef<PdfViewerHandle, Props>(function HtmlViewer
           selectedText={selection.text}
           onExplain={() => { onTextSelected(selection.text, undefined, selection.occurrence); clearSelection(); }}
           onDefine={() => { onTextSelected(selection.text, undefined, selection.occurrence, undefined, "define"); clearSelection(); }}
+          onQuote={onQuoteSelection && (() => { onQuoteSelection(selection.text); clearSelection(); })}
           onAsk={(q) => { onAskAboutSelection(selection.text, q, undefined, selection.occurrence); clearSelection(); }}
           onHighlight={onHighlight && ((color) => { onHighlight(selection.text, undefined, undefined, color, selection.occurrence); clearSelection(); })}
           onNote={onNote && ((note, color) => { onNote(selection.text, note, undefined, undefined, color, selection.occurrence); clearSelection(); })}

@@ -16,7 +16,30 @@ export type Quote = {
   text: string;
   // The conversation it came from, so the model knows whose words these are
   source?: string;
+  // Taken from the paper itself rather than from a conversation — the page
+  // it was on, so the chip can lead back to it
+  origin?: "paper";
+  page?: number;
 };
+
+// How a quote is credited in the prompt: the conversation it came from, or the
+// paper and the page
+function quoteHead(q: Quote | QuotedPassage, index: number): string {
+  if (q.origin === "paper") return `${quoteLabel(index)} from the paper${q.page ? `, page ${q.page}` : ""}`;
+  return q.source ? `${quoteLabel(index)} from “${q.source}”` : quoteLabel(index);
+}
+
+// The sentence introducing the quotes says where they were taken from, so the
+// model reads a passage of the paper as the paper's words and a passage of an
+// answer as its own
+function quoteLead(quotes: { origin?: "paper" }[]): string {
+  const paper = quotes.some((q) => q.origin === "paper");
+  const conversation = quotes.some((q) => q.origin !== "paper");
+  const from = paper && conversation ? "from the paper and from our conversation" : paper ? "from the paper" : "from our conversation";
+  return quotes.length === 1
+    ? `A passage I selected ${from}, labelled so I can refer to it:`
+    : `Passages I selected ${from}, labelled so I can refer to them:`;
+}
 
 // Long selections are trimmed for the chip only; the question carries the
 // whole thing.
@@ -44,7 +67,7 @@ export function withQuotes(question: string, quotes: Quote[]): string {
   if (usable.length === 0) return question;
 
   const blocks = usable.map((q, i) => {
-    const head = q.source ? `${quoteLabel(i)} from “${q.source}”` : quoteLabel(i);
+    const head = quoteHead(q, i);
     const body = q.text
       .trim()
       .split("\n")
@@ -53,11 +76,7 @@ export function withQuotes(question: string, quotes: Quote[]): string {
     return `${head}\n${body}`;
   });
 
-  const lead =
-    usable.length === 1
-      ? "A passage I selected from our conversation, labelled so I can refer to it:"
-      : "Passages I selected from our conversation, labelled so I can refer to them:";
-  return `${lead}\n\n${blocks.join("\n\n")}\n\n${question}`;
+  return `${quoteLead(usable)}\n\n${blocks.join("\n\n")}\n\n${question}`;
 }
 
 // ── Reading a question back ───────────────────────────────────────────
@@ -71,11 +90,15 @@ export type QuotedPassage = {
   label: string;
   text: string;
   source?: string;
+  origin?: "paper";
+  page?: number;
 };
 
-// Matches exactly what withQuotes writes, both singular and plural
-const LEAD = /^(?:A passage|Passages) I selected from our conversation, labelled so I can refer to (?:it|them):\n\n/;
-const BLOCK = /^\[(\d+)\](?: from “([^”]*)”)?\n((?:>.*(?:\n|$))+)/;
+// Matches exactly what withQuotes writes, both singular and plural, and every
+// combination of where the passages came from
+const LEAD =
+  /^(?:A passage|Passages) I selected from (?:our conversation|the paper|the paper and from our conversation), labelled so I can refer to (?:it|them):\n\n/;
+const BLOCK = /^\[(\d+)\](?: from “([^”]*)”| from the paper(?:, page (\d+))?)?\n((?:>.*(?:\n|$))+)/;
 
 export function parseQuotes(content: string): { quotes: QuotedPassage[]; question: string } {
   const lead = LEAD.exec(content);
@@ -86,13 +109,19 @@ export function parseQuotes(content: string): { quotes: QuotedPassage[]; questio
   for (;;) {
     const block = BLOCK.exec(rest);
     if (!block) break;
-    const text = block[3]
+    const text = block[4]
       .split("\n")
       .filter((line) => line.startsWith(">"))
       .map((line) => line.replace(/^> ?/, ""))
       .join("\n")
       .trim();
-    quotes.push({ label: `[${block[1]}]`, text, source: block[2] || undefined });
+    const fromPaper = block[0].startsWith(`[${block[1]}] from the paper`);
+    quotes.push({
+      label: `[${block[1]}]`,
+      text,
+      source: block[2] || undefined,
+      ...(fromPaper ? { origin: "paper" as const, page: block[3] ? Number(block[3]) : undefined } : {}),
+    });
     rest = rest.slice(block[0].length).replace(/^\n+/, "");
   }
 

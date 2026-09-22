@@ -2,6 +2,9 @@
 import { useRef, useEffect, useLayoutEffect, useMemo, useState, memo, useImperativeHandle } from "react";
 import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
+import remarkMath from "remark-math";
+import rehypeKatex from "rehype-katex";
+import { normalizeMathDelimiters } from "@/lib/math-delimiters";
 import { Annotation, Model } from "@/types/session";
 import { isSubmitKey } from "@/lib/keys";
 import { loadPanelScroll, savePanelScroll } from "@/lib/panel-scroll";
@@ -64,7 +67,12 @@ const citationUrlTransform = (url: string): string =>
 
 // How the page reads and restores this pane's scroll, for going back to where
 // a jump started
-export type PanelScroll = { get: () => number; set: (top: number) => void };
+export type PanelScroll = {
+  get: () => number;
+  set: (top: number) => void;
+  // Hold a passage of the paper for the next question, wherever it is asked
+  quote: (text: string, page?: number) => void;
+};
 
 type MarkdownComponents = {
   a: (props: { href?: string; children?: React.ReactNode }) => React.ReactElement;
@@ -157,7 +165,10 @@ function CitationAnchor({
 //
 // The plugin list is module-level for the same reason: a new array each render
 // is a new prop, and nothing downstream can memoise past it.
-const REMARK_PLUGINS = [remarkGfm];
+const REMARK_PLUGINS = [remarkGfm, remarkMath];
+// KaTeX renders what it can and leaves the rest as source: an answer is never
+// blanked over one formula it cannot parse
+const REHYPE_PLUGINS = [[rehypeKatex, { throwOnError: false, strict: "ignore" as const }]] as const;
 
 const Answer = memo(function Answer({
   content,
@@ -168,8 +179,13 @@ const Answer = memo(function Answer({
 }) {
   return (
     <div className="prose-paper">
-      <ReactMarkdown remarkPlugins={REMARK_PLUGINS} components={components} urlTransform={citationUrlTransform}>
-        {content}
+      <ReactMarkdown
+        remarkPlugins={REMARK_PLUGINS}
+        rehypePlugins={REHYPE_PLUGINS as unknown as import("react-markdown").Options["rehypePlugins"]}
+        components={components}
+        urlTransform={citationUrlTransform}
+      >
+        {normalizeMathDelimiters(content)}
       </ReactMarkdown>
     </div>
   );
@@ -617,6 +633,11 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
     () => ({
       get: () => scrollRef.current?.scrollTop ?? 0,
       set: (top: number) => scrollRef.current?.scrollTo({ top, behavior: "smooth" }),
+      quote: (text: string, page?: number) => {
+        const trimmed = text.trim();
+        if (!trimmed) return;
+        setQuotes((prev) => pushQuote(prev, { id: `${Date.now()}-${prev.length}`, text: trimmed, origin: "paper", page }));
+      },
     }),
     []
   );
@@ -662,6 +683,8 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
   // under it, not the top of a thread you have already read.
   const seenTurns = useRef<Map<string, number>>(new Map());
   const lastActiveId = useRef<string | null>(null);
+  // The question just asked, kept at the top while its answer streams
+  const pinned = useRef<{ id: string; index: number } | null>(null);
   useEffect(() => {
     // Every conversation's length is tracked, not just the active one. The
     // follow-up box belongs to whichever conversation you are reading, which
@@ -685,8 +708,58 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
     // A streaming answer rewrites its message without adding one, so this does
     // not fight the reader for the scrollbar while text arrives
     if (!card || (!switched && !grew)) return;
-    card.scrollIntoView({ behavior: "smooth", block: grew ? "end" : "start" });
+    if (!grew) {
+      card.scrollIntoView({ behavior: "smooth", block: "start" });
+      return;
+    }
+    // Just asked: put the question at the top of the panel, with the answer
+    // forming under it. Aligning the card's *end* used to be the target, and
+    // the end is exactly what moves while the answer streams in — Safari
+    // abandons a smooth scroll whose target keeps moving and leaves the list
+    // wherever it was, often on the thread above the question. The question
+    // itself does not move, and an instant scroll cannot be interrupted, nor
+    // does it drag the panel through pages of unpainted tiles.
+    const messages = annotations.find((a) => a.id === activeId)?.messages ?? [];
+    const asked = messages.map((m) => m.role).lastIndexOf("user");
+    const target = (asked >= 0 && messageRefs.current[`${activeId}:${asked}`]) || card;
+    target.scrollIntoView({ behavior: "auto", block: "start" });
+    // Nothing sits under a question the moment it is asked, so it cannot yet
+    // reach the top; it is pinned there instead and followed as the answer
+    // fills in beneath it (see below)
+    pinned.current = asked >= 0 ? { id: activeId, index: asked } : null;
   }, [activeId, annotations, annotationRefs]);
+
+  // While the answer streams, keep the question at the top of the panel until
+  // it gets there. This is not following the answer's end — the reader's own
+  // position never moves once the question is at the top, however long the
+  // answer grows — and it stops the moment the reader scrolls for themselves.
+  useEffect(() => {
+    const pin = pinned.current;
+    const list = scrollRef.current;
+    if (!pin || !list) return;
+    const el = messageRefs.current[`${pin.id}:${pin.index}`];
+    if (el) {
+      const want = list.scrollTop + (el.getBoundingClientRect().top - list.getBoundingClientRect().top) - 12;
+      const reachable = Math.min(want, list.scrollHeight - list.clientHeight);
+      if (reachable > list.scrollTop + 1) list.scrollTop = reachable;
+      if (list.scrollTop >= want - 1) pinned.current = null;
+    }
+    // The answer is complete: whatever was reachable has been reached
+    if (!streamingIds.has(pin.id)) pinned.current = null;
+  }, [annotations, streamingIds]);
+  useEffect(() => {
+    const list = scrollRef.current;
+    if (!list) return;
+    const release = () => { pinned.current = null; };
+    list.addEventListener("wheel", release, { passive: true });
+    list.addEventListener("touchstart", release, { passive: true });
+    list.addEventListener("mousedown", release);
+    return () => {
+      list.removeEventListener("wheel", release);
+      list.removeEventListener("touchstart", release);
+      list.removeEventListener("mousedown", release);
+    };
+  }, [isOpen, annotations.length]);
 
   // Which conversation the follow-up bar belongs to: the last one still on
   // screen, i.e. the one nearest the bar itself. Measured from scroll rather
@@ -1296,7 +1369,9 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
                       key={i}
                       ref={(el) => { messageRefs.current[`${annotation.id}:${i}`] = el; }}
                       className={isFollowUp ? "pt-3" : ""}
-                      style={isFollowUp ? { borderTop: "1px solid var(--border-light)" } : {}}
+                      // Room above when scrolled to, so a landed-on question is
+                      // not flush against the panel's edge
+                      style={{ scrollMarginTop: 12, ...(isFollowUp ? { borderTop: "1px solid var(--border-light)" } : {}) }}
                     >
                       <p className="text-[10px] font-semibold mb-1 tracking-wide uppercase flex items-center gap-1.5" style={{ color: isUser ? "var(--ink-faint)" : "var(--accent)" }}>
                         <span
@@ -1359,10 +1434,14 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
                                     {asked!.quotes.map((q, n) => (
                                       <button
                                         key={n}
-                                        onClick={() => goToPassage(`${annotation.id}:${i}:${n}`, q.source)}
+                                        onClick={() =>
+                                          q.origin === "paper" && onCitePaper
+                                            ? onCitePaper(q.page ?? 1, q.text, annotation.id)
+                                            : goToPassage(`${annotation.id}:${i}:${n}`, q.source)
+                                        }
                                         className="inline-flex items-center gap-1 max-w-full text-[11px] pl-1 pr-1.5 py-0.5 rounded transition-colors hover:opacity-80"
                                         style={{ background: "var(--quote-dim)", border: "1px solid var(--quote)", color: "var(--ink-muted)" }}
-                                        title={`Go back to this passage${q.source ? ` in “${q.source}”` : ""}\n\n${q.text}`}
+                                        title={`Go back to this passage${q.origin === "paper" ? ` in the paper${q.page ? ` (page ${q.page})` : ""}` : q.source ? ` in “${q.source}”` : ""}\n\n${q.text}`}
                                       >
                                         <span className="shrink-0 tabular-nums text-[10px] font-medium" style={{ color: "var(--quote)" }}>{q.label}</span>
                                         <span className="truncate min-w-0">{quotePreview(q.text)}</span>
@@ -1461,7 +1540,7 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
                 onMouseDown={(e) => e.preventDefault()}
                 onClick={() => insertQuoteLabel(i)}
                 className="inline-flex items-center gap-1 min-w-0 hover:opacity-80"
-                title={`Insert ${quoteLabel(i)} into your question\n\n${q.text}${q.source ? `\n\n— from ${q.source}` : ""}`}
+                title={`Insert ${quoteLabel(i)} into your question\n\n${q.text}${q.origin === "paper" ? `\n\n— from the paper${q.page ? `, page ${q.page}` : ""}` : q.source ? `\n\n— from ${q.source}` : ""}`}
               >
                 <span
                   className="shrink-0 tabular-nums px-1 rounded text-[10px] font-medium"
@@ -1470,9 +1549,9 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
                   {quoteLabel(i)}
                 </span>
                 <span className="truncate">{quotePreview(q.text)}</span>
-                {q.source && (
+                {(q.origin === "paper" || q.source) && (
                   <span className="shrink-0 text-[10px] truncate max-w-[90px]" style={{ color: "var(--ink-faint)" }}>
-                    · {q.source}
+                    · {q.origin === "paper" ? `paper${q.page ? ` p.${q.page}` : ""}` : q.source}
                   </span>
                 )}
               </button>

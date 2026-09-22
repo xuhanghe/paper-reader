@@ -8,6 +8,23 @@ import { claudeBin } from "@/lib/bin";
 
 export const runtime = "nodejs";
 
+// What the CLI said on the way out, made short enough to show. An API error
+// (a model it does not know, an expired login, a rate limit) arrives as a
+// well-formed result on stdout with is_error set and exit code 1; anything
+// else is on stderr, where the last lines name the problem.
+export function describeExit(code: number | null, stdout: string, stderr: string): string {
+  try {
+    const envelope = JSON.parse(stdout);
+    if (envelope?.is_error && typeof envelope.result === "string" && envelope.result.trim()) {
+      return envelope.result.trim().slice(0, 400);
+    }
+  } catch {
+    // not a result envelope — fall through to stderr
+  }
+  const said = stderr.trim().split("\n").filter(Boolean).slice(-4).join(" ").replace(/\s+/g, " ").slice(0, 400);
+  return said ? `claude exited with code ${code}: ${said}` : `claude exited with code ${code}`;
+}
+
 export async function POST(req: Request) {
   const { paper_text, model, effort, custom, paper_id } = await req.json();
 
@@ -41,35 +58,43 @@ export async function POST(req: Request) {
     }
   }
 
-  const stdout = await new Promise<string>((resolve, reject) => {
+  // The prompt is the whole paper, so it goes in on stdin rather than as an
+  // argument: a long paper would otherwise run past the argument size limit,
+  // and the CLI reads its prompt from stdin when none is given.
+  const result = await new Promise<{ ok: true; out: string } | { ok: false; error: string }>((resolve) => {
     const proc = spawn(claudeBin(), [
-      "-p", prompt,
+      "-p",
       "--model", modelFlag,
       ...effortArgs(effort),
       "--output-format", "json",
       "--dangerously-skip-permissions",
     ]);
-    proc.stdin.end();
+    proc.stdin.on("error", () => {}); // a CLI that exits early closes the pipe first
+    proc.stdin.end(prompt);
 
     let out = "";
+    let err = "";
     proc.stdout.on("data", (chunk: Buffer) => { out += chunk.toString(); });
-    proc.stderr.on("data", (d: Buffer) => console.error("[claude stderr]", d.toString()));
-    proc.on("error", reject);
+    proc.stderr.on("data", (chunk: Buffer) => { err += chunk.toString(); });
+    proc.on("error", (spawnError) => resolve({ ok: false, error: `could not start claude: ${spawnError.message}` }));
     proc.on("close", (code) => {
-      if (code === 0) resolve(out);
-      else reject(new Error(`claude exited with code ${code}`));
+      if (code === 0) resolve({ ok: true, out });
+      else resolve({ ok: false, error: describeExit(code, out, err) });
     });
-  }).catch((err) => {
-    console.error("[mindmap]", err);
-    return null;
   });
 
-  if (stdout === null) {
-    return Response.json({ error: "Failed to run Claude for mind map generation." }, { status: 500 });
+  if (!result.ok) {
+    console.error("[mindmap]", result.error);
+    return Response.json({ error: `Could not generate the map — ${result.error}` }, { status: 500 });
   }
 
   try {
-    const envelope = JSON.parse(stdout);
+    const envelope = JSON.parse(result.out);
+    // A refusal or an API error comes back as a well-formed result too
+    if (envelope.is_error) {
+      const said = typeof envelope.result === "string" ? envelope.result.slice(0, 300) : "the model returned an error";
+      return Response.json({ error: `Could not generate the map — ${said}` }, { status: 500 });
+    }
     const resultText: string = typeof envelope.result === "string" ? envelope.result : "";
     const mindmap = extractMindmapJson(resultText);
     if (!mindmap) {
