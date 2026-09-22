@@ -122,6 +122,9 @@ export default function Home() {
 
   const isClient = useIsClient();
   const [activeAnnotationId, setActiveAnnotationId] = useState<string | null>(null);
+  // Counts every ask, so the panel can tell one from a conversation that
+  // merely changed — a question edited and sent again unchanged is still an ask
+  const [askSeq, setAskSeq] = useState(0);
   // Saved layout, read once — useState's initializer keeps it stable
   const [layout0] = useState(loadLayout);
   const [sidebarOpen, setSidebarOpen] = useState(layout0.mapOpen);
@@ -606,6 +609,7 @@ export default function Home() {
     ) => {
       setExplainOpen(true);
       setStreamingIds((s) => new Set(s).add(annotationId));
+      setAskSeq((n) => n + 1);
       // One controller per conversation, so Stop cancels this answer and not
       // whatever else is streaming in another card
       abortControllers.current.get(annotationId)?.abort();
@@ -680,8 +684,13 @@ export default function Home() {
           updateLastAssistantMessage(annotationId, "Error: failed to connect to the model.");
         }
       } finally {
-        abortControllers.current.delete(annotationId);
-        setStreamingIds((s) => { const next = new Set(s); next.delete(annotationId); return next; });
+        // Only this ask's own controller: an edit stops the old stream and
+        // starts the new one at once, and the old one's ending must not mark
+        // the new one as finished
+        if (abortControllers.current.get(annotationId) === controller) {
+          abortControllers.current.delete(annotationId);
+          setStreamingIds((s) => { const next = new Set(s); next.delete(annotationId); return next; });
+        }
       }
     },
     [session.model, session.effort, session.pdfName, session.providerSessions, paperId, customApi, activeSkillIds, updateLastAssistantMessage, setProviderSession, markTurn]
@@ -1560,6 +1569,7 @@ export default function Home() {
         <ExplainPanel
           annotations={session.annotations}
           activeId={activeAnnotationId}
+          askSeq={askSeq}
           model={session.model}
           streamingIds={streamingIds}
           onFollowUp={handleFollowUp}

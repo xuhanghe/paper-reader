@@ -1040,3 +1040,70 @@ describe("landing after asking in a conversation you had not clicked", () => {
     assert.match(scrolls[0].text, /q2, put better/);
   });
 });
+
+// A question edited and sent again as it was changes nothing the panel can
+// see in the conversation — yet it is an ask, and the reader is left wherever
+// the browser put them if it goes unnoticed. The page counts asks; the count
+// says so.
+describe("an ask the conversation does not show", () => {
+  let host: HTMLElement;
+  let root: Root;
+  let scrolls: { block?: string; text: string }[];
+  const refs = { current: {} as Record<string, HTMLDivElement | null> };
+
+  const show = (annotations: Annotation[], activeId: string | null, askSeq: number) => {
+    act(() => {
+      root.render(
+        createElement(ExplainPanel, {
+          annotations,
+          activeId,
+          model: "claude-sonnet-4-6",
+          streamingIds: new Set<string>(),
+          onFollowUp: () => {},
+          onAskGeneral: () => {},
+          onDelete: () => {},
+          onReExplainImage: () => {},
+          onViewInPdf: () => {},
+          annotationRefs: refs,
+          isOpen: true,
+          onToggle: () => {},
+          askSeq,
+        })
+      );
+    });
+  };
+  const conversation = () =>
+    thread([{ role: "user", content: "what is this?" }, { role: "assistant", content: "this." }, { role: "user", content: "test" }, { role: "assistant", content: "ok" }], "a1", "conversation A");
+
+  test("the same question sent again lands on it, because the count moved", () => {
+    scrolls = [];
+    dom.window.Element.prototype.scrollIntoView = function (this: Element, opts?: boolean | ScrollIntoViewOptions) {
+      const o = typeof opts === "object" && opts ? opts : {};
+      scrolls.push({ block: o.block, text: (this.textContent || "").slice(0, 40) });
+    };
+    refs.current = {};
+    host = freshRoot();
+    root = createRoot(host);
+    show([conversation()], "a1", 1);   // arrive
+    scrolls.length = 0;
+    show([conversation()], "a1", 2);   // edited and sent again, word for word
+    assert.equal(scrolls.length, 1, "one landing");
+    assert.equal(scrolls[0].block, "nearest");
+    assert.match(scrolls[0].text, /test/, "on the question that was re-asked");
+  });
+
+  test("nothing moves when neither the count nor the conversation changed", () => {
+    scrolls = [];
+    dom.window.Element.prototype.scrollIntoView = function (this: Element, opts?: boolean | ScrollIntoViewOptions) {
+      const o = typeof opts === "object" && opts ? opts : {};
+      scrolls.push({ block: o.block, text: (this.textContent || "").slice(0, 40) });
+    };
+    refs.current = {};
+    host = freshRoot();
+    root = createRoot(host);
+    show([conversation()], "a1", 1);
+    scrolls.length = 0;
+    show([conversation()], "a1", 1);
+    assert.equal(scrolls.length, 0);
+  });
+});

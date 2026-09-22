@@ -138,12 +138,25 @@ function mergeRules(bands: HighlightBand[]): HighlightBand[] {
 
 function renderPageBands(wrapper: HTMLElement, bands: HighlightBand[]) {
   const merged = mergeRules(bands);
+  const box = wrapper.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  // A rule's top edge, as a fraction of the page, put on a whole device
+  // pixel of the screen. Fractions of the page land rules at every phase of
+  // the pixel grid, and a 2px rule at a fractional row is painted by WebKit
+  // at 1x as a fainter or a smeared line than one on the grid — three rules
+  // of one passage in three weights. The 1.5px gap under the letters is
+  // folded in here rather than left as a margin, so it is snapped too.
+  const snappedRuleTop = (top: number) => {
+    if (!(box.height > 0)) return { top: `${top * 100}%`, marginTop: "1.5px" };
+    const px = top * box.height + 1.5;
+    const snapped = Math.round((box.top + px) * dpr) / dpr - box.top;
+    return { top: `${(snapped / box.height) * 100}%`, marginTop: "0px" };
+  };
   if (traceEnabled()) {
     // Every rule as it will be painted, in CSS px of the page, with the raw
     // count before merging — for a report of a rule that looks wrong
-    const box = wrapper.getBoundingClientRect();
-    const px = (b: HighlightBand) => ({ id: b.id.slice(0, 8), left: +(b.left * box.width).toFixed(1), top: +((b.inkBottom ?? b.top + b.height) * box.height).toFixed(2), width: +(b.width * box.width).toFixed(1), lineHeight: +(b.height * box.height).toFixed(1), color: b.color });
-    trace("bands", { page: wrapper.dataset.pageNumber ?? wrapper.closest(".page")?.getAttribute("data-page-number"), dpr: window.devicePixelRatio, pageWidth: +box.width.toFixed(1), pageHeight: +box.height.toFixed(1), rulesBefore: bands.filter((b) => b.underline).length, rules: merged.filter((b) => b.underline).map(px), washes: merged.filter((b) => !b.underline).length });
+    const px = (b: HighlightBand) => ({ id: b.id.slice(0, 8), left: +(b.left * box.width).toFixed(1), top: +((b.inkBottom ?? b.top + b.height) * box.height).toFixed(2), snappedTo: +(parseFloat(snappedRuleTop(b.inkBottom ?? b.top + b.height).top) / 100 * box.height).toFixed(2), width: +(b.width * box.width).toFixed(1), lineHeight: +(b.height * box.height).toFixed(1), color: b.color });
+    trace("bands", { page: wrapper.dataset.pageNumber ?? wrapper.closest(".page")?.getAttribute("data-page-number"), dpr, pageTop: +box.top.toFixed(3), pageWidth: +box.width.toFixed(1), pageHeight: +box.height.toFixed(1), rulesBefore: bands.filter((b) => b.underline).length, rules: merged.filter((b) => b.underline).map(px), washes: merged.filter((b) => !b.underline).length });
   }
   let overlay = Array.from(wrapper.children).find((el) => el.classList.contains("pr-page-bands")) as
     | HTMLDivElement
@@ -169,11 +182,10 @@ function renderPageBands(wrapper: HTMLElement, bands: HighlightBand[]) {
     // zoom. So: a fixed 2 CSS px, sitting a fixed 1.5px under the letters.
     Object.assign(el.style, {
       left: `${band.left * 100}%`,
-      top: `${top * 100}%`,
       width: `${band.width * 100}%`,
       ...(band.underline
-        ? { height: "2px", marginTop: "1.5px" }
-        : { height: `${(band.height + pad * 2) * 100}%` }),
+        ? { height: "2px", ...snappedRuleTop(top) }
+        : { top: `${top * 100}%`, height: `${(band.height + pad * 2) * 100}%` }),
       background: band.color,
     });
     fragment.appendChild(el);
