@@ -56,6 +56,9 @@ export function turnMarker(turn: number): string {
 const CJK = "\\u3040-\\u30FF\\u3400-\\u4DBF\\u4E00-\\u9FFF\\uF900-\\uFAFF\\uAC00-\\uD7AF";
 const BETWEEN_CJK = new RegExp(`([${CJK}])\\s+(?=[${CJK}])`, "g");
 
-export function citationLabel(text: string): string {
-  return text.replace(/\s+/g, " ").replace(BETWEEN_CJK, "$1").trim();
+// A fragment of a label — the words either side of a formula — keeps the
+// spaces at its ends, since they are the spaces between it and its neighbours
+export function citationLabel(text: string, trim = true): string {
+  const tidy = text.replace(/\s+/g, " ").replace(BETWEEN_CJK, "$1");
+  return trim ? tidy.trim() : tidy;
 }

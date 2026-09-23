@@ -70,6 +70,25 @@ describe("citations in an answer", () => {
     assert.deepEqual(jumps, [{ page: 12, quote: "the kernel is bandwidth bound" }]);
   });
 
+  test("a formula in a cited passage is typeset, and the jump carries its plain reading", () => {
+    // Written as the screenshot had it: LaTeX inside the link text. KaTeX
+    // hands the link three copies of it, and the label used to show all three
+    mount([answering("This explains why [learnable positional biases $B^a, B^b \\in \\mathbb{R}^{m \\times c}$](paper:10) are per channel.")]);
+    const [cite] = cites();
+    assert.ok(cite, "a citation button");
+    assert.ok(cite.querySelector(".katex"), "the formula is typeset inside the link");
+    // Nothing of the LaTeX source is shown outside KaTeX's own hidden annotation
+    const shown = Array.from(cite.childNodes).filter((n) => !(n instanceof dom.window.HTMLElement && (n.matches(".katex") || n.querySelector(".katex")))).map((n) => n.textContent).join("");
+    assert.doesNotMatch(shown, /mathbb|\^/);
+    assert.match(cite.textContent || "", /learnable positional biases/);
+    assert.match(cite.childNodes[0].textContent || "", /biases $/, "the space before the formula is kept");
+    click(cite);
+    assert.equal(jumps.length, 1);
+    assert.equal(jumps[0].page, 10);
+    assert.doesNotMatch(jumps[0].quote, /mathbb|\^|\\/, "no LaTeX in what is searched for");
+    assert.equal(jumps[0].quote.replace(/\s+/g, ""), "learnablepositionalbiasesBa,Bb∈Rm×c", "the formula read as the page reads it, once");
+  });
+
   test("the page it points at is shown, so the jump is predictable", () => {
     mount([answering(PAPER_CITE)]);
     assert.ok(host.textContent?.includes("p12"));

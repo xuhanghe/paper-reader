@@ -1,5 +1,5 @@
 "use client";
-import { useRef, useEffect, useLayoutEffect, useMemo, useState, useCallback, memo, useImperativeHandle } from "react";
+import { Fragment, cloneElement, isValidElement, useRef, useEffect, useLayoutEffect, useMemo, useState, useCallback, memo, useImperativeHandle } from "react";
 import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
@@ -91,12 +91,46 @@ type CiteHandlers = {
   turn?: (turn: number) => void;
 };
 
+// The words of a link, for finding them on the page. A formula the model
+// wrote in the link text arrives from KaTeX three times over — as MathML, as
+// the LaTeX it was typeset from, and as the HTML it is drawn with — and only
+// the MathML reads the way the page's own text does ("Ba,Bb∈Rm×c" for
+// B^a, B^b ∈ R^{m×c}), so that is what a formula contributes.
+type Elementish = { type?: unknown; props?: { children?: React.ReactNode; className?: unknown } };
+const classOf = (el: Elementish) => (typeof el.props?.className === "string" ? el.props.className : "");
 function textOf(node: React.ReactNode): string {
   if (node === null || node === undefined || typeof node === "boolean") return "";
   if (typeof node === "string" || typeof node === "number") return String(node);
   if (Array.isArray(node)) return node.map(textOf).join("");
-  const el = node as { props?: { children?: React.ReactNode } };
+  const el = node as Elementish;
+  if (el.type === "annotation" || /\bkatex-html\b/.test(classOf(el))) return "";
   return el.props?.children === undefined ? "" : textOf(el.props.children);
+}
+
+// The link as shown: its words tidied the way a label is (a quote copied off a
+// PDF has a space between every CJK glyph), its formulas left to KaTeX. Only
+// the label's own ends are trimmed; a space between words and a formula is
+// the space between them, not slack.
+function tidied(node: React.ReactNode): React.ReactNode {
+  const list = Array.isArray(node) ? node : [node];
+  return list.map((child, i) => {
+    const one = tidyOne(child);
+    if (typeof one === "string") {
+      let text = one;
+      if (i === 0) text = text.trimStart();
+      if (i === list.length - 1) text = text.trimEnd();
+      return <Fragment key={i}>{text}</Fragment>;
+    }
+    return <Fragment key={i}>{one}</Fragment>;
+  });
+}
+function tidyOne(node: React.ReactNode): React.ReactNode {
+  if (typeof node === "string") return citationLabel(node, false);
+  if (Array.isArray(node)) return tidied(node);
+  if (!isValidElement(node)) return node;
+  const el = node as React.ReactElement<{ children?: React.ReactNode; className?: unknown }>;
+  if (/\bkatex\b/.test(classOf(el as Elementish)) || el.props.children === undefined) return el;
+  return cloneElement(el, undefined, tidied(el.props.children));
 }
 
 function CitationAnchor({
@@ -122,7 +156,7 @@ function CitationAnchor({
   }
 
   const raw = textOf(children);
-  const label = citationLabel(raw) || raw;
+  const label = tidied(children);
 
   if (citation.kind === "turn") {
     // A number that points at nothing reads as plain words rather than as a

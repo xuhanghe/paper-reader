@@ -159,3 +159,21 @@ test("a range that crosses a line break reads with a space where the break was",
   const spaced = buildPdfSelectionModel([item("ends here ", 50, 420), item("next line", 50, 408)], styles);
   assert.equal(pdfSelectionRange(spaced, 0, spaced.characters.length)!.text, "ends here next line");
 });
+
+// A PDF sets its maths in the Mathematical Alphanumeric block — 𝐵 (U+1D435)
+// where a quote typeset from LaTeX has a plain B — and its ligatures as one
+// glyph. A cited formula, read the way the page reads it, still has to land.
+test("a quote in plain letters finds text set in mathematical italics", () => {
+  const model = buildPdfSelectionModel([
+    item("learnable positional biases 𝐵 𝑎 , 𝐵 𝑏 ∈ R 𝑚 × 𝑐 , producing", 50, 420),
+  ], styles);
+  const cited = pdfSelectionRangeForText(model, "learnable positional biases Ba,Bb∈Rm×c");
+  assert.ok(cited, "found");
+  assert.equal(selectionSegmentsText([{ pageNumber: 1, range: cited }]).replace(/\s+/g, ""), "learnablepositionalbiases𝐵𝑎,𝐵𝑏∈R𝑚×𝑐");
+});
+
+test("a ligature on the page is matched by its letters", () => {
+  const model = buildPdfSelectionModel([item("a ﬁne-grained sparse selection", 50, 420)], styles);
+  const cited = pdfSelectionRangeForText(model, "fine-grained sparse");
+  assert.ok(cited, "found");
+});

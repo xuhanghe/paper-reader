@@ -45,9 +45,13 @@ export type PdfSelectionRange = {
 // Lowercase without changing the number of UTF-16 code units. Some Unicode
 // characters expand when lowercased; retaining the original in that case
 // keeps every normalized unit mapped to the PDF character that produced it.
+// NFKC first: a PDF sets its maths in the Mathematical Alphanumeric block
+// (𝐵 for B, 𝑚 for m) and its ligatures as single glyphs (ﬁ), while a quote
+// typed or typeset from LaTeX has plain letters. Both sides fold to those.
 function foldCharacter(text: string): string {
-  const lower = text.toLowerCase();
-  return lower.length === text.length ? lower : text;
+  const plain = text.normalize("NFKC");
+  const lower = plain.toLowerCase();
+  return lower.length === plain.length ? lower : plain;
 }
 
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
