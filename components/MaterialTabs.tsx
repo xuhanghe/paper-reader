@@ -54,10 +54,10 @@ export function moveMaterialTab(tabs: MaterialTab[], fromId: string, index: numb
 
 // Which slot a pointer at `x` over a tab means: before it or after it. The
 // rect is where the tab rests, not where it has eased to — deciding from the
-// moved tab fed back on itself and made it flutter. Across the middle three
-// fifths of the tab the current slot holds: only a pointer well into the
-// outer fifth on either side moves anything.
-const HOLD = 0.3;
+// moved tab fed back on itself and made it flutter. Across the middle fifth
+// of the tab the current slot holds, so a pointer resting on the midpoint
+// cannot flip it; past that, the side the pointer is on decides.
+const HOLD = 0.1;
 export function slotAt(x: number, rect: { left: number; width: number }, tabIndex: number, current: number | null = null): number {
   const mid = rect.left + rect.width / 2;
   const zone = rect.width * HOLD;
@@ -91,8 +91,8 @@ export function MaterialTabs({ tabs, activeId, loadingId, onSelect, onClose, onR
   // leaving, the gap closed, the tab came back, and so on, fast.
   const lastOver = useRef(0);
   const leaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // Tabs move at most once every 250ms, and only for a slot the pointer has
-  // meant for 100ms: whatever a browser does with its drag events, no tab
+  // Tabs move at most once every 180ms, and only for a slot the pointer has
+  // meant for 50ms: whatever a browser does with its drag events, no tab
   // can flutter faster than that
   const pending = useRef<{ slot: number; since: number } | null>(null);
   const lastMove = useRef(0);
@@ -100,7 +100,7 @@ export function MaterialTabs({ tabs, activeId, loadingId, onSelect, onClose, onR
     const now = Date.now();
     if (next === current) { pending.current = null; return; }
     if (!pending.current || pending.current.slot !== next) { pending.current = { slot: next, since: now }; return; }
-    if (now - pending.current.since < 100 || now - lastMove.current < 250) return;
+    if (now - pending.current.since < 50 || now - lastMove.current < 180) return;
     pending.current = null;
     lastMove.current = now;
     setSlot(next);
@@ -222,7 +222,7 @@ export function MaterialTabs({ tabs, activeId, loadingId, onSelect, onClose, onR
               // The picked-up tab leaves a dim outline of itself until it lands
               opacity: isDragged ? (slot !== null ? 0.15 : 0.5) : 1,
               transform: `translateX(${shiftFor(i)}px)`,
-              transition: "transform 260ms cubic-bezier(0.2, 0.8, 0.2, 1), opacity 120ms ease, background-color 120ms ease",
+              transition: "transform 200ms cubic-bezier(0.2, 0.8, 0.2, 1), opacity 120ms ease, background-color 120ms ease",
             }}
             onMouseEnter={(e) => {
               if (!isActive) (e.currentTarget as HTMLElement).style.background = "rgba(230,237,243,0.04)";
