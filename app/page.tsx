@@ -1608,6 +1608,7 @@ export default function Home() {
           onJumpToSource={(page, quote) => { recordJump(); pdfViewerRef.current?.highlightText(page, quote); }}
           onJumpToHighlight={jumpToHighlight}
           onAskAboutNode={handleAskAboutSelection}
+          onQuote={handleQuoteSelection}
           concepts={session.concepts}
           onSelectConcept={(id) => setActiveAnnotationId(id)}
           summarizingIds={summarizing}

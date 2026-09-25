@@ -12,11 +12,14 @@ type Props = {
   onEditNote: (note: string) => void;
   onRemove: () => void;
   onDismiss: () => void;
+  // The passage into the next question, or explained at once
+  onQuote?: () => void;
+  onExplain?: () => void;
 };
 
 // Shown when an existing highlight is clicked: recolour it, edit its note, or
 // take it off. Every edit here goes straight to the one copy in Zotero.
-export function HighlightPopover({ rect, color, note, onRecolor, onEditNote, onRemove, onDismiss }: Props) {
+export function HighlightPopover({ rect, color, note, onRecolor, onEditNote, onRemove, onDismiss, onQuote, onExplain }: Props) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(note || "");
 
@@ -58,6 +61,16 @@ export function HighlightPopover({ rect, color, note, onRecolor, onEditNote, onR
           />
         ))}
         <span className="mx-1" style={{ color: "var(--border)" }}>|</span>
+        {onExplain && (
+          <button onClick={onExplain} className="text-xs px-1.5 py-0.5 rounded transition-colors" style={{ color: "var(--accent)" }} title="Explain this passage">
+            Explain ↗
+          </button>
+        )}
+        {onQuote && (
+          <button onClick={onQuote} className="text-xs px-1.5 py-0.5 rounded transition-colors" style={{ color: "var(--quote)" }} title="Quote this passage into your next question">
+            ❝ Quote
+          </button>
+        )}
         <button
           onClick={() => { setDraft(note || ""); setEditing((v) => !v); }}
           className="text-xs px-1.5 py-0.5 rounded transition-colors"

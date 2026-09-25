@@ -2530,6 +2530,8 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
               onEditNote={(n) => { onEditHighlightNote?.(highlightMenu.id, n); setHighlightMenu(null); }}
               onRemove={() => { onRemoveHighlight?.(highlightMenu.id); setHighlightMenu(null); }}
               onDismiss={() => setHighlightMenu(null)}
+              onQuote={h && onQuoteSelection ? () => { onQuoteSelection(h.text, h.pageNumber, h.position); setHighlightMenu(null); } : undefined}
+              onExplain={h ? () => { onTextSelected(h.text, h.pageNumber, h.occurrence ?? 0, h.position, "explain"); setHighlightMenu(null); } : undefined}
             />
           );
         })()}

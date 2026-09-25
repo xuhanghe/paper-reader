@@ -20,6 +20,9 @@ type Props = {
   // search when the passage isn't painted (e.g. its page hasn't rendered)
   onJumpToHighlight: (id: string, page: number | undefined, text: string) => void;
   onAskAboutNode: (text: string, question: string, page?: number) => void;
+  // Holds a passage — a note, an annotation, a highlight — for the next
+  // question asked in the panel, and puts the cursor in the box
+  onQuote: (text: string, page?: number) => void;
   concepts: ConceptEntry[];
   // Conversations whose summary is being written right now
   summarizingIds?: Set<string>;
@@ -383,6 +386,7 @@ export function MindmapSidebar({
   onJumpToSource,
   onJumpToHighlight,
   onAskAboutNode,
+  onQuote,
   concepts,
   summarizingIds,
   onConceptsShown,
@@ -401,12 +405,9 @@ export function MindmapSidebar({
   width = 336,
   modelControls,
 }: Props) {
-  const [askingHighlightId, setAskingHighlightId] = useState<string | null>(null);
-  const [highlightQuestion, setHighlightQuestion] = useState("");
   // Entry whose note is being written; clicking a card opens its editor
   const [notingId, setNotingId] = useState<string | null>(null);
   const toggleNote = (id: string) => {
-    setAskingHighlightId(null);
     setNotingId((prev) => (prev === id ? null : id));
   };
   // Clicking an entry takes you to the passage in the paper and opens its note
@@ -596,7 +597,6 @@ export function MindmapSidebar({
               </p>
               {zoteroNotes.map((n) => {
                 const plain = n.html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
-                const askId = `zn:${n.key}`;
                 return (
                   <div
                     key={n.key}
@@ -625,48 +625,14 @@ export function MindmapSidebar({
                     />
                     <div className="flex items-center gap-2 mt-1">
                       <button
-                        onClick={() => {
-                          setAskingHighlightId(askingHighlightId === askId ? null : askId);
-                          setHighlightQuestion("");
-                        }}
+                        onClick={(e) => { e.stopPropagation(); onQuote(plain.slice(0, 800)); }}
                         className="text-[10px] transition-opacity hover:opacity-70"
-                        style={{ color: askingHighlightId === askId ? "var(--accent)" : "var(--ink-faint)" }}
-                        title="Ask about this note"
+                        style={{ color: "var(--quote)" }}
+                        title="Quote this into your next question"
                       >
-                        ✦ ask
+                        ❝ quote
                       </button>
                     </div>
-                    {askingHighlightId === askId && (
-                      <div className="flex items-end gap-1 mt-1.5">
-                        <GrowingTextarea
-                          autoFocus
-                          value={highlightQuestion}
-                          placeholder="Ask about this note…"
-                          onChange={(e) => setHighlightQuestion(e.target.value)}
-                          onKeyDown={(e) => {
-                            if (isSubmitKey(e) && highlightQuestion.trim()) {
-                              e.preventDefault();
-                              onAskAboutNode(`My Zotero note on this paper: ${plain.slice(0, 800)}`, highlightQuestion.trim());
-                              setAskingHighlightId(null);
-                            }
-                            if (e.key === "Escape") setAskingHighlightId(null);
-                          }}
-                          className="flex-1 min-w-0 text-[11px] px-2 py-1 rounded focus:outline-none resize-none"
-                          style={{ border: "1px solid var(--accent)", background: "var(--paper)", color: "var(--ink)" }}
-                        />
-                        <button
-                          onClick={() => {
-                            if (highlightQuestion.trim()) {
-                              onAskAboutNode(`My Zotero note on this paper: ${plain.slice(0, 800)}`, highlightQuestion.trim());
-                              setAskingHighlightId(null);
-                            }
-                          }}
-                          className="btn-primary text-[11px] px-2 py-1 shrink-0"
-                        >
-                          Ask
-                        </button>
-                      </div>
-                    )}
                   </div>
                 );
               })}
@@ -720,17 +686,12 @@ export function MindmapSidebar({
                       ✎ {a.comment ? "edit note" : "note"}
                     </button>
                     <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setNotingId(null);
-                        setAskingHighlightId(askingHighlightId === `za:${a.key}` ? null : `za:${a.key}`);
-                        setHighlightQuestion("");
-                      }}
+                      onClick={(e) => { e.stopPropagation(); onQuote(a.comment ? `${a.text}\n\nMy Zotero annotation: ${a.comment}` : a.text, a.page); }}
                       className="text-[10px] transition-opacity hover:opacity-70"
-                      style={{ color: askingHighlightId === `za:${a.key}` ? "var(--accent)" : "var(--ink-faint)" }}
-                      title="Ask about this annotation"
+                      style={{ color: "var(--quote)" }}
+                      title="Quote this into your next question"
                     >
-                      ✦ ask
+                      ❝ quote
                     </button>
                     <button
                       onClick={(e) => { e.stopPropagation(); onRemoveZoteroAnnotation(a.key); }}
@@ -748,37 +709,6 @@ export function MindmapSidebar({
                       onSave={(note) => saveNote(`zotero-${a.key}`, note)}
                       onCancel={() => setNotingId(null)}
                     />
-                  )}
-                  {askingHighlightId === `za:${a.key}` && (
-                    <div className="flex items-end gap-1 mt-1.5">
-                      <GrowingTextarea
-                        autoFocus
-                        value={highlightQuestion}
-                        placeholder="Ask about this passage…"
-                        onChange={(e) => setHighlightQuestion(e.target.value)}
-                        onKeyDown={(e) => {
-                          if (isSubmitKey(e) && highlightQuestion.trim()) {
-                            e.preventDefault();
-                            onAskAboutNode(a.comment ? `${a.text}\n\nMy Zotero annotation: ${a.comment}` : a.text, highlightQuestion.trim(), a.page);
-                            setAskingHighlightId(null);
-                          }
-                          if (e.key === "Escape") setAskingHighlightId(null);
-                        }}
-                        className="flex-1 min-w-0 text-[11px] px-2 py-1 rounded focus:outline-none resize-none"
-                        style={{ border: "1px solid var(--accent)", background: "var(--paper)", color: "var(--ink)" }}
-                      />
-                      <button
-                        onClick={() => {
-                          if (highlightQuestion.trim()) {
-                            onAskAboutNode(a.comment ? `${a.text}\n\nMy Zotero annotation: ${a.comment}` : a.text, highlightQuestion.trim(), a.page);
-                            setAskingHighlightId(null);
-                          }
-                        }}
-                        className="btn-primary text-[11px] px-2 py-1 shrink-0"
-                      >
-                        Ask
-                      </button>
-                    </div>
                   )}
                 </div>
               ))}
@@ -831,17 +761,12 @@ export function MindmapSidebar({
                   ✎ {h.note ? "edit note" : "note"}
                 </button>
                 <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setNotingId(null);
-                    setAskingHighlightId(askingHighlightId === h.id ? null : h.id);
-                    setHighlightQuestion("");
-                  }}
+                  onClick={(e) => { e.stopPropagation(); onQuote(h.note ? `${h.text}\n\nMy note: ${h.note}` : h.text, h.pageNumber); }}
                   className="text-[10px] transition-opacity hover:opacity-70"
-                  style={{ color: askingHighlightId === h.id ? "var(--accent)" : "var(--ink-faint)" }}
-                  title="Ask about this passage"
+                  style={{ color: "var(--quote)" }}
+                  title="Quote this into your next question"
                 >
-                  ✦ ask
+                  ❝ quote
                 </button>
                 <button
                   onClick={(e) => { e.stopPropagation(); onRemoveHighlight(h.id); }}
@@ -859,37 +784,6 @@ export function MindmapSidebar({
                   onSave={(note) => saveNote(h.id, note)}
                   onCancel={() => setNotingId(null)}
                 />
-              )}
-              {askingHighlightId === h.id && (
-                <div className="flex items-end gap-1 mt-1.5">
-                  <GrowingTextarea
-                    autoFocus
-                    value={highlightQuestion}
-                    placeholder="Ask about this passage…"
-                    onChange={(e) => setHighlightQuestion(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (isSubmitKey(e) && highlightQuestion.trim()) {
-                        e.preventDefault();
-                        onAskAboutNode(h.note ? `${h.text}\n\nMy note: ${h.note}` : h.text, highlightQuestion.trim(), h.pageNumber);
-                        setAskingHighlightId(null);
-                      }
-                      if (e.key === "Escape") setAskingHighlightId(null);
-                    }}
-                    className="flex-1 min-w-0 text-[11px] px-2 py-1 rounded focus:outline-none resize-none"
-                    style={{ border: "1px solid var(--accent)", background: "var(--paper)", color: "var(--ink)" }}
-                  />
-                  <button
-                    onClick={() => {
-                      if (highlightQuestion.trim()) {
-                        onAskAboutNode(h.note ? `${h.text}\n\nMy note: ${h.note}` : h.text, highlightQuestion.trim(), h.pageNumber);
-                        setAskingHighlightId(null);
-                      }
-                    }}
-                    className="btn-primary text-[11px] px-2 py-1 shrink-0"
-                  >
-                    Ask
-                  </button>
-                </div>
               )}
             </div>
           ))}

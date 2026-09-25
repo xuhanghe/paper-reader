@@ -35,6 +35,7 @@ const mount = (concepts: ConceptEntry[], summarizing = new Set<string>()) => {
         mindmap: null, mindmapLoading: false, mindmapError: null, hasPdf: true,
         onGenerateMindmap: () => {}, onJumpToSource: () => {}, onJumpToHighlight: () => {},
         onAskAboutNode: () => {},
+      onQuote: () => {},
         concepts,
         summarizingIds: summarizing,
         onConceptsShown: () => { shown += 1; },

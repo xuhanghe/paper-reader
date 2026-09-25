@@ -729,6 +729,14 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
         const trimmed = text.trim();
         if (!trimmed) return;
         setQuotes((prev) => pushQuote(prev, { id: `${Date.now()}-${prev.length}`, text: trimmed, origin: "paper", page }));
+        // Quoting is asking: the cursor goes to the box the question will be
+        // typed in — the one last used, else the follow-up box, else the
+        // general one — once the panel has had a frame to open
+        requestAnimationFrame(() => {
+          const last = lastBox.current?.el;
+          const box = last?.isConnected ? last : (document.querySelector('.pr-explain-panel textarea[placeholder^="Ask a follow-up"], .pr-explain-panel textarea') as HTMLTextAreaElement | null);
+          box?.focus();
+        });
       },
     }),
     []
@@ -1449,6 +1457,63 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
     </div>
   );
 
+  // Passages held for the next question, shown wherever that question can be
+  // typed — the empty panel's composer as much as the list's follow-up bar
+  const quoteStrip = quotes.length > 0 && (
+        <div
+          className="shrink-0 px-3 py-2 flex flex-wrap items-center gap-1.5"
+          style={{ background: "var(--accent-faint)", borderTop: "1px solid var(--border)" }}
+        >
+          <span className="text-[10px] uppercase tracking-widest shrink-0" style={{ color: "var(--ink-faint)" }}>
+            Quoting {quotes.length > 1 && <span className="tabular-nums">({quotes.length})</span>}
+          </span>
+          {quotes.map((q, i) => (
+            <span
+              key={q.id}
+              className="inline-flex items-center gap-1 text-[11px] pl-1 pr-1.5 py-1 rounded max-w-[280px]"
+              style={{ background: "var(--surface)", border: "1px solid var(--border)", color: "var(--ink-muted)" }}
+            >
+              <button
+                // Clicking the chip writes its label into the question, so a
+                // reader never has to remember which passage was which number
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => insertQuoteLabel(i)}
+                className="inline-flex items-center gap-1 min-w-0 hover:opacity-80"
+                title={`Insert ${quoteLabel(i)} into your question\n\n${q.text}${q.origin === "paper" ? `\n\n— from the paper${q.page ? `, page ${q.page}` : ""}` : q.source ? `\n\n— from ${q.source}` : ""}`}
+              >
+                <span
+                  className="shrink-0 tabular-nums px-1 rounded text-[10px] font-medium"
+                  style={{ background: "var(--accent-dim)", color: "var(--accent)" }}
+                >
+                  {quoteLabel(i)}
+                </span>
+                <span className="truncate">{quotePreview(q.text)}</span>
+                {(q.origin === "paper" || q.source) && (
+                  <span className="shrink-0 text-[10px] truncate max-w-[90px]" style={{ color: "var(--ink-faint)" }}>
+                    · {q.origin === "paper" ? `paper${q.page ? ` p.${q.page}` : ""}` : q.source}
+                  </span>
+                )}
+              </button>
+              <button
+                onClick={() => setQuotes((prev) => prev.filter((x) => x.id !== q.id))}
+                className="shrink-0 hover:opacity-70"
+                title="Drop this quote"
+                aria-label="Drop quote"
+              >
+                ✕
+              </button>
+            </span>
+          ))}
+          <button
+            onClick={() => setQuotes([])}
+            className="text-[10px] ml-auto shrink-0 hover:opacity-70"
+            style={{ color: "var(--ink-faint)" }}
+          >
+            clear
+          </button>
+        </div>
+      );
+
   if (annotations.length === 0) {
     return (
       <div className="pr-explain-panel flex flex-col overflow-hidden" style={{ background: "var(--paper)", width: `${width}px`, minWidth: 250 }}>
@@ -1467,6 +1532,7 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
             …or just type a question below
           </p>
         </div>
+        {quoteStrip}
         {composer}
       </div>
     );
@@ -1825,60 +1891,7 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
         </button>
       )}
 
-      {quotes.length > 0 && (
-        <div
-          className="shrink-0 px-3 py-2 flex flex-wrap items-center gap-1.5"
-          style={{ background: "var(--accent-faint)", borderTop: "1px solid var(--border)" }}
-        >
-          <span className="text-[10px] uppercase tracking-widest shrink-0" style={{ color: "var(--ink-faint)" }}>
-            Quoting {quotes.length > 1 && <span className="tabular-nums">({quotes.length})</span>}
-          </span>
-          {quotes.map((q, i) => (
-            <span
-              key={q.id}
-              className="inline-flex items-center gap-1 text-[11px] pl-1 pr-1.5 py-1 rounded max-w-[280px]"
-              style={{ background: "var(--surface)", border: "1px solid var(--border)", color: "var(--ink-muted)" }}
-            >
-              <button
-                // Clicking the chip writes its label into the question, so a
-                // reader never has to remember which passage was which number
-                onMouseDown={(e) => e.preventDefault()}
-                onClick={() => insertQuoteLabel(i)}
-                className="inline-flex items-center gap-1 min-w-0 hover:opacity-80"
-                title={`Insert ${quoteLabel(i)} into your question\n\n${q.text}${q.origin === "paper" ? `\n\n— from the paper${q.page ? `, page ${q.page}` : ""}` : q.source ? `\n\n— from ${q.source}` : ""}`}
-              >
-                <span
-                  className="shrink-0 tabular-nums px-1 rounded text-[10px] font-medium"
-                  style={{ background: "var(--accent-dim)", color: "var(--accent)" }}
-                >
-                  {quoteLabel(i)}
-                </span>
-                <span className="truncate">{quotePreview(q.text)}</span>
-                {(q.origin === "paper" || q.source) && (
-                  <span className="shrink-0 text-[10px] truncate max-w-[90px]" style={{ color: "var(--ink-faint)" }}>
-                    · {q.origin === "paper" ? `paper${q.page ? ` p.${q.page}` : ""}` : q.source}
-                  </span>
-                )}
-              </button>
-              <button
-                onClick={() => setQuotes((prev) => prev.filter((x) => x.id !== q.id))}
-                className="shrink-0 hover:opacity-70"
-                title="Drop this quote"
-                aria-label="Drop quote"
-              >
-                ✕
-              </button>
-            </span>
-          ))}
-          <button
-            onClick={() => setQuotes([])}
-            className="text-[10px] ml-auto shrink-0 hover:opacity-70"
-            style={{ color: "var(--ink-faint)" }}
-          >
-            clear
-          </button>
-        </div>
-      )}
+      {quoteStrip}
 
       {showFollowUpBar && followUpBar(barAnnotation)}
       {composer}
