@@ -107,6 +107,14 @@ function textOf(node: React.ReactNode): string {
   return el.props?.children === undefined ? "" : textOf(el.props.children);
 }
 
+// A question tall enough that it and the head of its reply cannot both be in
+// the window: if quoted passages are part of that height, they fold first —
+// the typed words are the question, the passages are what it carries. With
+// no window to measure against (a test), nothing folds.
+export function shouldFoldQuotes(px: { question: number; chips: number; head: number; window: number }): boolean {
+  return px.window > 0 && px.chips > 0 && px.question + px.head + 24 > px.window;
+}
+
 // The link as shown: its words tidied the way a label is (a quote copied off a
 // PDF has a space between every CJK glyph), its formulas left to KaTeX. Only
 // the label's own ends are trimmed; a space between words and a formula is
@@ -336,6 +344,8 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
   const [collapsedIds, setCollapsedIds] = useState<Set<string>>(new Set());
   // Which question is being rewritten, and its working text
   const [editing, setEditing] = useState<{ id: string; index: number; quotes: QuotedPassage[] } | null>(null);
+  // Questions whose quoted passages are folded away, by "conversation:index"
+  const [foldedQuotes, setFoldedQuotes] = useState<Set<string>>(() => new Set());
   const [editDraft, setEditDraft] = useState("");
   // Passages lifted out of the conversations, waiting to be quoted into the
   // next question — wherever it is asked
@@ -772,6 +782,38 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
   // Where the question sat in the window, and how tall the answer was, when
   // it was asked: it is held at that place, rising by what the answer grows.
   const pinned = useRef<{ id: string; index: number; since: number; questionTop: number; answerHeight: number | null } | null>(null);
+  // When each conversation was last asked in — the reader scrolling after
+  // that is what lets an answer be followed to its end (see the tail below)
+  const askedAt = useRef<Map<string, number>>(new Map());
+  // A landing put off until the question's quoted passages have folded
+  const landAfterFold = useRef<string | null>(null);
+  // Bring a question just asked into the window, and the head of its reply
+  // with it — the explainer's label, the thinking dots, Stop — so the answer
+  // forms in sight rather than under the fold. The question is moved no
+  // further than that takes; when it alone fills the window, its end and the
+  // reply head are what show. Then it is held, to rise with the answer.
+  const landOn = useCallback((id: string, index: number) => {
+    const list = scrollRef.current;
+    const target = messageRefs.current[`${id}:${index}`] || annotationRefs.current[id];
+    if (!target) return;
+    target.scrollIntoView({ behavior: "auto", block: "nearest" });
+    const head = messageRefs.current[`${id}:${index + 1}`];
+    if (list && head) {
+      const below = head.getBoundingClientRect().bottom - (list.getBoundingClientRect().bottom - 12);
+      if (below > 0) list.scrollTop = Math.min(list.scrollTop + below, list.scrollHeight - list.clientHeight);
+    }
+    captureAnchor();
+    const questionTop = list ? target.getBoundingClientRect().top - list.getBoundingClientRect().top : 0;
+    pinned.current = {
+      id,
+      index,
+      since: Date.now(),
+      questionTop,
+      answerHeight: head ? head.getBoundingClientRect().height : null,
+    };
+    askedAt.current.set(id, Date.now());
+    trace("scrollIntoView", { reason: "asked", target: describeForTrace(target), block: "nearest, with the reply head", scrollTopAfter: list ? Math.round(list.scrollTop) : null, questionTop: Math.round(questionTop), answerHeight: pinned.current.answerHeight });
+  }, [annotationRefs, captureAnchor]);
   useEffect(() => {
     const lastQuestion = (a: Annotation) => a.messages.map((m) => m.role).lastIndexOf("user");
     const shape = (a: Annotation) => {
@@ -835,25 +877,29 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
     // shape stands in where there is no count
     const askedNow = asked >= 0 && (askChanged || shape(active) !== before);
     trace("landing", { conversation: activeId.slice(0, 8), switched, askedNow, askChanged, asked, before: before?.slice(0, 48) ?? null, now: shape(active).slice(0, 48), scrollTop: list ? Math.round(list.scrollTop) : null });
+    // A landing put off a render ago, for the passages to fold: now
+    const key = `${activeId}:${asked}`;
+    if (landAfterFold.current === key && foldedQuotes.has(key)) {
+      landAfterFold.current = null;
+      landOn(activeId, asked);
+      return;
+    }
     if (askedNow) {
-      // Just asked, wherever it was asked: the question is brought into the
-      // window if it is not already there — and no further. Nothing is
-      // forced to the top; the answer, as it arrives, is what pushes the
-      // question up (see below). Instant: Safari abandons a smooth scroll
-      // whose target moves, and the panel's end moves while an answer streams.
-      const target = messageRefs.current[`${activeId}:${asked}`] || card;
-      target.scrollIntoView({ behavior: "auto", block: "nearest" });
-      captureAnchor();
-      const answer = messageRefs.current[`${activeId}:${asked + 1}`];
-      const questionTop = list ? target.getBoundingClientRect().top - list.getBoundingClientRect().top : 0;
-      pinned.current = {
-        id: activeId,
-        index: asked,
-        since: Date.now(),
-        questionTop,
-        answerHeight: answer ? answer.getBoundingClientRect().height : null,
-      };
-      trace("scrollIntoView", { reason: "asked", target: describeForTrace(target), block: "nearest", scrollTopAfter: list ? Math.round(list.scrollTop) : null, questionTop: Math.round(questionTop), answerHeight: pinned.current.answerHeight });
+      // Just asked, wherever it was asked: the question and the head of its
+      // reply are brought into the window, and no further. Nothing is forced
+      // to the top; the answer, as it arrives, is what pushes the question
+      // up (see below). Instant: Safari abandons a smooth scroll whose
+      // target moves, and the panel's end moves while an answer streams.
+      const target = messageRefs.current[`${activeId}:${asked}`];
+      const head = messageRefs.current[`${activeId}:${asked + 1}`];
+      const chips = target?.querySelector("[data-quote-chip]") as HTMLElement | null;
+      if (list && target && head && chips && !foldedQuotes.has(key) && shouldFoldQuotes({ question: target.getBoundingClientRect().height, chips: chips.getBoundingClientRect().height, head: head.getBoundingClientRect().height, window: list.clientHeight })) {
+        trace("fold-quotes", { question: key });
+        landAfterFold.current = key;
+        setFoldedQuotes((prev) => new Set(prev).add(key));
+        return;
+      }
+      landOn(activeId, asked);
       return;
     }
     // Merely arrived — clicked, or a passage explained with no question of
@@ -863,7 +909,7 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
       smoothUntil.current = Date.now() + 700;
       card.scrollIntoView({ behavior: "smooth", block: "start" });
     }
-  }, [activeId, annotations, annotationRefs, askSeq, captureAnchor]);
+  }, [activeId, annotations, annotationRefs, askSeq, captureAnchor, foldedQuotes, landOn]);
 
   // While the answer streams, the question rises with it: the list scrolls
   // down exactly as much as the answer has grown, until the question reaches
@@ -906,6 +952,59 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
         if (pinned.current?.id === pin.id) settle();
         pinned.current = null;
       });
+    }
+  }, [annotations, streamingIds, captureAnchor]);
+  // The answer being written, or failing that the one the bar is on: its end
+  // comes into view at once, and the click counts as the reader's own
+  // scrolling, so the words that follow stay in sight (the tail, above)
+  const jumpToEnd = useCallback((fallback: Annotation) => {
+    const id = Array.from(streamingIds)[0] ?? fallback.id;
+    const target = annotations.find((a) => a.id === id) ?? fallback;
+    const el = messageRefs.current[`${target.id}:${target.messages.length - 1}`] ?? annotationRefs.current[target.id];
+    if (!el) return;
+    trace("scrollIntoView", { reason: "end of the answer, by the button", conversation: target.id.slice(0, 8), block: "end" });
+    pinned.current = null;
+    lastInputAt.current = Date.now() - 500;
+    el.scrollIntoView({ behavior: "auto", block: "end" });
+    captureAnchor();
+  }, [streamingIds, annotations, annotationRefs, captureAnchor]);
+
+  // Once the reader has scrolled since asking, one test decides what an
+  // arriving answer does to the view: is its last line in the window? If so
+  // it stays there — each chunk moves the view down by its own height, and
+  // the words come out in sight while the top of the answer slides away. If
+  // not, the reader is elsewhere and the answer piles up unseen.
+  const tailHeights = useRef<Map<string, number>>(new Map());
+  const wasStreaming = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    const list = scrollRef.current;
+    if (!list) return;
+    // An answer that arrives whole ends in the same render it lands in, so
+    // what was streaming a render ago counts as well
+    const live = new Set([...wasStreaming.current, ...streamingIds]);
+    wasStreaming.current = new Set(streamingIds);
+    for (const id of Array.from(tailHeights.current.keys())) if (!live.has(id)) tailHeights.current.delete(id);
+    for (const id of live) {
+      const conversation = annotations.find((a) => a.id === id);
+      if (!conversation) continue;
+      const el = messageRefs.current[`${id}:${conversation.messages.length - 1}`];
+      if (!el) continue;
+      const height = el.getBoundingClientRect().height;
+      const before = tailHeights.current.get(id);
+      tailHeights.current.set(id, height);
+      if (before === undefined || pinned.current?.id === id) continue;
+      const grown = height - before;
+      if (grown <= 0) continue;
+      // Only after the reader's own scrolling, and not during it
+      const input = lastInputAt.current;
+      const box = list.getBoundingClientRect();
+      const lastLineWas = el.getBoundingClientRect().bottom - grown;
+      if (input <= (askedAt.current.get(id) ?? 0) || Date.now() - input < 400) continue;
+      if (lastLineWas <= box.top || lastLineWas > box.bottom + 2) continue;
+      const from = list.scrollTop;
+      list.scrollTop = Math.min(from + grown, list.scrollHeight - list.clientHeight);
+      captureAnchor();
+      trace("tail", { conversation: id.slice(0, 8), from: Math.round(from), to: Math.round(list.scrollTop), grown: Math.round(grown) });
     }
   }, [annotations, streamingIds, captureAnchor]);
   useEffect(() => {
@@ -1043,8 +1142,15 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
         {annotation.label}
       </button>
       <button
-        onClick={() => toggleCollapsed(annotation.id)}
+        onClick={() => jumpToEnd(annotation)}
         className="btn-icon ml-auto shrink-0 px-1.5 py-0.5 text-[10px]"
+        title="Jump to the end of the answer"
+      >
+        ↓ end
+      </button>
+      <button
+        onClick={() => toggleCollapsed(annotation.id)}
+        className="btn-icon shrink-0 px-1.5 py-0.5 text-[10px]"
         title="Collapse this conversation"
       >
         ▾ fold
@@ -1612,7 +1718,21 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
                           ) : (
                             <div className="group/msg flex items-start gap-1.5">
                               <div className="flex-1 min-w-0">
-                                {asked!.quotes.length > 0 && (
+                                {asked!.quotes.length > 0 && foldedQuotes.has(`${annotation.id}:${i}`) && (
+                                  <button
+                                    type="button"
+                                    data-quote-fold=""
+                                    onClick={() => setFoldedQuotes((prev) => { const next = new Set(prev); next.delete(`${annotation.id}:${i}`); return next; })}
+                                    className="inline-flex items-center gap-1 text-[11px] mb-1.5 px-1.5 py-0.5 rounded hover:opacity-80"
+                                    style={{ background: "var(--quote-dim)", border: "1px solid var(--quote)", color: "var(--ink-muted)" }}
+                                    title="Show the quoted passages"
+                                  >
+                                    <span style={{ color: "var(--quote)" }}>❝</span>
+                                    {asked!.quotes.length} quoted passage{asked!.quotes.length === 1 ? "" : "s"}
+                                    <span style={{ color: "var(--quote)" }}>▸</span>
+                                  </button>
+                                )}
+                                {asked!.quotes.length > 0 && !foldedQuotes.has(`${annotation.id}:${i}`) && (
                                   <div data-quote-chip="" className="flex flex-col items-start gap-1 mb-1.5">
                                     {asked!.quotes.map((q, n) => (
                                       <button

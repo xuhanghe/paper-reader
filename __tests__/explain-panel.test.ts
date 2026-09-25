@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { createElement, act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
-import { ExplainPanel } from "../components/AskPanel.js";
+import { ExplainPanel, shouldFoldQuotes } from "../components/AskPanel.js";
 import type { Annotation, Message } from "../types/session.js";
 import { withQuotes } from "../lib/quotes.js";
 
@@ -1105,5 +1105,56 @@ describe("an ask the conversation does not show", () => {
     scrolls.length = 0;
     show([conversation()], "a1", 1);
     assert.equal(scrolls.length, 0);
+  });
+});
+
+// A question tall with quoted passages folds them so the question and the
+// head of its reply fit the window; one tall in its own words does not, and
+// its end shows with the reply head instead.
+describe("folding quoted passages on a tall question", () => {
+  test("folds only when passages are part of the height and the window is known", () => {
+    assert.equal(shouldFoldQuotes({ question: 700, chips: 300, head: 60, window: 600 }), true);
+    assert.equal(shouldFoldQuotes({ question: 700, chips: 0, head: 60, window: 600 }), false, "no passages to fold");
+    assert.equal(shouldFoldQuotes({ question: 300, chips: 100, head: 60, window: 600 }), false, "it fits");
+    assert.equal(shouldFoldQuotes({ question: 700, chips: 300, head: 60, window: 0 }), false, "no window to measure against");
+  });
+});
+
+// One control takes the reader straight to the end of the answer being
+// written — the words then keep arriving in sight
+describe("jumping to the end of the answer", () => {
+  test("the follow-up bar offers it, and it scrolls the answer's end into view", () => {
+    const scrolls: { block?: string; text: string }[] = [];
+    dom.window.Element.prototype.scrollIntoView = function (this: Element, opts?: boolean | ScrollIntoViewOptions) {
+      const o = typeof opts === "object" && opts ? opts : {};
+      scrolls.push({ block: o.block, text: (this.textContent || "").slice(0, 40) });
+    };
+    const host = freshRoot();
+    const conversation = thread([{ role: "user", content: "why?" }, { role: "assistant", content: "because of the cache" }], "a1", "conversation A");
+    act(() => {
+      createRoot(host).render(
+        createElement(ExplainPanel, {
+          annotations: [conversation],
+          activeId: "a1",
+          model: "claude-sonnet-4-6",
+          streamingIds: new Set<string>(["a1"]),
+          onFollowUp: () => {},
+          onAskGeneral: () => {},
+          onDelete: () => {},
+          onReExplainImage: () => {},
+          onViewInPdf: () => {},
+          annotationRefs: { current: {} },
+          isOpen: true,
+          onToggle: () => {},
+        })
+      );
+    });
+    scrolls.length = 0;
+    const button = Array.from(host.querySelectorAll("button")).find((b) => b.title === "Jump to the end of the answer");
+    assert.ok(button, "the control is offered");
+    act(() => { button!.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })); });
+    assert.equal(scrolls.length, 1);
+    assert.equal(scrolls[0].block, "end");
+    assert.match(scrolls[0].text, /because of the cache/);
   });
 });
