@@ -54,3 +54,31 @@ describe("keeping the active tab in view", () => {
     assert.equal(tabBarScrollFor(bar, { left: 950, width: 150 }), 525);
   });
 });
+
+import { moveMaterialTab, slotAt } from "../components/MaterialTabs";
+
+// Dragging a tab means dropping it into a slot between two tabs, the one the
+// pointer was over: its left half is the slot before it, its right half the
+// slot after. The tab lands there, wherever it came from.
+describe("moving a tab to a slot", () => {
+  test("into a slot after its own position", () => {
+    assert.deepEqual(moveMaterialTab(tabs, "a", 3).map((t) => t.id), ["b", "c", "a"]);
+    assert.deepEqual(moveMaterialTab(tabs, "a", 2).map((t) => t.id), ["b", "a", "c"]);
+  });
+
+  test("into a slot before its own position", () => {
+    assert.deepEqual(moveMaterialTab(tabs, "c", 0).map((t) => t.id), ["c", "a", "b"]);
+    assert.deepEqual(moveMaterialTab(tabs, "c", 1).map((t) => t.id), ["a", "c", "b"]);
+  });
+
+  test("the slots either side of its own position leave the order alone", () => {
+    assert.equal(moveMaterialTab(tabs, "b", 1), tabs);
+    assert.equal(moveMaterialTab(tabs, "b", 2), tabs);
+  });
+
+  test("which slot the pointer means", () => {
+    const rect = { left: 100, width: 80 };
+    assert.equal(slotAt(120, rect, 4), 4, "left half: before the tab");
+    assert.equal(slotAt(160, rect, 4), 5, "right half: after it");
+  });
+});
