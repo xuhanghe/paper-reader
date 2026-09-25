@@ -90,6 +90,20 @@ export function MaterialTabs({ tabs, activeId, loadingId, onSelect, onClose, onR
   // leaving, the gap closed, the tab came back, and so on, fast.
   const lastOver = useRef(0);
   const leaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Tabs move at most once every 250ms, and only for a slot the pointer has
+  // meant for 100ms: whatever a browser does with its drag events, no tab
+  // can flutter faster than that
+  const pending = useRef<{ slot: number; since: number } | null>(null);
+  const lastMove = useRef(0);
+  const settleSlot = useCallback((next: number, current: number | null) => {
+    const now = Date.now();
+    if (next === current) { pending.current = null; return; }
+    if (!pending.current || pending.current.slot !== next) { pending.current = { slot: next, since: now }; return; }
+    if (now - pending.current.since < 100 || now - lastMove.current < 250) return;
+    pending.current = null;
+    lastMove.current = now;
+    setSlot(next);
+  }, []);
   const stillOver = useCallback(() => {
     lastOver.current = Date.now();
     if (leaveTimer.current) { clearTimeout(leaveTimer.current); leaveTimer.current = null; }
@@ -160,7 +174,7 @@ export function MaterialTabs({ tabs, activeId, loadingId, onSelect, onClose, onR
         // Over the bar itself: the gap that has opened keeps its slot; past
         // the last tab, the slot at the end
         const last = event.currentTarget.lastElementChild?.getBoundingClientRect();
-        if (last && event.clientX > last.right && slot !== tabs.length) setSlot(tabs.length);
+        if (last && event.clientX > last.right) settleSlot(tabs.length, slot);
       }}
       onDrop={(event) => { if (!dragId) return; event.preventDefault(); finish(slot); }}
       onDragLeave={() => {
@@ -195,11 +209,10 @@ export function MaterialTabs({ tabs, activeId, loadingId, onSelect, onClose, onR
               event.dataTransfer.dropEffect = "move";
               stillOver();
               const rect = event.currentTarget.getBoundingClientRect();
-              const next = slotAt(event.clientX, { left: rect.left - shiftFor(i), width: rect.width }, i, slot);
-              if (next !== slot) setSlot(next);
+              settleSlot(slotAt(event.clientX, { left: rect.left - shiftFor(i), width: rect.width }, i, slot), slot);
             }}
             onDrop={(event) => { event.preventDefault(); finish(slot); }}
-            onDragEnd={() => { setDragId(null); setSlot(null); }}
+            onDragEnd={() => { setDragId(null); setSlot(null); pending.current = null; }}
             className="pr-material-tab group flex items-center gap-2 pl-3 pr-2 py-1.5 cursor-pointer select-none shrink-0 max-w-[240px]"
             style={{
               borderRight: "1px solid var(--border)",
