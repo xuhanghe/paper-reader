@@ -1404,6 +1404,7 @@ export default function Home() {
         onSelect={openTab}
         onClose={closeTab}
         onReorder={setTabs}
+        rememberAs="reader"
       />
 
       {setupOpen && <SetupDialog onClose={() => setSetupOpen(false)} />}
