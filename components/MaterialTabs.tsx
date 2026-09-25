@@ -136,11 +136,13 @@ export function MaterialTabs({ tabs, activeId, loadingId, onSelect, onClose, onR
       className="flex items-stretch shrink-0 overflow-x-auto"
       style={{ background: "var(--surface)", borderBottom: "1px solid var(--border)" }}
       onDragOver={(event) => {
-        // Past the last tab: the slot at the end
         if (!dragId || event.target !== event.currentTarget) return;
         event.preventDefault();
         event.dataTransfer.dropEffect = "move";
-        if (slot !== tabs.length) setSlot(tabs.length);
+        // Over the bar itself: the gap that has opened keeps its slot; past
+        // the last tab, the slot at the end
+        const last = event.currentTarget.lastElementChild?.getBoundingClientRect();
+        if (last && event.clientX > last.right && slot !== tabs.length) setSlot(tabs.length);
       }}
       onDrop={(event) => { if (!dragId) return; event.preventDefault(); finish(slot); }}
       onDragLeave={(event) => {
@@ -161,10 +163,13 @@ export function MaterialTabs({ tabs, activeId, loadingId, onSelect, onClose, onR
             title={label}
             draggable={!!onReorder}
             onDragStart={(event) => {
-              setDragId(tab.id);
-              setDragWidth(event.currentTarget.getBoundingClientRect().width);
               event.dataTransfer.effectAllowed = "move";
               event.dataTransfer.setData("text/plain", tab.id);
+              const width = event.currentTarget.getBoundingClientRect().width;
+              // Not yet: WebKit abandons a drag whose source changes while
+              // dragstart is being handled, and the re-render would change
+              // this tab's look. A frame later it is safe.
+              setTimeout(() => { setDragId(tab.id); setDragWidth(width); }, 0);
             }}
             onDragOver={(event) => {
               if (!dragId) return;
@@ -184,7 +189,6 @@ export function MaterialTabs({ tabs, activeId, loadingId, onSelect, onClose, onR
               opacity: isDragged ? (slot !== null ? 0.15 : 0.5) : 1,
               transform: `translateX(${shiftFor(i)}px)`,
               transition: "transform 160ms ease, opacity 120ms ease, background-color 120ms ease",
-              pointerEvents: dragId && isDragged ? "none" : undefined,
             }}
             onMouseEnter={(e) => {
               if (!isActive) (e.currentTarget as HTMLElement).style.background = "rgba(230,237,243,0.04)";
