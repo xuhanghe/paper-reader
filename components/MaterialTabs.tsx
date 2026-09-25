@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { DocType } from "@/types/session";
 
 export type MaterialTab = {
@@ -84,6 +84,16 @@ export function MaterialTabs({ tabs, activeId, loadingId, onSelect, onClose, onR
   const [slot, setSlot] = useState<number | null>(null);
   const [dragWidth, setDragWidth] = useState(0);
   const barRef = useRef<HTMLDivElement | null>(null);
+  // Whether the pointer has really left the bar is settled by time, not by
+  // dragleave's relatedTarget: Safari leaves that null, and a gap opening
+  // under the pointer fires dragleave on the tab that eased away — read as
+  // leaving, the gap closed, the tab came back, and so on, fast.
+  const lastOver = useRef(0);
+  const leaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const stillOver = useCallback(() => {
+    lastOver.current = Date.now();
+    if (leaveTimer.current) { clearTimeout(leaveTimer.current); leaveTimer.current = null; }
+  }, []);
 
   // The active tab is always in view. A bar fresh from a remount starts at
   // its left edge, so the offset it was left at comes back first: if the tab
@@ -146,15 +156,16 @@ export function MaterialTabs({ tabs, activeId, loadingId, onSelect, onClose, onR
         if (!dragId || event.target !== event.currentTarget) return;
         event.preventDefault();
         event.dataTransfer.dropEffect = "move";
+        stillOver();
         // Over the bar itself: the gap that has opened keeps its slot; past
         // the last tab, the slot at the end
         const last = event.currentTarget.lastElementChild?.getBoundingClientRect();
         if (last && event.clientX > last.right && slot !== tabs.length) setSlot(tabs.length);
       }}
       onDrop={(event) => { if (!dragId) return; event.preventDefault(); finish(slot); }}
-      onDragLeave={(event) => {
-        const to = event.relatedTarget as Node | null;
-        if (!to || !event.currentTarget.contains(to)) setSlot(null);
+      onDragLeave={() => {
+        if (leaveTimer.current) clearTimeout(leaveTimer.current);
+        leaveTimer.current = setTimeout(() => { if (Date.now() - lastOver.current > 120) setSlot(null); }, 150);
       }}
     >
       {tabs.map((tab, i) => {
@@ -182,6 +193,7 @@ export function MaterialTabs({ tabs, activeId, loadingId, onSelect, onClose, onR
               if (!dragId) return;
               event.preventDefault();
               event.dataTransfer.dropEffect = "move";
+              stillOver();
               const rect = event.currentTarget.getBoundingClientRect();
               const next = slotAt(event.clientX, { left: rect.left - shiftFor(i), width: rect.width }, i, slot);
               if (next !== slot) setSlot(next);
