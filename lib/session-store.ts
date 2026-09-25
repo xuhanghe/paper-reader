@@ -1,3 +1,4 @@
+import { homePath } from "@/lib/home";
 import { mkdir, readFile, writeFile, appendFile, rename, readdir, stat, rm } from "node:fs/promises";
 import path from "node:path";
 
@@ -9,7 +10,7 @@ import path from "node:path";
 //     thread.jsonl  — the fused conversation: every question & answer, append-only
 // <id> is the Zotero item key when the paper lives in Zotero, else a name slug.
 
-export const SESSIONS_ROOT = path.join(process.cwd(), ".paper-reader-sessions");
+export const SESSIONS_ROOT = homePath(".paper-reader-sessions");
 
 // A directory name: letters and digits of any script, dashes and underscores.
 // Path separators, dots and everything else are dropped, so an id can never

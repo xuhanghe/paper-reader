@@ -7,7 +7,9 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test": "node --require tsx/cjs --test '__tests__/**/*.test.ts'"
+    "test": "node --require tsx/cjs --test '__tests__/**/*.test.ts'",
+    "desktop": "env -u ELECTRON_RUN_AS_NODE electron desktop/main.cjs --dev",
+    "desktop:build": "next build && electron-builder --mac"
   },
   "dependencies": {
     "katex": "^0.18.1",
@@ -29,11 +31,35 @@
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "electron": "^44.4.5",
+    "electron-builder": "^26.15.3",
     "eslint": "^9",
     "eslint-config-next": "16.2.6",
     "jsdom": "^29.1.1",
     "tailwindcss": "^4",
     "tsx": "^4.21.0",
     "typescript": "^5"
+  },
+  "main": "desktop/main.cjs",
+  "build": {
+    "appId": "com.paper-reader.app",
+    "productName": "Paper Reader",
+    "directories": {
+      "output": "dist-app"
+    },
+    "files": [
+      "desktop/**",
+      "package.json"
+    ],
+    "asar": true,
+    "mac": {
+      "category": "public.app-category.productivity",
+      "target": [
+        "dir",
+        "dmg"
+      ],
+      "identity": null
+    },
+    "afterPack": "desktop/after-pack.cjs"
   }
 }

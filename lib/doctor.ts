@@ -12,6 +12,7 @@
 // the places these tools actually install to, so the report can say "installed
 // at X, but the server can't see it" instead of "not installed".
 
+import { homePath } from "@/lib/home";
 import { execFile } from "node:child_process";
 import { access, chmod, constants, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -261,7 +262,7 @@ export function applyEnvLine(existing: string, name: string, value: string): str
 }
 
 export async function saveSetting(name: WritableSetting, value: string): Promise<void> {
-  const file = path.join(process.cwd(), ".env.local");
+  const file = homePath(".env.local");
   const existing = await readFile(file, "utf8").catch(() => "");
   await writeFile(file, applyEnvLine(existing, name, value), { mode: 0o600 });
   // writeFile's mode only applies when it creates the file, so an existing

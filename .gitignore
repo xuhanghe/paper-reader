@@ -46,3 +46,4 @@ band-audit-out/
 
 # scratch renders from debugging
 /tmp/
+dist-app/

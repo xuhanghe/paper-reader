@@ -1,10 +1,10 @@
-import path from "node:path";
+import { homePath } from "@/lib/home";
 import { validateWorkspaceRoot } from "@/lib/workspace-files";
 
 export const runtime = "nodejs";
 
 export async function GET() {
-  return Response.json({ suggestedRoot: path.join(process.cwd(), "tmp", "research-workspace") });
+  return Response.json({ suggestedRoot: homePath("tmp", "research-workspace") });
 }
 
 export async function POST(req: Request) {

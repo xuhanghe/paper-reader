@@ -1,3 +1,4 @@
+import { homePath } from "@/lib/home";
 import { readdir, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
@@ -11,8 +12,8 @@ export type InstalledSkill = {
 };
 
 const SEARCH_ROOTS: Array<{ root: string; source: InstalledSkill["source"] }> = [
-  { root: path.join(process.cwd(), ".agents", "skills"), source: "project" },
-  { root: path.join(process.cwd(), ".codex", "skills"), source: "project" },
+  { root: homePath(".agents", "skills"), source: "project" },
+  { root: homePath(".codex", "skills"), source: "project" },
   { root: path.join(homedir(), ".agents", "skills"), source: "personal" },
   { root: path.join(homedir(), ".codex", "skills"), source: "system" },
   { root: path.join(homedir(), ".codex", "plugins", "cache"), source: "system" },

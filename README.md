@@ -282,6 +282,22 @@ lib/
 
 ---
 
+## Run as an app
+
+The reader can run as a desktop app instead of in a browser tab. The app is a window around the same server, started on a free port when the app opens and stopped when it quits; it renders with Chromium rather than Safari.
+
+```bash
+npm run desktop          # a window on the running dev server (start `npm run dev` first)
+npm run desktop:build    # a production build packaged into dist-app/mac-arm64/Paper Reader.app
+```
+
+Two things the app supplies that a browser tab gets from the shell it was started in:
+
+- **Your shell's PATH.** The app asks your login shell for it, so `claude` and `codex` are found wherever they are installed.
+- **A data folder.** Started from a shell, the reader keeps its sessions, workspaces and `.env.local` in the working directory. The app keeps them in a folder of your choosing instead — Paper Reader ▸ Data Folder… in the menu — and reads that folder's `.env.local` for its settings. Until one is chosen it uses `~/Library/Application Support/Paper Reader/data`. To keep using sessions made from a checkout, choose the checkout folder.
+
+The app is unsigned; on first launch macOS may ask you to allow it in System Settings ▸ Privacy & Security. The `PAPER_READER_HOME` environment variable sets the data folder for a server started any other way.
+
 ## Development
 
 ```bash

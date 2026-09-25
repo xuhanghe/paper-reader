@@ -1,6 +1,9 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
+  // A self-contained server for the desktop app: `next build` also writes
+  // .next/standalone, which the app ships and runs with its own Node
+  output: "standalone",
   // Safari has repeatedly kept serving an old chunk after the file changed —
   // the URL of a dev chunk does not change with its contents, and Safari's
   // disk cache does not always revalidate a `no-cache` response. `no-store`
