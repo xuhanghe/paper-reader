@@ -54,12 +54,13 @@ export function moveMaterialTab(tabs: MaterialTab[], fromId: string, index: numb
 
 // Which slot a pointer at `x` over a tab means: before it or after it. The
 // rect is where the tab rests, not where it has eased to — deciding from the
-// moved tab fed back on itself and made it flutter. Around the midpoint a
-// dead zone keeps whatever slot is current, so a pointer resting there does
-// not flip it either.
+// moved tab fed back on itself and made it flutter. Across the middle three
+// fifths of the tab the current slot holds: only a pointer well into the
+// outer fifth on either side moves anything.
+const HOLD = 0.3;
 export function slotAt(x: number, rect: { left: number; width: number }, tabIndex: number, current: number | null = null): number {
   const mid = rect.left + rect.width / 2;
-  const zone = rect.width * 0.15;
+  const zone = rect.width * HOLD;
   if (current !== null && (current === tabIndex || current === tabIndex + 1) && Math.abs(x - mid) < zone) return current;
   return x < mid ? tabIndex : tabIndex + 1;
 }

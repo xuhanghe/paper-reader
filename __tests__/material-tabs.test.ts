@@ -86,13 +86,13 @@ describe("moving a tab to a slot", () => {
 // Near a tab's midpoint the slot holds rather than flips with every pixel
 describe("the slot holds near the midpoint", () => {
   const rect = { left: 100, width: 100 };
-  test("inside the dead zone the current slot stays, whichever side the pointer is", () => {
-    assert.equal(slotAt(148, rect, 4, 5), 5);
-    assert.equal(slotAt(152, rect, 4, 4), 4);
+  test("across the middle three fifths the current slot stays, whichever side the pointer is", () => {
+    assert.equal(slotAt(125, rect, 4, 5), 5);
+    assert.equal(slotAt(175, rect, 4, 4), 4);
   });
-  test("outside it the side decides", () => {
-    assert.equal(slotAt(130, rect, 4, 5), 4);
-    assert.equal(slotAt(170, rect, 4, 4), 5);
+  test("in the outer fifths the side decides", () => {
+    assert.equal(slotAt(110, rect, 4, 5), 4);
+    assert.equal(slotAt(190, rect, 4, 4), 5);
   });
   test("a slot from another tab does not hold here", () => {
     assert.equal(slotAt(152, rect, 4, 9), 5);
