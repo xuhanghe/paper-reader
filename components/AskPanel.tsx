@@ -964,10 +964,12 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
     if (!el) return;
     trace("scrollIntoView", { reason: "end of the answer, by the button", conversation: target.id.slice(0, 8), block: "end" });
     pinned.current = null;
-    lastInputAt.current = Date.now() - 500;
-    el.scrollIntoView({ behavior: "auto", block: "end" });
-    captureAnchor();
-  }, [streamingIds, annotations, annotationRefs, captureAnchor]);
+    // A glide, not a jump; while it lasts nothing else moves the list, and
+    // the tail picks up once it has settled
+    smoothUntil.current = Date.now() + 700;
+    lastInputAt.current = Date.now() + 300;
+    el.scrollIntoView({ behavior: "smooth", block: "end" });
+  }, [streamingIds, annotations, annotationRefs]);
 
   // Once the reader has scrolled since asking, one test decides what an
   // arriving answer does to the view: is its last line in the window? If so
