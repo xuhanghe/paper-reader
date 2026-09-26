@@ -24,11 +24,16 @@ export function useDraggable(anchorKey: string) {
     };
     const up = () => {
       drag.current = null;
-      window.removeEventListener("mousemove", move);
-      window.removeEventListener("mouseup", up);
+      window.removeEventListener("mousemove", move, true);
+      window.removeEventListener("mouseup", up, true);
+      window.removeEventListener("blur", up);
     };
-    window.addEventListener("mousemove", move);
-    window.addEventListener("mouseup", up);
+    // Capture phase: the box stops mouse events from bubbling (to keep the
+    // page's selection), and the window's turn in the bubbling phase never
+    // came — the box could be picked up and never put down
+    window.addEventListener("mousemove", move, true);
+    window.addEventListener("mouseup", up, true);
+    window.addEventListener("blur", up);
   }, [anchorKey, offset.x, offset.y]);
   return { offset, onMouseDown };
 }

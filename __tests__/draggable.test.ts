@@ -25,12 +25,19 @@ describe("popovers can be dragged", () => {
     mouse(dom.window, "mousemove", 340, 190);
     mouse(dom.window, "mouseup", 340, 190);
     assert.match(box.style.transform, /\+ 40px\), 60px\)/, "moved by the drag");
+    // Let go over the box itself — whose mouseup does not bubble — and the
+    // box must not keep following the pointer
+    mouse(box, "mousedown", 300, 130);
+    mouse(dom.window, "mousemove", 305, 135);
+    mouse(box, "mouseup", 305, 135);
+    mouse(dom.window, "mousemove", 900, 900);
+    assert.match(box.style.transform, /\+ 45px\), 65px\)/, "put down where the pointer was released");
     // a press on a button is a click, not a drag
     const button = box.querySelector("button")!;
     mouse(button, "mousedown", 300, 130);
     mouse(dom.window, "mousemove", 400, 400);
     mouse(dom.window, "mouseup", 400, 400);
-    assert.match(box.style.transform, /\+ 40px\), 60px\)/, "unchanged");
+    assert.match(box.style.transform, /\+ 45px\), 65px\)/, "unchanged");
     // a new anchor forgets the offset
     render(rect(500, 300));
     assert.match(box.style.transform, /\+ 0px\), 0px\)/);
