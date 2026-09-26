@@ -3,6 +3,7 @@ import { useState } from "react";
 import { HIGHLIGHT_COLORS, DEFAULT_HIGHLIGHT_COLOR } from "@/lib/highlight-colors";
 import { isSubmitKey } from "@/lib/keys";
 import { GrowingTextarea } from "./GrowingTextarea";
+import { useDraggable } from "@/hooks/useDraggable";
 
 type Props = {
   rect: DOMRect;
@@ -24,6 +25,8 @@ export function SelectionPopover({ rect, selectedText, onExplain, onDefine, onQu
   const [noteText, setNoteText] = useState("");
   const [focused, setFocused] = useState(false);
   const [color, setColor] = useState<string>(DEFAULT_HIGHLIGHT_COLOR);
+  // The box can be dragged anywhere by its frame
+  const { offset, onMouseDown: dragFrom } = useDraggable(`${rect.left},${rect.top}`);
 
   const submitQuestion = () => {
     if (question.trim()) onAsk(question.trim());
@@ -38,13 +41,15 @@ export function SelectionPopover({ rect, selectedText, onExplain, onDefine, onQu
     <div
       // Focusing an input clears the browser selection; stop mouse events from
       // reaching the container's selection handler so the popover survives.
-      onMouseDown={(e) => e.stopPropagation()}
+      onMouseDown={(e) => { e.stopPropagation(); dragFrom(e); }}
       onMouseUp={(e) => e.stopPropagation()}
+      data-draggable=""
       style={{
         position: "fixed",
         top: rect.bottom + 8,
         left: Math.max(150, rect.left + rect.width / 2),
-        transform: "translateX(-50%)",
+        transform: `translate(calc(-50% + ${offset.x}px), ${offset.y}px)`,
+        cursor: "grab",
         zIndex: 50,
         background: "var(--surface)",
         border: "1px solid var(--border)",

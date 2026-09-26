@@ -75,6 +75,21 @@ const waitFor = (url, ms = 30000) => new Promise((resolve, reject) => {
 let server = null;
 let win = null;
 
+// --dev without a dev server running: start one here, on the checkout this
+// file lives in, and stop it with the app
+async function ensureDevServer() {
+  try { await fetch(DEV_URL, { method: "HEAD" }); return; } catch { /* nothing listening */ }
+  const root = path.join(__dirname, "..");
+  const next = path.join(root, "node_modules", "next", "dist", "bin", "next");
+  const port = new URL(DEV_URL).port || "3000";
+  const env = { ...process.env, PATH: shellPath(), ELECTRON_RUN_AS_NODE: "1" };
+  server = spawn(process.execPath, [next, "dev", "--port", port], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
+  server.stdout.on("data", (d) => process.stdout.write(`[dev] ${d}`));
+  server.stderr.on("data", (d) => process.stderr.write(`[dev] ${d}`));
+  server.on("exit", () => { server = null; });
+  await waitFor(DEV_URL, 120000);
+}
+
 async function startServer(home) {
   const port = await freePort();
   const serverDir = path.join(process.resourcesPath, "standalone");
@@ -141,10 +156,11 @@ async function open() {
   win.webContents.setWindowOpenHandler(({ url }) => { shell.openExternal(url); return { action: "deny" }; });
   win.once("ready-to-show", () => win.show());
   try {
+    if (DEV) await ensureDevServer();
     const url = DEV ? DEV_URL : await startServer(dataHome());
     await win.loadURL(url);
   } catch (err) {
-    dialog.showErrorBox("Paper Reader could not start", String(err && err.message ? err.message : err));
+    dialog.showErrorBox("Paper Reader could not start", `${err && err.message ? err.message : err}${DEV ? `\n\nWith --dev the app opens ${DEV_URL}; it starts \`next dev\` there itself when nothing is listening.` : ""}`);
     app.quit();
     return;
   }

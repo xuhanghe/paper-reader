@@ -3,6 +3,7 @@ import { useState } from "react";
 import { HIGHLIGHT_COLORS } from "@/lib/highlight-colors";
 import { isSubmitKey } from "@/lib/keys";
 import { GrowingTextarea } from "./GrowingTextarea";
+import { useDraggable } from "@/hooks/useDraggable";
 
 type Props = {
   rect: DOMRect;
@@ -22,6 +23,7 @@ type Props = {
 export function HighlightPopover({ rect, color, note, onRecolor, onEditNote, onRemove, onDismiss, onQuote, onExplain }: Props) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(note || "");
+  const { offset, onMouseDown: dragFrom } = useDraggable(`${rect.left},${rect.top}`);
 
   const saveNote = () => {
     const next = draft.trim();
@@ -31,14 +33,16 @@ export function HighlightPopover({ rect, color, note, onRecolor, onEditNote, onR
 
   return (
     <div
-      onMouseDown={(e) => e.stopPropagation()}
+      onMouseDown={(e) => { e.stopPropagation(); dragFrom(e); }}
       onMouseUp={(e) => e.stopPropagation()}
       className="pr-fade-up"
+      data-draggable=""
       style={{
         position: "fixed",
         top: rect.bottom + 8,
         left: Math.max(120, rect.left + rect.width / 2),
-        transform: "translateX(-50%)",
+        transform: `translate(calc(-50% + ${offset.x}px), ${offset.y}px)`,
+        cursor: "grab",
         zIndex: 50,
         background: "var(--surface)",
         border: "1px solid var(--border)",

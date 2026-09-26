@@ -287,7 +287,7 @@ lib/
 The reader can run as a desktop app instead of in a browser tab. The app is a window around the same server, started on a free port when the app opens and stopped when it quits; it renders with Chromium rather than Safari.
 
 ```bash
-npm run desktop          # a window on the running dev server (start `npm run dev` first)
+npm run desktop          # a window on the dev server, started here if it is not already running
 npm run desktop:build    # a production build packaged into dist-app/mac-arm64/Paper Reader.app
 ```
 
