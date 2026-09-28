@@ -34,8 +34,62 @@ export function useSession() {
     sessionRef.current = session;
   }, [session]);
 
+  // The id of the paper on screen, kept by hand so it is right the moment a
+  // switch happens rather than a render later. An answer still streaming for
+  // a paper the reader has left must not land in the paper they moved to.
+  const activeIdRef = useRef<string | null>(null);
+  // Papers left while something was still happening in them — an answer
+  // streaming, a session id yet to arrive. Their state keeps advancing here,
+  // out of sight, and is what the reader sees when they come back.
+  const parkedRef = useRef<Map<string, SessionState>>(new Map());
+  const parkedSaves = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+
+  const persist = useCallback((id: string, s: SessionState) => {
+    const state = s.zoteroKey ? { ...s, pdfDataUrl: "" } : s;
+    return fetch("/api/sessions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id, state }),
+    }).catch(() => {});
+  }, []);
+
+  // A change meant for one paper: applied on screen if that paper is open,
+  // otherwise to its parked copy, which is saved shortly after
+  const applyTo = useCallback((forPaper: string | undefined, fn: (s: SessionState) => SessionState) => {
+    if (!forPaper || forPaper === activeIdRef.current) {
+      setSession(fn);
+      return;
+    }
+    const parked = parkedRef.current.get(forPaper);
+    if (!parked) return;
+    parkedRef.current.set(forPaper, fn(parked));
+    clearTimeout(parkedSaves.current.get(forPaper));
+    parkedSaves.current.set(
+      forPaper,
+      setTimeout(() => {
+        parkedSaves.current.delete(forPaper);
+        const latest = parkedRef.current.get(forPaper);
+        if (latest) persist(forPaper, latest);
+      }, AUTOSAVE_DELAY_MS)
+    );
+  }, [persist]);
+
+  // A closed tab has nothing to come back to: write what its parked copy
+  // holds and let it go
+  const forgetPaper = useCallback((id: string) => {
+    const timer = parkedSaves.current.get(id);
+    const parked = parkedRef.current.get(id);
+    parkedSaves.current.delete(id);
+    parkedRef.current.delete(id);
+    if (timer) {
+      clearTimeout(timer);
+      if (parked) persist(id, parked);
+    }
+  }, [persist]);
+
   // Close the open material and return to the empty reader (last tab closed)
   const clearPaper = useCallback(() => {
+    activeIdRef.current = null;
     setSession((s) => ({ ...DEFAULT_STATE, model: s.model, effort: s.effort }));
     try { localStorage.removeItem(LAST_SESSION_KEY); } catch {}
   }, []);
@@ -80,6 +134,7 @@ export function useSession() {
           if (cached) {
             state.pdfDataUrl = cached;
             state.docType = cached.startsWith("data:application/pdf") ? "pdf" : state.docType || "pdf";
+            activeIdRef.current = last;
             setSession(state);
             return;
           }
@@ -104,6 +159,7 @@ export function useSession() {
         }
         if (state.pdfDataUrl) {
           cacheDocument(last, state.pdfDataUrl);
+          activeIdRef.current = last;
           setSession(state);
         }
       } catch {
@@ -137,6 +193,32 @@ export function useSession() {
 
   // Show the document immediately; merge any saved conversation in the background
   const setPdf = useCallback((name: string, dataUrl: string, docType: DocType = "pdf", zoteroKey?: string, zoteroAttachmentKey?: string, sourceUrl?: string) => {
+    const id = sessionIdFor(name, zoteroKey);
+    // Park the paper being left, so an answer still arriving for it has
+    // somewhere to go. Its document stays in the document cache.
+    const leaving = sessionRef.current;
+    const leavingId = leaving.pdfName ? sessionIdFor(leaving.pdfName, leaving.zoteroKey) : null;
+    if (leavingId && leavingId !== id) {
+      parkedRef.current.set(leavingId, leaving.zoteroKey ? { ...leaving, pdfDataUrl: "" } : leaving);
+    }
+    activeIdRef.current = id;
+    // Coming back to a parked paper: its copy here is the latest there is —
+    // everything saved to disk came from it, plus whatever streamed in since
+    const parked = parkedRef.current.get(id);
+    if (parked) {
+      parkedRef.current.delete(id);
+      clearTimeout(parkedSaves.current.get(id));
+      parkedSaves.current.delete(id);
+      setSession({
+        ...parked,
+        pdfDataUrl: dataUrl,
+        docType,
+        zoteroKey: zoteroKey ?? parked.zoteroKey,
+        zoteroAttachmentKey: zoteroAttachmentKey ?? parked.zoteroAttachmentKey,
+        sourceUrl: sourceUrl ?? parked.sourceUrl,
+      });
+      return;
+    }
     setSession((s) => ({ ...s, pdfName: name, pdfDataUrl: dataUrl, docType, zoteroKey, zoteroAttachmentKey, sourceUrl, annotations: [], concepts: [], mindmap: null, highlights: [], providerSessions: {} }));
     setRestoring(true);
     (async () => {
@@ -261,9 +343,9 @@ export function useSession() {
   }, []);
 
   // Fused per-paper conversation: one provider-native session id per provider
-  const setProviderSession = useCallback((provider: string, id: string) => {
-    setSession((s) => ({ ...s, providerSessions: { ...s.providerSessions, [provider]: id } }));
-  }, []);
+  const setProviderSession = useCallback((provider: string, id: string, forPaper?: string) => {
+    applyTo(forPaper, (s) => ({ ...s, providerSessions: { ...s.providerSessions, [provider]: id } }));
+  }, [applyTo]);
 
   const addAnnotation = useCallback((partial: Omit<Annotation, "id" | "createdAt" | "label">): string => {
     const id = typeof crypto !== "undefined" ? crypto.randomUUID() : Math.random().toString(36).slice(2);
@@ -290,8 +372,10 @@ export function useSession() {
     }));
   }, []);
 
-  const updateLastAssistantMessage = useCallback((annotationId: string, content: string) => {
-    setSession((s) => ({
+  // forPaper: the paper the answer belongs to — it keeps arriving after the
+  // reader has moved to another, and must land in its own thread
+  const updateLastAssistantMessage = useCallback((annotationId: string, content: string, forPaper?: string) => {
+    applyTo(forPaper, (s) => ({
       ...s,
       annotations: s.annotations.map((a) => {
         if (a.id !== annotationId) return a;
@@ -305,13 +389,13 @@ export function useSession() {
         return { ...a, messages: msgs };
       }),
     }));
-  }, []);
+  }, [applyTo]);
 
   // Stamp the number the server gave this ask onto the message that made it —
   // the question if there is one, otherwise the answer's own bubble, which is
   // all a bare "explain this" leaves behind.
-  const markTurn = useCallback((annotationId: string, turn: number) => {
-    setSession((s) => ({
+  const markTurn = useCallback((annotationId: string, turn: number, forPaper?: string) => {
+    applyTo(forPaper, (s) => ({
       ...s,
       annotations: s.annotations.map((a) => {
         if (a.id !== annotationId || a.messages.length === 0) return a;
@@ -326,7 +410,7 @@ export function useSession() {
         return { ...a, messages: msgs };
       }),
     }));
-  }, []);
+  }, [applyTo]);
 
   const setTakeaways = useCallback((annotationId: string, takeaways: string[], summarizedTurns: number) => {
     setSession((s) => ({
@@ -379,6 +463,7 @@ export function useSession() {
     reader.onload = (e) => {
       try {
         const loaded = JSON.parse(e.target?.result as string) as SessionState;
+        activeIdRef.current = loaded.pdfName ? sessionIdFor(loaded.pdfName, loaded.zoteroKey) : null;
         setSession(loaded);
       } catch {
         alert("Failed to load session file. Make sure it's a valid paper-reader session JSON.");
@@ -393,6 +478,7 @@ export function useSession() {
     paperId: session.pdfName ? sessionIdFor(session.pdfName, session.zoteroKey) : null,
     flushSave,
     clearPaper,
+    forgetPaper,
     setProviderSession,
     setPdf,
     setModel,

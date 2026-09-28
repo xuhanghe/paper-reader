@@ -94,6 +94,7 @@ export default function Home() {
     paperId,
     flushSave,
     clearPaper,
+    forgetPaper,
     setProviderSession,
     setPdf,
     setModel,
@@ -129,6 +130,11 @@ export default function Home() {
   const [layout0] = useState(loadLayout);
   const [sidebarOpen, setSidebarOpen] = useState(layout0.mapOpen);
   const [streamingIds, setStreamingIds] = useState<Set<string>>(new Set());
+  // In-flight answers, so each can be stopped independently. Each remembers
+  // its paper: switching papers leaves it running, closing that paper's tab
+  // stops it.
+  const abortControllers = useRef<Map<string, { controller: AbortController; paper: string | null }>>(new Map());
+
   const [zoteroOpen, setZoteroOpen] = useState(layout0.zoteroOpen);
   const [explainOpen, setExplainOpen] = useState(layout0.explainOpen);
   const [zoteroWidth, dragZotero, startZotero, endZotero] = usePanelWidth(layout0.zoteroWidth, 170, 520, 1, zoteroOpen, setZoteroOpen);
@@ -337,6 +343,11 @@ export default function Home() {
   const closeTab = useCallback(
     (id: string) => {
       forgetDocument(id);
+      // Answers still streaming for this paper have nowhere to go now
+      for (const [, entry] of abortControllers.current) {
+        if (entry.paper === id) entry.controller.abort();
+      }
+      forgetPaper(id);
       const remaining = visibleTabs.filter((t) => t.id !== id);
       setTabs((prev) => prev.filter((t) => t.id !== id));
       if (id === paperId) {
@@ -346,7 +357,7 @@ export default function Home() {
         else clearPaper();
       }
     },
-    [visibleTabs, paperId, openTab, clearPaper]
+    [visibleTabs, paperId, openTab, clearPaper, forgetPaper]
   );
   type ZoteroAnnotation = { key: string; text: string; comment: string; page?: number; position?: PdfRects; type: string; color?: string };
   const [zoteroNotesState, setZoteroNotesState] = useState<{
@@ -580,11 +591,8 @@ export default function Home() {
     delete annotationRefs.current[id];
   }, [removeAnnotation, activeAnnotationId]);
 
-  // In-flight answers, so each can be stopped independently
-  const abortControllers = useRef<Map<string, AbortController>>(new Map());
-
   const stopAsk = useCallback((annotationId: string) => {
-    abortControllers.current.get(annotationId)?.abort();
+    abortControllers.current.get(annotationId)?.controller.abort();
   }, []);
 
   // Every question — selection explain, figure, general, follow-up — goes
@@ -610,11 +618,14 @@ export default function Home() {
       setExplainOpen(true);
       setStreamingIds((s) => new Set(s).add(annotationId));
       setAskSeq((n) => n + 1);
+      // The paper this answer belongs to. The reader may move to another
+      // paper while it streams; every piece still lands in this one.
+      const forPaper = paperId ?? undefined;
       // One controller per conversation, so Stop cancels this answer and not
       // whatever else is streaming in another card
-      abortControllers.current.get(annotationId)?.abort();
+      abortControllers.current.get(annotationId)?.controller.abort();
       const controller = new AbortController();
-      abortControllers.current.set(annotationId, controller);
+      abortControllers.current.set(annotationId, { controller, paper: paperId });
       try {
         const provider = providerIdFor(session.model);
         const res = await fetch("/api/ask", {
@@ -635,7 +646,7 @@ export default function Home() {
         });
 
         if (!res.ok || !res.body) {
-          updateLastAssistantMessage(annotationId, "Error: could not get a response from the model.");
+          updateLastAssistantMessage(annotationId, "Error: could not get a response from the model.", forPaper);
           return;
         }
 
@@ -656,21 +667,21 @@ export default function Home() {
               // Capture the provider session id — the fused paper conversation
               if (event.type === "turn" && typeof event.turn === "number") {
                 // What the model will cite this ask as, if it points back at it
-                markTurn(annotationId, event.turn);
+                markTurn(annotationId, event.turn, forPaper);
               } else if (!sessionCaptured && event.type === "system" && event.session_id) {
-                setProviderSession(provider, event.session_id);
+                setProviderSession(provider, event.session_id, forPaper);
                 sessionCaptured = true;
               } else if (event.type === "content_block_delta" && event.delta?.type === "text_delta") {
                 accumulated += event.delta.text;
-                updateLastAssistantMessage(annotationId, accumulated);
+                updateLastAssistantMessage(annotationId, accumulated, forPaper);
               } else if (event.type === "assistant" && event.message?.content) {
                 for (const block of event.message.content) {
                   if (block.type === "text") accumulated += block.text;
                 }
-                updateLastAssistantMessage(annotationId, accumulated);
+                updateLastAssistantMessage(annotationId, accumulated, forPaper);
               } else if (event.type === "result" && event.result && !accumulated) {
                 accumulated = typeof event.result === "string" ? event.result : "";
-                updateLastAssistantMessage(annotationId, accumulated);
+                updateLastAssistantMessage(annotationId, accumulated, forPaper);
               }
             } catch {
               // non-JSON line, skip
@@ -681,13 +692,13 @@ export default function Home() {
         // Stopping is a choice, not a failure — keep whatever arrived
         if (!(err instanceof DOMException && err.name === "AbortError")) {
           console.error(err);
-          updateLastAssistantMessage(annotationId, "Error: failed to connect to the model.");
+          updateLastAssistantMessage(annotationId, "Error: failed to connect to the model.", forPaper);
         }
       } finally {
         // Only this ask's own controller: an edit stops the old stream and
         // starts the new one at once, and the old one's ending must not mark
         // the new one as finished
-        if (abortControllers.current.get(annotationId) === controller) {
+        if (abortControllers.current.get(annotationId)?.controller === controller) {
           abortControllers.current.delete(annotationId);
           setStreamingIds((s) => { const next = new Set(s); next.delete(annotationId); return next; });
         }
