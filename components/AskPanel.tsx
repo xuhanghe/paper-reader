@@ -3,6 +3,7 @@ import { Fragment, cloneElement, isValidElement, useRef, useEffect, useLayoutEff
 import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
+import remarkCjkFriendly from "remark-cjk-friendly";
 import rehypeKatex from "rehype-katex";
 import { normalizeMathDelimiters } from "@/lib/math-delimiters";
 import { Annotation, Model } from "@/types/session";
@@ -212,7 +213,11 @@ function CitationAnchor({
 //
 // The plugin list is module-level for the same reason: a new array each render
 // is a new prop, and nothing downstream can memoise past it.
-const REMARK_PLUGINS = [remarkGfm, remarkMath];
+// CommonMark decides whether a `**` opens or closes by what surrounds it,
+// and knows only Western punctuation and spaces: a closing `**` between a
+// full stop and a Chinese character — 。**更 — is no closer at all, and the
+// asterisks stayed on screen. The plugin teaches the rule about CJK.
+const REMARK_PLUGINS = [remarkGfm, remarkMath, remarkCjkFriendly];
 // KaTeX renders what it can and leaves the rest as source: an answer is never
 // blanked over one formula it cannot parse
 const REHYPE_PLUGINS = [[rehypeKatex, { throwOnError: false, strict: "ignore" as const }]] as const;

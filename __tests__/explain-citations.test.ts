@@ -178,3 +178,35 @@ describe("undoing a jump", () => {
     assert.equal((button("Forward") as HTMLButtonElement).disabled, true);
   });
 });
+
+// A `**` between a Chinese full stop and the next Chinese character is no
+// closer to CommonMark, which knows only Western punctuation; the asterisks
+// were printed as text.
+describe("bold in Chinese answers", () => {
+  test("emphasis closing on CJK punctuation is still emphasis", () => {
+    const host = freshRoot();
+    const answer = "你的逻辑链需要改一处：**big message size 提供更多 headroom，但它本身不会带来更多 parallelism；恰恰相反，它会降低 packets per second。**更高 bandwidth 才会提高 packets per second";
+    act(() => {
+      createRoot(host).render(
+        createElement(ExplainPanel, {
+          annotations: [thread([{ role: "user", content: "why?" }, { role: "assistant", content: answer }], "a1", "conversation A")],
+          activeId: null,
+          model: "claude-sonnet-4-6",
+          streamingIds: new Set<string>(),
+          onFollowUp: () => {},
+          onAskGeneral: () => {},
+          onDelete: () => {},
+          onReExplainImage: () => {},
+          onViewInPdf: () => {},
+          annotationRefs: { current: {} },
+          isOpen: true,
+          onToggle: () => {},
+        })
+      );
+    });
+    const strong = host.querySelector("strong");
+    assert.ok(strong, "rendered as bold");
+    assert.match(strong!.textContent || "", /^big message size .* packets per second。$/);
+    assert.equal((host.textContent || "").includes("**"), false, "no asterisks left on screen");
+  });
+});
