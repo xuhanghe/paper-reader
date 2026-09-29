@@ -192,14 +192,14 @@ export const HtmlViewer = forwardRef<PdfViewerHandle, Props>(function HtmlViewer
     const saved = loadReadingPosition(positionKey);
     if (!saved) return;
     if (typeof saved.scale === "number") applyZoom(saved.scale);
-    if (saved.scrollTop > 0) requestAnimationFrame(() => win.scrollTo({ top: saved.scrollTop }));
+    if (saved.scrollTop > 0 || saved.scrollLeft > 0) requestAnimationFrame(() => win.scrollTo({ top: saved.scrollTop, left: saved.scrollLeft }));
   }, [positionKey, applyZoom, highlights]);
 
   useEffect(() => {
     const win = iframeRef.current?.contentWindow;
     if (!win || !positionKey) return;
     let timer = 0;
-    const save = () => saveReadingPosition(positionKey, { scrollTop: win.scrollY, scale: zoomRef.current });
+    const save = () => saveReadingPosition(positionKey, { scrollTop: win.scrollY, scrollLeft: win.scrollX, scale: zoomRef.current });
     const onScroll = () => { clearTimeout(timer); timer = window.setTimeout(save, 400); };
     win.addEventListener("scroll", onScroll, { passive: true });
     return () => {

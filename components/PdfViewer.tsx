@@ -666,6 +666,8 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
   // open document changes identity
   const positionKeyRef = useRef(positionKey);
   useEffect(() => { positionKeyRef.current = positionKey; }, [positionKey]);
+  // The debounced save after a scroll, shared so a paper switch can flush it
+  const positionTimerRef = useRef(0);
   const recordPositionRef = useRef<(() => void) | null>(null);
   const [captureMode, setCaptureMode] = useState(false);
   const [loadError, setLoadError] = useState(false);
@@ -1578,6 +1580,10 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
     const referencePreviewCache = referencePreviewCacheRef.current;
     const selectionPreparationJobs = selectionPreparationJobsRef.current;
     let cancelled = false;
+    // A save still pending from the last scroll of the previous paper would
+    // fire after the key has moved on, filing that paper's offset under this
+    // one; the teardown below records it under its own key instead
+    clearTimeout(positionTimerRef.current);
     container.querySelectorAll(".pr-page-bands").forEach((overlay) => overlay.remove());
     container.querySelectorAll(".pr-page-reference-links").forEach((overlay) => overlay.remove());
     endReferenceHover();
@@ -1614,11 +1620,13 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
       // somewhere else entirely.
       const resume = positionKeyRef.current ? loadReadingPosition(positionKeyRef.current) : null;
       viewer.currentScaleValue = typeof resume?.scale === "number" ? String(resume.scale) : "page-width";
-      if (resume && resume.scrollTop > 0) {
+      if (resume && (resume.scrollTop > 0 || resume.scrollLeft > 0)) {
         // One frame later: pdf.js sizes the pages during this event, so the
-        // container is not yet tall enough to accept the offset.
+        // container is not yet tall (or wide) enough to accept the offsets.
         requestAnimationFrame(() => {
-          if (!cancelled && container.isConnected) container.scrollTop = resume.scrollTop;
+          if (cancelled || !container.isConnected) return;
+          container.scrollTop = resume.scrollTop;
+          container.scrollLeft = resume.scrollLeft;
         });
       }
     });
@@ -1690,6 +1698,10 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
 
     return () => {
       cancelled = true;
+      // Where this paper was left, under its own key — the key changes only
+      // after every teardown has run
+      clearTimeout(positionTimerRef.current);
+      recordPositionRef.current?.();
       // Tear the viewer down so no in-flight page setup fires against a
       // detached DOM ("offsetParent is not set" console errors)
       try {
@@ -1805,7 +1817,7 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
     // "page-width" is a rule, not a number: storing the number it happens to
     // resolve to would freeze the paper at one window size.
     const scale = viewer.currentScaleValue === "page-width" ? "page-width" : viewer.currentScale;
-    saveReadingPosition(key, { scrollTop: container.scrollTop, scale, page: viewer.currentPageNumber });
+    saveReadingPosition(key, { scrollTop: container.scrollTop, scrollLeft: container.scrollLeft, scale, page: viewer.currentPageNumber });
   }, []);
 
   useEffect(() => { recordPositionRef.current = recordPosition; }, [recordPosition]);
@@ -1813,14 +1825,13 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
-    let timer = 0;
     const onScroll = () => {
-      clearTimeout(timer);
-      timer = window.setTimeout(recordPosition, 400);
+      clearTimeout(positionTimerRef.current);
+      positionTimerRef.current = window.setTimeout(recordPosition, 400);
     };
     container.addEventListener("scroll", onScroll, { passive: true });
     return () => {
-      clearTimeout(timer);
+      clearTimeout(positionTimerRef.current);
       container.removeEventListener("scroll", onScroll);
       recordPosition();
     };

@@ -10,6 +10,10 @@
 
 export type ReadingPosition = {
   scrollTop: number;
+  // Zoomed in on one column, the paper is wider than the window and which
+  // column you were on is as much the position as how far down. Entries from
+  // before this was stored read back as 0.
+  scrollLeft: number;
   /** pdf.js scale, or "page-width" for the fit-to-width default */
   scale: number | "page-width";
   page?: number;
@@ -36,7 +40,12 @@ export function loadReadingPosition(paperId: string | undefined): ReadingPositio
   if (!paperId) return null;
   const entry = readAll()[paperId];
   if (!entry || typeof entry.scrollTop !== "number") return null;
-  return { scrollTop: entry.scrollTop, scale: entry.scale ?? "page-width", page: entry.page };
+  return {
+    scrollTop: entry.scrollTop,
+    scrollLeft: typeof entry.scrollLeft === "number" ? entry.scrollLeft : 0,
+    scale: entry.scale ?? "page-width",
+    page: entry.page,
+  };
 }
 
 export function saveReadingPosition(paperId: string | undefined, position: ReadingPosition, now = Date.now()): void {
