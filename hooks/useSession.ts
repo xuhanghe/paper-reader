@@ -412,13 +412,20 @@ export function useSession() {
     }));
   }, [applyTo]);
 
-  const setTakeaways = useCallback((annotationId: string, takeaways: string[], summarizedTurns: number) => {
-    setSession((s) => ({
+  const setTakeaways = useCallback((annotationId: string, takeaways: string[], summarizedTurns: number, forPaper?: string) => {
+    applyTo(forPaper, (s) => ({
       ...s,
       concepts: s.concepts.map((c) =>
         c.annotationId === annotationId ? { ...c, takeaways, summarizedTurns } : c
       ),
     }));
+  }, [applyTo]);
+
+  // A paper's state as it stands — on screen, or parked while the reader is
+  // elsewhere. For work that follows a stream to its end, wherever it ended.
+  const readPaper = useCallback((forPaper?: string): SessionState | undefined => {
+    if (!forPaper || forPaper === activeIdRef.current) return sessionRef.current;
+    return parkedRef.current.get(forPaper);
   }, []);
 
   const editTakeaways = useCallback((annotationId: string, takeaways: string[]) => {
@@ -500,6 +507,7 @@ export function useSession() {
     markTurn,
     setTakeaways,
     editTakeaways,
+    readPaper,
     replaceMessageFrom,
     saveSession,
     loadSession,

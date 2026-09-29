@@ -89,6 +89,25 @@ describe("switching papers while an answer streams", () => {
     assert.equal(hook().session.annotations[0].messages[1].content, "done");
   });
 
+  test("a summary that finishes after the switch lands in its own paper too", async () => {
+    const { hook } = mount();
+    await act(async () => { hook().setPdf("zeta.pdf", PDF, "pdf", "KEYZ"); });
+    await act(async () => { await wait(5); });
+    const Z = hook().paperId as string;
+    let id = "";
+    await act(async () => { id = hook().addAnnotation({ type: "text", selectedText: "x", messages: [{ role: "user", content: "q" }, { role: "assistant", content: "a" }] }); });
+    await act(async () => { hook().setPdf("eta.pdf", PDF, "pdf", "KEYH"); });
+    await act(async () => { await wait(5); });
+    // The thread is still readable where it is parked, and its notes go there
+    assert.equal(hook().readPaper(Z)?.annotations[0].id, id);
+    assert.equal(hook().readPaper()?.pdfName, "eta.pdf");
+    await act(async () => { hook().setTakeaways(id, ["what it settled"], 2, Z); });
+    assert.equal(hook().session.concepts.length, 0);
+    await act(async () => { hook().setPdf("zeta.pdf", PDF, "pdf", "KEYZ"); });
+    assert.deepEqual(hook().session.concepts[0].takeaways, ["what it settled"]);
+    assert.equal(hook().session.concepts[0].summarizedTurns, 2);
+  });
+
   test("an update with no paper named goes to the open one, as before", async () => {
     const { hook } = mount();
     await act(async () => { hook().setPdf("gamma.pdf", PDF, "pdf", "KEYG"); });

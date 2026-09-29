@@ -42,3 +42,21 @@ export function parseTakeaways(text: string): string[] {
 export function isStale(summarizedTurns: number | undefined, messageCount: number): boolean {
   return summarizedTurns === undefined || summarizedTurns !== messageCount;
 }
+
+// What the list becomes after a fresh summary. The reader's own lines are
+// kept word for word: a list they wrote in is theirs, and the model may only
+// add to it. A summary that came back empty changes nothing.
+export function mergeTakeaways(previous: string[], next: string[], edited: boolean): string[] {
+  if (next.length === 0) return previous;
+  if (!edited) return next;
+  const fold = (line: string) => line.replace(/\s+/g, " ").trim().toLowerCase();
+  const have = new Set(previous.map(fold));
+  const out = [...previous];
+  for (const line of next) {
+    if (out.length >= MAX_TAKEAWAYS) break;
+    if (have.has(fold(line))) continue;
+    have.add(fold(line));
+    out.push(line);
+  }
+  return out;
+}

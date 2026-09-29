@@ -320,18 +320,32 @@ Rules:
 - No numbering, no bullet characters, no trailing full stop.
 - Leave out anything the conversation did not actually settle.`;
 
-export function buildTakeawaysPrompt(label: string, history: HistoryMessage[]): string {
+// previous: the notes as they stand, summarised before the latest exchange.
+// The list is rewritten after every answer, and most answers only confirm or
+// clarify what is already noted — so the model is handed the notes and told
+// to return them as they are unless the exchange actually settled something
+// new. Without this, every answer reworded the whole list.
+export function buildTakeawaysPrompt(label: string, history: HistoryMessage[], previous: string[] = []): string {
   // The conversation's own language, judged from the answers — they are longer
   // than the questions and are what the takeaways are drawn from
   const answers = history.filter((m) => m.role === "assistant").map((m) => m.content).join("\n");
   const language = dominantLanguage(answers) ?? inputLanguage(answers);
   const languageNote = language ? `\n- Write the items in ${language}, the language of the conversation.` : "";
 
+  const standing = previous.length
+    ? `
+
+The notes so far, written before the latest exchange:
+${previous.map((line) => `- ${line}`).join("\n")}
+
+Return these notes again, changed only where the latest exchange adds a new finding or corrects one. An exchange that confirms, restates or clarifies what the notes already say leaves them exactly as they are — do not reword a line that still holds.`
+    : "";
+
   return `${TAKEAWAYS_HEADER}${languageNote}
 
 The conversation began from: ${label}
 
-${formatHistory(history)}`;
+${formatHistory(history)}${standing}`;
 }
 
 function formatHistory(history: HistoryMessage[]): string {

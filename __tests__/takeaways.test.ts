@@ -1,6 +1,6 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
-import { parseTakeaways, isStale, MAX_TAKEAWAYS } from "../lib/takeaways.js";
+import { parseTakeaways, isStale, mergeTakeaways, MAX_TAKEAWAYS } from "../lib/takeaways.js";
 
 describe("parseTakeaways", () => {
   test("reads a plain array", () => {
@@ -62,5 +62,27 @@ describe("isStale", () => {
   test("so does an edit that shortens the thread", () => {
     // Rewriting a question replaces everything after it
     assert.equal(isStale(6, 4), true);
+  });
+});
+
+// The list is rewritten after every answer. A list the reader wrote in is
+// theirs: the model may add to it, never touch what is there.
+describe("mergeTakeaways", () => {
+  test("a fresh summary replaces an untouched list", () => {
+    assert.deepEqual(mergeTakeaways(["old"], ["new one", "new two"], false), ["new one", "new two"]);
+  });
+
+  test("an empty summary changes nothing", () => {
+    assert.deepEqual(mergeTakeaways(["old"], [], false), ["old"]);
+    assert.deepEqual(mergeTakeaways(["mine"], [], true), ["mine"]);
+  });
+
+  test("the reader's lines stay word for word; new findings are added after them", () => {
+    assert.deepEqual(mergeTakeaways(["My note", "Another"], ["my note", "Something new"], true), ["My note", "Another", "Something new"]);
+  });
+
+  test("an edited list still stays short", () => {
+    const mine = Array.from({ length: MAX_TAKEAWAYS }, (_, i) => `mine ${i}`);
+    assert.deepEqual(mergeTakeaways(mine, ["more"], true), mine);
   });
 });

@@ -2,7 +2,7 @@
 import type { AskKind, SelectionIntent } from "@/lib/prompts";
 import { useRef, useState, useCallback, useEffect, useMemo, useSyncExternalStore } from "react";
 import { extractZoteroItemText } from "@/lib/extract-text";
-import { isStale } from "@/lib/takeaways";
+import { isStale, mergeTakeaways } from "@/lib/takeaways";
 import type { PdfRects } from "@/types/session";
 import { emptyNav, record as recordSpot, back as navBack, forward as navForward, type Spot } from "@/lib/nav-history";
 import dynamic from "next/dynamic";
@@ -116,6 +116,7 @@ export default function Home() {
     markTurn,
     setTakeaways,
     editTakeaways,
+    readPaper,
     replaceMessageFrom,
     saveSession,
     loadSession,
@@ -595,6 +596,101 @@ export default function Home() {
     abortControllers.current.get(annotationId)?.controller.abort();
   }, []);
 
+  // Summarising a conversation into its takeaways. Each answer that
+  // finishes folds itself into its thread's notes, so the Concepts tab is
+  // current whenever it is opened; opening it also catches up any thread that
+  // was never summarised (a session from before this, an answer that failed
+  // to summarise). One summary per thread at a time — an answer arriving
+  // while the last is still being summarised waits its turn, and only the
+  // latest waiting request runs.
+  const [summarizing, setSummarizing] = useState<Set<string>>(new Set());
+  const summaryRuns = useRef<Map<string, { running: Promise<void>; next?: () => Promise<void> }>>(new Map());
+
+  const summarizeThread = useCallback(
+    (annotationId: string, forPaper: string | undefined, opts: { answer?: string; force?: boolean } = {}) => {
+      const run = async () => {
+        // The thread as it stands now, wherever its paper is — on screen or
+        // parked. The answer just streamed is passed in, since the state may
+        // be a render behind the last piece of it.
+        const state = readPaper(forPaper);
+        const annotation = state?.annotations.find((a) => a.id === annotationId);
+        if (!state || !annotation) return;
+        const messages = annotation.messages.map((m) => ({ role: m.role, content: m.content }));
+        if (opts.answer !== undefined && messages.length && messages[messages.length - 1].role === "assistant") {
+          messages[messages.length - 1] = { role: "assistant", content: opts.answer };
+        }
+        if (!messages.some((m) => m.role === "assistant" && m.content.trim())) return;
+        const concept = state.concepts.find((c) => c.annotationId === annotationId);
+        if (!opts.force && !isStale(concept?.summarizedTurns, messages.length)) return;
+        const previous = concept?.takeaways ?? [];
+        const edited = !!concept?.edited && !opts.force;
+        const model = state.mapModel || state.model;
+        setSummarizing((s) => new Set(s).add(annotationId));
+        try {
+          const res = await fetch("/api/takeaways", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              label: annotation.label,
+              messages,
+              // Asked for again by hand, the list is written afresh
+              previous: opts.force ? [] : previous,
+              model,
+              effort: state.mapEffort || "low",
+              custom: model === "custom" ? customApi : undefined,
+            }),
+          });
+          const data = await res.json();
+          if (res.ok && Array.isArray(data.takeaways)) {
+            const merged = mergeTakeaways(previous, data.takeaways, edited);
+            if (merged.length > 0) setTakeaways(annotationId, merged, messages.length, forPaper);
+          }
+        } catch {
+          // A conversation that will not summarise keeps its label; the tab
+          // stays usable rather than failing as a whole
+        } finally {
+          setSummarizing((s) => { const next = new Set(s); next.delete(annotationId); return next; });
+        }
+      };
+      const slot = summaryRuns.current.get(annotationId);
+      if (slot) {
+        // Latest request wins the next turn
+        slot.next = run;
+        return slot.running;
+      }
+      const running = (async () => {
+        await run();
+        // Anything asked for meanwhile, once, with the thread as it now is
+        for (;;) {
+          const entry = summaryRuns.current.get(annotationId);
+          const next = entry?.next;
+          if (!entry || !next) break;
+          entry.next = undefined;
+          await next();
+        }
+        summaryRuns.current.delete(annotationId);
+      })();
+      summaryRuns.current.set(annotationId, { running });
+      return running;
+    },
+    [readPaper, customApi, setTakeaways]
+  );
+
+  // Opening the Concepts tab: catch up threads never summarised, one at a
+  // time. A named thread is written afresh whatever its state.
+  const refreshTakeaways = useCallback(async (only?: string) => {
+    if (only) {
+      await summarizeThread(only, paperId ?? undefined, { force: true });
+      return;
+    }
+    for (const a of session.annotations) {
+      const concept = session.concepts.find((c) => c.annotationId === a.id);
+      if (concept?.edited || !isStale(concept?.summarizedTurns, a.messages.length)) continue;
+      if (streamingIds.has(a.id)) continue;
+      await summarizeThread(a.id, paperId ?? undefined);
+    }
+  }, [session.annotations, session.concepts, streamingIds, paperId, summarizeThread]);
+
   // Every question — selection explain, figure, general, follow-up — goes
   // through the fused per-paper conversation on /api/ask. The provider's
   // session id is captured once and resumed for all later asks.
@@ -626,6 +722,8 @@ export default function Home() {
       abortControllers.current.get(annotationId)?.controller.abort();
       const controller = new AbortController();
       abortControllers.current.set(annotationId, { controller, paper: paperId });
+      let accumulated = "";
+      let failed = false;
       try {
         const provider = providerIdFor(session.model);
         const res = await fetch("/api/ask", {
@@ -646,13 +744,13 @@ export default function Home() {
         });
 
         if (!res.ok || !res.body) {
+          failed = true;
           updateLastAssistantMessage(annotationId, "Error: could not get a response from the model.", forPaper);
           return;
         }
 
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
-        let accumulated = "";
         let sessionCaptured = false;
 
         while (true) {
@@ -691,6 +789,7 @@ export default function Home() {
       } catch (err) {
         // Stopping is a choice, not a failure — keep whatever arrived
         if (!(err instanceof DOMException && err.name === "AbortError")) {
+          failed = true;
           console.error(err);
           updateLastAssistantMessage(annotationId, "Error: failed to connect to the model.", forPaper);
         }
@@ -701,65 +800,14 @@ export default function Home() {
         if (abortControllers.current.get(annotationId)?.controller === controller) {
           abortControllers.current.delete(annotationId);
           setStreamingIds((s) => { const next = new Set(s); next.delete(annotationId); return next; });
+          // The thread's concept follows its answers: every one that
+          // arrived — stopped short or not — is folded into the notes now
+          if (!failed && accumulated.trim()) void summarizeThread(annotationId, forPaper, { answer: accumulated });
         }
       }
     },
-    [session.model, session.effort, session.pdfName, session.providerSessions, paperId, customApi, activeSkillIds, updateLastAssistantMessage, setProviderSession, markTurn]
+    [session.model, session.effort, session.pdfName, session.providerSessions, paperId, customApi, activeSkillIds, updateLastAssistantMessage, setProviderSession, markTurn, summarizeThread]
   );
-
-  // Summarising a conversation into its takeaways. Runs when the Concepts tab
-  // is opened rather than after every answer: it is a separate model call, and
-  // most answers are never looked up again.
-  const [summarizing, setSummarizing] = useState<Set<string>>(new Set());
-  const summarizeQueue = useRef(false);
-
-  const refreshTakeaways = useCallback(async (only?: string) => {
-    // One pass at a time — a paper with a dozen conversations should not open
-    // a dozen model calls the moment a tab is clicked
-    if (summarizeQueue.current) return;
-    const stale = session.annotations.filter((a) => {
-      if (only && a.id !== only) return false;
-      if (!a.messages.some((m) => m.role === "assistant" && m.content.trim())) return false;
-      const concept = session.concepts.find((c) => c.annotationId === a.id);
-      // Asked for by name, it is regenerated whatever its state; on the
-      // automatic pass, a list someone has edited is left alone
-      if (only) return true;
-      if (concept?.edited) return false;
-      return isStale(concept?.summarizedTurns, a.messages.length);
-    });
-    if (stale.length === 0) return;
-
-    summarizeQueue.current = true;
-    try {
-      for (const annotation of stale) {
-        setSummarizing((s) => new Set(s).add(annotation.id));
-        try {
-          const res = await fetch("/api/takeaways", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              label: annotation.label,
-              messages: annotation.messages.map((m) => ({ role: m.role, content: m.content })),
-              model: session.mapModel || session.model,
-              effort: session.mapEffort || "low",
-              custom: (session.mapModel || session.model) === "custom" ? customApi : undefined,
-            }),
-          });
-          const data = await res.json();
-          if (res.ok && Array.isArray(data.takeaways) && data.takeaways.length > 0) {
-            setTakeaways(annotation.id, data.takeaways, annotation.messages.length);
-          }
-        } catch {
-          // A conversation that will not summarise keeps its label; the tab
-          // stays usable rather than failing as a whole
-        } finally {
-          setSummarizing((s) => { const next = new Set(s); next.delete(annotation.id); return next; });
-        }
-      }
-    } finally {
-      summarizeQueue.current = false;
-    }
-  }, [session.annotations, session.concepts, session.model, session.mapModel, session.mapEffort, customApi, setTakeaways]);
 
   // Following a citation the model wrote.
   //

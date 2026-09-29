@@ -75,9 +75,9 @@ describe("the concepts list holds what was learned", () => {
     assert.ok(text.indexOf("__shared__ float local") < text.indexOf("消除 bank 冲突"), "the takeaways come under it");
   });
 
-  test("opening the tab is what asks for the summaries", () => {
-    // Summarising after every answer would spend a model call on conversations
-    // nobody looks up again
+  test("opening the tab catches up threads that were never summarised", () => {
+    // Each answer summarises its own thread as it ends; the tab's own pass is
+    // for threads from before that, and for answers whose summary failed
     mount([CONCEPT]);
     assert.equal(shown, 0, "nothing is summarised while the map is showing");
     openConcepts();

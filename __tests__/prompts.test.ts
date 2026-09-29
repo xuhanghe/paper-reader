@@ -1,6 +1,6 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
-import { buildTextPrompt, buildImagePrompt, buildAskMessage, buildSessionBootstrap, isDefinitionQuestion, wantsWholePaper, SYSTEM_PROMPT_TEXT, SYSTEM_PROMPT_IMAGE } from "../lib/prompts.js";
+import { buildTextPrompt, buildImagePrompt, buildAskMessage, buildSessionBootstrap, buildTakeawaysPrompt, isDefinitionQuestion, wantsWholePaper, SYSTEM_PROMPT_TEXT, SYSTEM_PROMPT_IMAGE } from "../lib/prompts.js";
 
 // A reader stuck on a term wants the term, not its place in the argument. The
 // paper-focused default used to answer "what does this mean?" with the latter.
@@ -204,5 +204,27 @@ describe("the answer stands on what the reader has read", () => {
 
   test("explain asks for the passage's role given what came before, not what comes after", () => {
     assert.match(buildAskMessage({ kind: "explain", selectedText: "x", pageNumber: 2 }), /at this point, given what came before/);
+  });
+});
+
+// The notes are rewritten after every answer, and most answers only confirm
+// what is already noted. The model is handed the standing notes and told to
+// leave them alone unless the exchange settled something new.
+describe("the takeaways prompt keeps standing notes steady", () => {
+  const history = [
+    { role: "user" as const, content: "why pad the stride?" },
+    { role: "assistant" as const, content: "Padding breaks the power-of-two stride, so banks stop colliding." },
+  ];
+
+  test("with notes standing, they are quoted and the rule is to return them unchanged unless something is new", () => {
+    const prompt = buildTakeawaysPrompt("stride", history, ["Padding breaks the power-of-two stride"]);
+    assert.match(prompt, /notes so far/);
+    assert.match(prompt, /- Padding breaks the power-of-two stride/);
+    assert.match(prompt, /confirms, restates or clarifies .* leaves them exactly as they are/);
+  });
+
+  test("a first summary has no notes to keep", () => {
+    const prompt = buildTakeawaysPrompt("stride", history);
+    assert.doesNotMatch(prompt, /notes so far/);
   });
 });

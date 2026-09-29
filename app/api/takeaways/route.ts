@@ -8,7 +8,8 @@ export const runtime = "nodejs";
 // fused per-paper session: a summary is about the conversation, and asking for
 // it inside would make the model's own notes part of what it remembers next.
 export async function POST(req: Request) {
-  const { label, messages, model, effort, custom } = await req.json();
+  const { label, messages, model, effort, custom, previous } = await req.json();
+  const standing: string[] = Array.isArray(previous) ? previous.filter((l: unknown): l is string => typeof l === "string" && !!l.trim()) : [];
 
   const history = Array.isArray(messages)
     ? messages
@@ -26,7 +27,7 @@ export async function POST(req: Request) {
   }
 
   try {
-    const prompt = buildTakeawaysPrompt(typeof label === "string" ? label : "", history);
+    const prompt = buildTakeawaysPrompt(typeof label === "string" ? label : "", history, standing);
     const text = await completeWith(model, prompt, { effort, custom });
     return Response.json({ takeaways: parseTakeaways(text) });
   } catch (err) {
