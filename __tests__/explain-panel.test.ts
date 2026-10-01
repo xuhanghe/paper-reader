@@ -1120,41 +1120,185 @@ describe("folding quoted passages on a tall question", () => {
   });
 });
 
-// One control takes the reader straight to the end of the answer being
-// written — the words then keep arriving in sight
-describe("jumping to the end of the answer", () => {
-  test("the follow-up bar offers it, and it scrolls the answer's end into view", () => {
-    const scrolls: { block?: string; text: string }[] = [];
-    dom.window.Element.prototype.scrollIntoView = function (this: Element, opts?: boolean | ScrollIntoViewOptions) {
-      const o = typeof opts === "object" && opts ? opts : {};
-      scrolls.push({ block: o.block, text: (this.textContent || "").slice(0, 40) });
-    };
+// How the view keeps up with an answer is the reader's to choose: hold the
+// question (every send starts there), keep the end of the answer in sight,
+// or follow nothing. Scrolling is choosing to follow nothing.
+describe("following the question, the answer, or nothing", () => {
+  // The card's place in the list's content, in px from the top of the content;
+  // what the card reports on screen follows the list's scroll offset, as it would
+  type Geometry = { cardTop: number; cardBottom: number };
+  const box = (top: number, bottom: number) => ({ top, bottom, left: 0, right: 400, width: 400, height: bottom - top, x: 0, y: top, toJSON() {} }) as DOMRect;
+  // Shown as arrived at, not asked in: a conversation that appears already
+  // active reads as an ask (see the landing tests), which these are not about
+  const props = (annotations: Annotation[], streaming: string[], positionKey?: string) => ({
+    annotations, activeId: null, model: "m", streamingIds: new Set<string>(streaming),
+    onFollowUp: () => {}, onAskGeneral: () => {}, onDelete: () => {}, onReExplainImage: () => {}, onViewInPdf: () => {},
+    annotationRefs: { current: {} as Record<string, HTMLDivElement | null> }, isOpen: true, onToggle: () => {}, positionKey,
+  });
+  // The list is 600px tall and scrolls over 5000px of content
+  const lay = (host: HTMLElement, g: Geometry) => {
+    const list = host.querySelector("div.overflow-y-auto.p-4") as HTMLElement;
+    const card = host.querySelector("[data-annotation-id]") as HTMLElement;
+    list.getBoundingClientRect = () => box(0, 600);
+    card.getBoundingClientRect = () => box(g.cardTop - list.scrollTop, g.cardBottom - list.scrollTop);
+    Object.defineProperty(list, "scrollHeight", { value: 5000, configurable: true });
+    Object.defineProperty(list, "clientHeight", { value: 600, configurable: true });
+    return list;
+  };
+  const pressed = (host: HTMLElement) => Array.from(host.querySelectorAll('[aria-label="Follow"] button')).filter((b) => b.getAttribute("aria-pressed") === "true").map((b) => b.textContent);
+  const focusedPair = (host: HTMLElement) => { const el = host.querySelector("[data-pair][data-focused]"); return el ? `${el.closest("[data-annotation-id]")?.getAttribute("data-annotation-id")}:${el.getAttribute("data-pair")}` : null; };
+  // A glide is a few hundred ms of frames
+  const settled = () => act(async () => { await new Promise((r) => setTimeout(r, 650)); });
+  const click = (el: Element) => act(() => { el.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })); });
+  const button = (host: HTMLElement, text: string) => Array.from(host.querySelectorAll('[aria-label="Follow"] button')).find((b) => b.textContent === text) as HTMLElement;
+
+  test("the control offers the three, and a send starts on the question", () => {
+    // (the first render below counts as an ask too — a conversation first seen
+    // active lands as asked — so the send is the second render)
     const host = freshRoot();
-    const conversation = thread([{ role: "user", content: "why?" }, { role: "assistant", content: "because of the cache" }], "a1", "conversation A");
-    act(() => {
-      createRoot(host).render(
-        createElement(ExplainPanel, {
-          annotations: [conversation],
-          activeId: "a1",
-          model: "claude-sonnet-4-6",
-          streamingIds: new Set<string>(["a1"]),
-          onFollowUp: () => {},
-          onAskGeneral: () => {},
-          onDelete: () => {},
-          onReExplainImage: () => {},
-          onViewInPdf: () => {},
-          annotationRefs: { current: {} },
-          isOpen: true,
-          onToggle: () => {},
-        })
-      );
-    });
-    scrolls.length = 0;
-    const button = Array.from(host.querySelectorAll("button")).find((b) => b.title === "Jump to the end of the answer");
-    assert.ok(button, "the control is offered");
-    act(() => { button!.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })); });
-    assert.equal(scrolls.length, 1);
-    assert.equal(scrolls[0].block, "end");
-    assert.match(scrolls[0].text, /because of the cache/);
+    const root = createRoot(host);
+    const four = thread([{ role: "user", content: "q0" }, { role: "assistant", content: "a1" }], "a1", "A");
+    act(() => { root.render(createElement(ExplainPanel, { ...props([four], []), activeId: "a1", askSeq: 0 })); });
+    assert.deepEqual(Array.from(host.querySelectorAll('[aria-label="Follow"] button')).map((b) => b.textContent), ["question", "answer", "free"]);
+    const six = thread([...four.messages, { role: "user", content: "q2" }, { role: "assistant", content: "" }], "a1", "A");
+    act(() => { root.render(createElement(ExplainPanel, { ...props([six], ["a1"]), activeId: "a1", askSeq: 1 })); });
+    assert.deepEqual(pressed(host), ["question"]);
+  });
+
+  test("follow answer keeps the card's end at the bottom edge as the answer grows", async () => {
+    const host = freshRoot();
+    const root = createRoot(host);
+    const growing = (text: string) => thread([{ role: "user", content: "q0" }, { role: "assistant", content: text }], "a1", "A");
+    act(() => { root.render(createElement(ExplainPanel, props([growing("one")], ["a1"]))); });
+    // Scrolled 1000px in: the card runs from 100px to 900px down the window
+    const g: Geometry = { cardTop: 1100, cardBottom: 1900 };
+    const list = lay(host, g);
+    list.scrollTop = 1000;
+    click(button(host, "answer"));
+    assert.deepEqual(pressed(host), ["answer"]);
+    await settled();
+    // Chosen: the card's bottom (900) glides to the list's bottom less 12 (588)
+    assert.equal(Math.round(list.scrollTop), 1000 + (900 - 588));
+    // The answer grows by 150px; the view moves down by 150px with it
+    g.cardBottom += 150;
+    act(() => { root.render(createElement(ExplainPanel, props([growing("one and more")], ["a1"]))); });
+    assert.equal(Math.round(list.scrollTop), 1000 + (900 - 588) + 150);
+    // Choosing free: the pair stays focused, and the next growth moves nothing
+    click(button(host, "free"));
+    assert.deepEqual(pressed(host), ["free"]);
+    assert.equal(focusedPair(host), "a1:0", "changing mode keeps the pair");
+    g.cardBottom += 250;
+    const before = list.scrollTop;
+    act(() => { root.render(createElement(ExplainPanel, props([growing("one and more and more")], ["a1"]))); });
+    assert.equal(list.scrollTop, before);
+  });
+
+  test("a click in a pair focuses it and follows its question; a click on the focused pair keeps the mode", async () => {
+    const host = freshRoot();
+    const root = createRoot(host);
+    const two = thread([{ role: "user", content: "first" }, { role: "assistant", content: "a" }, { role: "user", content: "second" }, { role: "assistant", content: "b" }], "a1", "A");
+    act(() => { root.render(createElement(ExplainPanel, props([two], []))); });
+    lay(host, { cardTop: 100, cardBottom: 900 });
+    assert.deepEqual(Array.from(host.querySelectorAll("[data-pair]")).map((el) => el.getAttribute("data-pair")), ["0", "2"], "one box per question–answer pair");
+    const second = host.querySelector("[data-pair='2']") as HTMLElement;
+    click(second.querySelector('[style*="scroll-margin"]') as HTMLElement);
+    assert.deepEqual(pressed(host), ["question"]);
+    assert.equal(focusedPair(host), "a1:2");
+    await settled();
+    click(button(host, "answer"));
+    assert.deepEqual(pressed(host), ["answer"]);
+    click(second.querySelector('[style*="scroll-margin"]') as HTMLElement);
+    assert.deepEqual(pressed(host), ["answer"], "the focused pair, clicked, keeps its mode");
+    assert.equal(focusedPair(host), "a1:2");
+    // A button inside the pair is its own thing
+    const first = host.querySelector("[data-pair='0']") as HTMLElement;
+    const inner = first.querySelector("button") as HTMLElement;
+    if (inner) { click(inner); assert.equal(focusedPair(host), "a1:2", "a click on a button in another pair does not move the focus"); }
+  });
+
+  test("an explain's answer, with no question of the reader's, is a pair of its own", () => {
+    const host = freshRoot();
+    const root = createRoot(host);
+    const explained = thread([{ role: "assistant", content: "the explanation" }, { role: "user", content: "and?" }, { role: "assistant", content: "more" }], "a1", "A");
+    act(() => { root.render(createElement(ExplainPanel, props([explained], []))); });
+    assert.deepEqual(Array.from(host.querySelectorAll("[data-pair]")).map((el) => el.getAttribute("data-pair")), ["0", "1"]);
+  });
+
+  test("scrolling, once the flick guard has passed, is choosing free", () => {
+    const host = freshRoot();
+    const root = createRoot(host);
+    const one = thread([{ role: "user", content: "q0" }, { role: "assistant", content: "a" }], "a1", "A");
+    act(() => { root.render(createElement(ExplainPanel, props([one], ["a1"]))); });
+    const list = lay(host, { cardTop: 100, cardBottom: 900 });
+    const realNow = Date.now;
+    try {
+      let now = realNow();
+      Date.now = () => now;
+      click(button(host, "answer"));
+      act(() => { list.dispatchEvent(new dom.window.Event("wheel", { bubbles: true })); });
+      assert.deepEqual(pressed(host), ["answer"], "a wheel event within 800ms is the tail of a flick");
+      now += 1000;
+      act(() => { list.dispatchEvent(new dom.window.Event("wheel", { bubbles: true })); });
+      assert.deepEqual(pressed(host), ["free"]);
+    } finally {
+      Date.now = realNow;
+    }
+  });
+
+  test("follow question glides the question, with its context, to the top; follow answer glides to the end", async () => {
+    const host = freshRoot();
+    const root = createRoot(host);
+    const one = thread([{ role: "user", content: "the question" }, { role: "assistant", content: "the answer" }], "a1", "A");
+    act(() => { root.render(createElement(ExplainPanel, props([one], []))); });
+    const list = lay(host, { cardTop: 100, cardBottom: 900 });
+    click(button(host, "question"));
+    await settled();
+    // The passage the conversation started from fits above the question, so
+    // the card's top is what goes to the top (12px in), and the question with it
+    assert.equal(Math.round(list.scrollTop), 100 - 12);
+    click(button(host, "answer"));
+    await settled();
+    assert.equal(Math.round(list.scrollTop), 900 - 588);
+  });
+
+  test("the mode is the paper's: leaving and coming back resumes it", () => {
+    const host = freshRoot();
+    const root = createRoot(host);
+    const one = thread([{ role: "user", content: "q0" }, { role: "assistant", content: "a" }], "a1", "A");
+    act(() => { root.render(createElement(ExplainPanel, props([one], ["a1"], "paper-x"))); });
+    lay(host, { cardTop: 100, cardBottom: 900 });
+    click(button(host, "answer"));
+    assert.deepEqual(pressed(host), ["answer"]);
+    const other = thread([{ role: "user", content: "q0" }, { role: "assistant", content: "b" }], "b1", "B");
+    act(() => { root.render(createElement(ExplainPanel, props([other], [], "paper-y"))); });
+    assert.deepEqual(pressed(host), ["free"], "another paper starts unfollowed");
+    act(() => { root.render(createElement(ExplainPanel, props([one], ["a1"], "paper-x"))); });
+    assert.deepEqual(pressed(host), ["answer"], "back where it was left");
+  });
+
+  test("↓ next goes to the start of the next conversation, and lets go of what was followed", async () => {
+    const host = freshRoot();
+    const root = createRoot(host);
+    const a = thread([{ role: "user", content: "qa" }, { role: "assistant", content: "answer A" }], "a1", "conversation A");
+    const b = thread([{ role: "user", content: "qb" }, { role: "assistant", content: "answer B" }], "b2", "conversation B");
+    act(() => { root.render(createElement(ExplainPanel, props([a, b], []))); });
+    // The bar is on the last conversation: nothing after it
+    const next = () => Array.from(host.querySelectorAll("button")).find((x) => x.textContent === "↓ next") as HTMLButtonElement;
+    assert.equal(next().disabled, true);
+    // Fold B: the bar moves to A, and B is next
+    const foldB = Array.from(host.querySelectorAll("button")).filter((x) => x.title === "Collapse this conversation").pop() as HTMLElement;
+    click(foldB);
+    const list = lay(host, { cardTop: 100, cardBottom: 900 });
+    // B's card sits 1500px down the content
+    const cardB = host.querySelectorAll("[data-annotation-id]")[1] as HTMLElement;
+    cardB.getBoundingClientRect = () => box(1500 - list.scrollTop, 1800 - list.scrollTop);
+    click(button(host, "answer"));
+    assert.deepEqual(pressed(host), ["answer"]);
+    await settled();
+    assert.equal(next().disabled, false);
+    click(next());
+    assert.deepEqual(pressed(host), ["free"]);
+    await settled();
+    assert.equal(Math.round(list.scrollTop), 1500, "B's start at the top of the window");
   });
 });

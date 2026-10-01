@@ -6,7 +6,7 @@
 // code it actually ran — a stale script and a live bug look the same from a
 // screenshot, and not from this.
 
-export const PANEL_BUILD = "2026-09-25.1";
+export const PANEL_BUILD = "2026-10-01.1";
 
 type Entry = Record<string, unknown> & { t: number; what: string; build: string };
 

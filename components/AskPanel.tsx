@@ -6,7 +6,7 @@ import remarkMath from "remark-math";
 import remarkCjkFriendly from "remark-cjk-friendly";
 import rehypeKatex from "rehype-katex";
 import { normalizeMathDelimiters } from "@/lib/math-delimiters";
-import { Annotation, Model } from "@/types/session";
+import { Annotation, Message, Model } from "@/types/session";
 import { isSubmitKey } from "@/lib/keys";
 import { loadPanelScroll, savePanelScroll } from "@/lib/panel-scroll";
 import { trace, traceEnabled, describeForTrace } from "@/lib/panel-trace";
@@ -115,6 +115,34 @@ function textOf(node: React.ReactNode): string {
 export function shouldFoldQuotes(px: { question: number; chips: number; head: number; window: number }): boolean {
   return px.window > 0 && px.chips > 0 && px.question + px.head + 24 > px.window;
 }
+
+// How the view keeps up with an answer. "question" holds the question and
+// lets it rise to the top as the answer grows — the state every send starts
+// in. "answer" keeps the end of the conversation at the bottom edge, so the
+// words come out in sight. "free" follows nothing: where the reader scrolled
+// to is where the view stays. Scrolling switches to free; the control in the
+// follow-up bar switches to any of them, and goes there at once.
+export type FollowMode = "question" | "answer" | "free";
+// The conversation and the question–answer pair (by the question's index)
+// the mode applies to: whatever the view is on when the mode is chosen, or
+// what was just asked
+type Following = { id: string | null; index: number | null; mode: FollowMode };
+// What a landing holds at the top of the block it shows: the card, when the
+// whole card fits (the passage it started from, every turn, the question), or
+// the question alone
+type AskBlockTop = "card" | "question";
+const NOT_FOLLOWING: Following = { id: null, index: null, mode: "free" };
+
+// A conversation as question–answer pairs: each question with the answer
+// that follows it. A conversation that starts with an answer (an explain)
+// has that answer as its first pair, with the passage as its question.
+// Each pair is a box the reader can see focused, and click to follow.
+export function pairsOf(a: Pick<Annotation, "messages">): { start: number; end: number }[] {
+  const starts = a.messages.map((m, i) => (i === 0 || m.role === "user" ? i : -1)).filter((i) => i >= 0);
+  return starts.map((start, k) => ({ start, end: starts[k + 1] ?? a.messages.length }));
+}
+// Per paper, kept while the reader is away: coming back resumes the same mode
+const followMemory = new Map<string, Following>();
 
 // The link as shown: its words tidied the way a label is (a quote copied off a
 // PDF has a space between every CJK glyph), its formulas left to KaTeX. Only
@@ -422,6 +450,8 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
   // conversations are added, which must not yank the reader back), and saved
   // while scrolling and at teardown so the last position wins.
   const restoredScrollFor = useRef<string | null>(null);
+  // The key just restored for, so the landing knows an arrival from a return
+  const justRestored = useRef<string | null>(null);
   // The reader's place, kept two ways as of the last scroll event or the last
   // scroll of ours: the offset itself, and the element at the top edge of the
   // list with its distance from that edge. Scroll events are delivered a
@@ -448,16 +478,64 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
       }
     }
   }, []);
+  // What is being followed, and how. Reset from the paper's memory when the
+  // paper changes — adjusted during render, so the first paint is right.
+  const [follow, setFollow] = useState<Following>(() => (positionKey && followMemory.get(positionKey)) || NOT_FOLLOWING);
+  const [followFor, setFollowFor] = useState(positionKey);
+  if (followFor !== positionKey) {
+    setFollowFor(positionKey);
+    setFollow((positionKey && followMemory.get(positionKey)) || NOT_FOLLOWING);
+  }
+  const followRef = useRef(follow);
+  useEffect(() => { followRef.current = follow; }, [follow]);
+  // When the current following began — an ask, a click on the control — so
+  // the tail of a trackpad flick from just before does not count as taking over
+  const followSince = useRef(0);
+  const setFollowing = useCallback((next: Following, via: string) => {
+    followRef.current = next;
+    // The focus moving under the reader's own scrolling is not a new following
+    if (via !== "scrolled") followSince.current = Date.now();
+    if (positionKey) followMemory.set(positionKey, next);
+    setFollow(next);
+    trace("follow", { mode: next.mode, conversation: next.id?.slice(0, 8) ?? null, index: next.index, via });
+  }, [positionKey]);
+  // Going where a mode looks (see goTo below), reachable from the restore
+  const goToRef = useRef<((mode: FollowMode, id: string, index: number | null) => void) | null>(null);
+  // A conversation's card, found in the list rather than read off the refs
+  // map: the callbacks below stay stable, and the list is a ref of our own
+  const cardOf = useCallback((id: string): HTMLElement | null => {
+    const list = scrollRef.current;
+    return list ? list.querySelector(`[data-annotation-id="${id.replace(/["\\]/g, "\\$&")}"]`) : null;
+  }, []);
+  const pairRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  // The pair under the middle of the window, or the nearest to it: what the
+  // reader is on when nothing has been followed yet, shown focused (picked on
+  // scroll, below, with the conversation the bar is bound to). Once something
+  // is followed, the reader's own scrolling moves the focus there instead.
+  const [viewPair, setViewPair] = useState<{ id: string; index: number } | null>(null);
+  // The mouse is down on the list's own box — a scrollbar drag — so every
+  // scroll until it is let go is the reader's
+  const scrollbarDown = useRef(false);
+  const viewPairRef = useRef<{ id: string; index: number } | null>(null);
+  useEffect(() => { viewPairRef.current = viewPair; }, [viewPair]);
   useEffect(() => {
     const el = scrollRef.current;
     const key = positionKey;
     if (!el || !key) return;
     if (restoredScrollFor.current !== key) {
       restoredScrollFor.current = key;
+      justRestored.current = key;
       const top = loadPanelScroll(key);
-      trace("list-mounted", { key, restoreTo: top, scrollTop: el.scrollTop, height: el.scrollHeight, conversations: annotations.length });
-      // One frame later: the list has to lay out before it can be scrolled
-      if (top !== null) requestAnimationFrame(() => { if (el.isConnected) { trace("restore", { from: el.scrollTop, to: top }); el.scrollTop = top; } });
+      const remembered = followMemory.get(key);
+      trace("list-mounted", { key, restoreTo: top, scrollTop: el.scrollTop, height: el.scrollHeight, conversations: annotations.length, follow: remembered?.mode ?? null });
+      // One frame later: the list has to lay out before it can be scrolled.
+      // Then the mode the paper was left in: following the question or the
+      // answer means going back to it, free means where the list was.
+      requestAnimationFrame(() => {
+        if (!el.isConnected) return;
+        if (top !== null) { trace("restore", { from: el.scrollTop, to: top }); el.scrollTop = top; }
+        if (remembered?.id && remembered.mode !== "free") goToRef.current?.(remembered.mode, remembered.id, remembered.index);
+      });
     }
     let timer = 0;
     // The offset as last seen while the list was still in the document. By
@@ -794,25 +872,29 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
   const seenAsk = useRef(askSeq);
   // Where the question sat in the window, and how tall the answer was, when
   // it was asked: it is held at that place, rising by what the answer grows.
-  const pinned = useRef<{ id: string; index: number; since: number; questionTop: number; answerHeight: number | null } | null>(null);
-  // When each conversation was last asked in — the reader scrolling after
-  // that is what lets an answer be followed to its end (see the tail below)
-  const askedAt = useRef<Map<string, number>>(new Map());
+  const pinned = useRef<{ id: string; index: number; top: AskBlockTop; since: number; questionTop: number; answerHeight: number | null } | null>(null);
   // A landing put off until the question's quoted passages have folded
   const landAfterFold = useRef<string | null>(null);
-  // Bring a question just asked into the window, and the head of its reply
-  // with it — the explainer's label, the thinking dots, Stop — so the answer
-  // forms in sight rather than under the fold. The question is moved no
-  // further than that takes; when it alone fills the window, its end and the
-  // reply head are what show. Then it is held, to rise with the answer.
-  const landOn = useCallback((id: string, index: number) => {
+  // Bring the whole of a question just asked into the window — with what it
+  // was asked about, at best effort: the passage the conversation started
+  // from and the quoted passages when they fit; the question; the explainer's
+  // label and thinking dots, Stop, and the card's bottom edge — so the answer
+  // forms in sight with its context. Moved no further than that takes. The
+  // block's top is the card when the whole card fits, else the question (the
+  // landing decides, folding what it can first). When even that is taller
+  // than the window, its end is what shows: the end of the question and the
+  // reply head. Then the block is held, to rise with the answer: follow
+  // question.
+  const landOn = useCallback((id: string, index: number, top: AskBlockTop) => {
     const list = scrollRef.current;
-    const target = messageRefs.current[`${id}:${index}`] || annotationRefs.current[id];
+    const question = messageRefs.current[`${id}:${index}`];
+    const card = cardOf(id);
+    const target = (top === "card" ? card : question) || question || card;
     if (!target) return;
     target.scrollIntoView({ behavior: "auto", block: "nearest" });
     const head = messageRefs.current[`${id}:${index + 1}`];
-    if (list && head) {
-      const below = head.getBoundingClientRect().bottom - (list.getBoundingClientRect().bottom - 12);
+    if (list && card) {
+      const below = card.getBoundingClientRect().bottom - (list.getBoundingClientRect().bottom - 12);
       if (below > 0) list.scrollTop = Math.min(list.scrollTop + below, list.scrollHeight - list.clientHeight);
     }
     captureAnchor();
@@ -820,13 +902,14 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
     pinned.current = {
       id,
       index,
+      top,
       since: Date.now(),
       questionTop,
       answerHeight: head ? head.getBoundingClientRect().height : null,
     };
-    askedAt.current.set(id, Date.now());
-    trace("scrollIntoView", { reason: "asked", target: describeForTrace(target), block: "nearest, with the reply head", scrollTopAfter: list ? Math.round(list.scrollTop) : null, questionTop: Math.round(questionTop), answerHeight: pinned.current.answerHeight });
-  }, [annotationRefs, captureAnchor]);
+    setFollowing({ id, index, mode: "question" }, "asked");
+    trace("scrollIntoView", { reason: "asked", target: describeForTrace(target), top, block: "nearest, with the whole block to the card's end", scrollTopAfter: list ? Math.round(list.scrollTop) : null, questionTop: Math.round(questionTop), answerHeight: pinned.current.answerHeight });
+  }, [cardOf, captureAnchor, setFollowing]);
   useEffect(() => {
     const lastQuestion = (a: Annotation) => a.messages.map((m) => m.role).lastIndexOf("user");
     const shape = (a: Annotation) => {
@@ -888,41 +971,64 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
     // An ask is an ask even when it changes nothing visible — a question
     // edited and sent again as it was — so the page's count decides, and the
     // shape stands in where there is no count
-    const askedNow = asked >= 0 && (askChanged || shape(active) !== before);
+    const askedNow = asked >= 0 && (askSeq === undefined ? shape(active) !== before : askChanged);
     trace("landing", { conversation: activeId.slice(0, 8), switched, askedNow, askChanged, asked, before: before?.slice(0, 48) ?? null, now: shape(active).slice(0, 48), scrollTop: list ? Math.round(list.scrollTop) : null });
-    // A landing put off a render ago, for the passages to fold: now
+    // Just asked, wherever it was asked — or a landing put off a render ago
+    // for something to fold first. The block is brought into the window and
+    // no further; nothing is forced to the top. The answer, as it arrives, is
+    // what pushes it up (see below). Instant: Safari abandons a smooth scroll
+    // whose target moves, and the panel's end moves while an answer streams.
     const key = `${activeId}:${asked}`;
-    if (landAfterFold.current === key && foldedQuotes.has(key)) {
+    if (askedNow || landAfterFold.current === key) {
       landAfterFold.current = null;
-      landOn(activeId, asked);
-      return;
-    }
-    if (askedNow) {
-      // Just asked, wherever it was asked: the question and the head of its
-      // reply are brought into the window, and no further. Nothing is forced
-      // to the top; the answer, as it arrives, is what pushes the question
-      // up (see below). Instant: Safari abandons a smooth scroll whose
-      // target moves, and the panel's end moves while an answer streams.
       const target = messageRefs.current[`${activeId}:${asked}`];
       const head = messageRefs.current[`${activeId}:${asked + 1}`];
+      const win = list ? list.clientHeight : 0;
+      // The whole card fits: the passage it started from, every turn, the
+      // question, the reply head, Stop — all of it in view
+      if (list && target && win > 0 && card.getBoundingClientRect().height + 24 <= win) {
+        landOn(activeId, asked, "card");
+        return;
+      }
+      // The passage shown in full is what keeps the card from fitting:
+      // back to its preview, and land again once it has
+      if (list && target && win > 0 && expandedText.has(activeId)) {
+        const passage = card.getBoundingClientRect().height - (card.getBoundingClientRect().bottom - target.getBoundingClientRect().top);
+        if (card.getBoundingClientRect().height + 24 - passage <= win) {
+          trace("fold-passage", { conversation: activeId.slice(0, 8) });
+          landAfterFold.current = key;
+          setExpandedText((prev) => { const next = new Set(prev); next.delete(activeId); return next; });
+          return;
+        }
+      }
+      // The question with its quoted passages, and the reply to the card's
+      // end: the passages fold when that is what makes it fit
       const chips = target?.querySelector("[data-quote-chip]") as HTMLElement | null;
-      if (list && target && head && chips && !foldedQuotes.has(key) && shouldFoldQuotes({ question: target.getBoundingClientRect().height, chips: chips.getBoundingClientRect().height, head: head.getBoundingClientRect().height, window: list.clientHeight })) {
+      const tail = head && card ? Math.max(0, card.getBoundingClientRect().bottom - head.getBoundingClientRect().top) : 0;
+      if (list && target && head && chips && !foldedQuotes.has(key) && shouldFoldQuotes({ question: target.getBoundingClientRect().height, chips: chips.getBoundingClientRect().height, head: tail, window: win })) {
         trace("fold-quotes", { question: key });
         landAfterFold.current = key;
         setFoldedQuotes((prev) => new Set(prev).add(key));
         return;
       }
-      landOn(activeId, asked);
+      landOn(activeId, asked, "question");
       return;
     }
     // Merely arrived — clicked, or a passage explained with no question of
     // the reader's own — so its beginning is the place
     if (switched) {
+      // Coming back to a paper restores the list to where it was (and the
+      // mode it was in); the conversation that happens to be active was not
+      // clicked, and is not scrolled to
+      if (justRestored.current === positionKey) { justRestored.current = null; return; }
       trace("scrollIntoView", { reason: "switched to a conversation", target: describeForTrace(card), block: "start" });
       smoothUntil.current = Date.now() + 700;
       card.scrollIntoView({ behavior: "smooth", block: "start" });
+      // Going to another conversation is leaving the followed one
+      const f = followRef.current;
+      if (f.mode !== "free" && f.id !== activeId) { pinned.current = null; setFollowing({ ...f, mode: "free" }, "switched"); }
     }
-  }, [activeId, annotations, annotationRefs, askSeq, captureAnchor, foldedQuotes, landOn]);
+  }, [activeId, annotations, annotationRefs, askSeq, captureAnchor, foldedQuotes, expandedText, landOn, setFollowing, positionKey]);
 
   // While the answer streams, the question rises with it: the list scrolls
   // down exactly as much as the answer has grown, until the question reaches
@@ -934,7 +1040,8 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
     const pin = pinned.current;
     const list = scrollRef.current;
     if (!pin || !list) return;
-    const el = messageRefs.current[`${pin.id}:${pin.index}`];
+    if (followRef.current.mode !== "question" || followRef.current.id !== pin.id) { pinned.current = null; return; }
+    const el = (pin.top === "card" ? annotationRefs.current[pin.id] : null) ?? messageRefs.current[`${pin.id}:${pin.index}`];
     if (!el) return;
     const settle = () => {
       const answer = messageRefs.current[`${pin.id}:${pin.index + 1}`];
@@ -954,7 +1061,7 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
       }
       // At the top: the rest of the answer forms below the fold, unfollowed
       const done = wanted <= 12;
-      if (traceEnabled() && (Math.round(list.scrollTop) !== Math.round(from) || done)) trace("settle", { from: Math.round(from), to: Math.round(list.scrollTop), grown: Math.round(grown), questionWas: Math.round(actual), questionNow: Math.round(el.getBoundingClientRect().top - list.getBoundingClientRect().top), wanted: Math.round(wanted), max: Math.round(list.scrollHeight - list.clientHeight), done });
+      if (traceEnabled() && (Math.round(list.scrollTop) !== Math.round(from) || done)) trace("settle", { from: Math.round(from), to: Math.round(list.scrollTop), grown: Math.round(grown), top: pin.top, questionWas: Math.round(actual), questionNow: Math.round(el.getBoundingClientRect().top - list.getBoundingClientRect().top), wanted: Math.round(wanted), max: Math.round(list.scrollHeight - list.clientHeight), done });
       return done;
     };
     if (settle()) pinned.current = null;
@@ -966,76 +1073,182 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
         pinned.current = null;
       });
     }
-  }, [annotations, streamingIds, captureAnchor]);
-  // The answer being written, or failing that the one the bar is on: its end
-  // comes into view at once, and the click counts as the reader's own
-  // scrolling, so the words that follow stay in sight (the tail, above)
-  const jumpToEnd = useCallback((fallback: Annotation) => {
-    const id = Array.from(streamingIds)[0] ?? fallback.id;
-    const target = annotations.find((a) => a.id === id) ?? fallback;
-    const el = messageRefs.current[`${target.id}:${target.messages.length - 1}`] ?? annotationRefs.current[target.id];
-    if (!el) return;
-    trace("scrollIntoView", { reason: "end of the answer, by the button", conversation: target.id.slice(0, 8), block: "end" });
-    pinned.current = null;
-    // A glide, not a jump; while it lasts nothing else moves the list, and
-    // the tail picks up once it has settled
-    smoothUntil.current = Date.now() + 700;
-    lastInputAt.current = Date.now() + 300;
-    el.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [streamingIds, annotations, annotationRefs]);
-
-  // Once the reader has scrolled since asking, one test decides what an
-  // arriving answer does to the view: is its last line in the window? If so
-  // it stays there — each chunk moves the view down by its own height, and
-  // the words come out in sight while the top of the answer slides away. If
-  // not, the reader is elsewhere and the answer piles up unseen.
-  const tailHeights = useRef<Map<string, number>>(new Map());
-  const wasStreaming = useRef<Set<string>>(new Set());
-  useEffect(() => {
+  }, [annotations, streamingIds, captureAnchor, annotationRefs]);
+  // Going where a mode looks: the question at the top of the window, or the
+  // end of the conversation — the last line, Stop, the card's bottom edge —
+  // at its bottom edge. Instant while the answer streams (Safari drops a
+  // smooth scroll whose target moves), a glide otherwise.
+  // A glide of our own: the list eased to a target over a few hundred ms,
+  // the target re-read every frame. A native smooth scroll is dropped by
+  // Safari when its target moves, and the end of an answer moves while it
+  // streams; this one arrives wherever the target is by the last frame.
+  // The reader's own scrolling cuts it short (see the release handlers).
+  const glideFrame = useRef(0);
+  const glide = useCallback((target: () => number, duration = 420) => {
     const list = scrollRef.current;
     if (!list) return;
-    // An answer that arrives whole ends in the same render it lands in, so
-    // what was streaming a render ago counts as well
-    const live = new Set([...wasStreaming.current, ...streamingIds]);
-    wasStreaming.current = new Set(streamingIds);
-    for (const id of Array.from(tailHeights.current.keys())) if (!live.has(id)) tailHeights.current.delete(id);
-    for (const id of live) {
-      const conversation = annotations.find((a) => a.id === id);
-      if (!conversation) continue;
-      const el = messageRefs.current[`${id}:${conversation.messages.length - 1}`];
-      if (!el) continue;
-      const height = el.getBoundingClientRect().height;
-      const before = tailHeights.current.get(id);
-      tailHeights.current.set(id, height);
-      if (before === undefined || pinned.current?.id === id) continue;
-      const grown = height - before;
-      if (grown <= 0) continue;
-      // Only after the reader's own scrolling, and not during it
-      const input = lastInputAt.current;
-      const box = list.getBoundingClientRect();
-      const lastLineWas = el.getBoundingClientRect().bottom - grown;
-      if (input <= (askedAt.current.get(id) ?? 0) || Date.now() - input < 400) continue;
-      if (lastLineWas <= box.top || lastLineWas > box.bottom + 2) continue;
-      const from = list.scrollTop;
-      list.scrollTop = Math.min(from + grown, list.scrollHeight - list.clientHeight);
-      captureAnchor();
-      trace("tail", { conversation: id.slice(0, 8), from: Math.round(from), to: Math.round(list.scrollTop), grown: Math.round(grown) });
+    cancelAnimationFrame(glideFrame.current);
+    const from = list.scrollTop;
+    const started = performance.now();
+    smoothUntil.current = Date.now() + duration + 120;
+    // The clock read here, not the frame's timestamp: a test's frames carry none
+    const step = () => {
+      const k = Math.min(1, (performance.now() - started) / duration);
+      const eased = 1 - Math.pow(1 - k, 3);
+      const to = Math.max(0, Math.min(target(), list.scrollHeight - list.clientHeight));
+      list.scrollTop = from + (to - from) * eased;
+      if (k < 1) {
+        glideFrame.current = requestAnimationFrame(step);
+      } else {
+        glideFrame.current = 0;
+        smoothUntil.current = 0;
+        captureAnchor();
+      }
+    };
+    glideFrame.current = requestAnimationFrame(step);
+  }, [captureAnchor]);
+
+  // Where a pair ends: the card's bottom edge (Stop, the border) for the
+  // last pair, the pair's own last message for an earlier one
+  const endOfPair = useCallback((id: string, index: number): HTMLElement | null => {
+    const conversation = annotations.find((a) => a.id === id);
+    if (!conversation) return null;
+    const pairs = pairsOf(conversation);
+    const pair = pairs.find((p) => p.start === index) ?? pairs[pairs.length - 1];
+    if (!pair || pair === pairs[pairs.length - 1]) return cardOf(id);
+    return messageRefs.current[`${id}:${pair.end - 1}`] ?? messageRefs.current[`${id}:${pair.start}`] ?? null;
+  }, [annotations, cardOf]);
+  const goTo = useCallback((mode: FollowMode, id: string, index: number | null) => {
+    const list = scrollRef.current;
+    const conversation = annotations.find((a) => a.id === id);
+    if (!list || !conversation) return;
+    pinned.current = null;
+    const starts = pairsOf(conversation).map((p) => p.start);
+    const at = index !== null && starts.includes(index) ? index : (starts[starts.length - 1] ?? -1);
+    if (mode === "question") {
+      const question = messageRefs.current[`${id}:${at}`];
+      const card = cardOf(id);
+      // For the first pair: the card's top, when the passage the
+      // conversation started from and the question fit together with room
+      // for the answer's first lines; otherwise the question itself
+      const win = list.clientHeight;
+      const first = starts.length === 0 || at === starts[0];
+      const withContext = first && !!question && !!card && win > 0 && question.getBoundingClientRect().bottom - card.getBoundingClientRect().top + 24 <= win;
+      const el = (withContext ? card : question) ?? card;
+      if (!el) return;
+      trace("glide", { reason: "follow the question", conversation: id.slice(0, 8), index: at, top: withContext ? "card" : "question", from: Math.round(list.scrollTop) });
+      glide(() => list.scrollTop + (el.getBoundingClientRect().top - list.getBoundingClientRect().top) - 12);
+    } else if (mode === "answer") {
+      const end = endOfPair(id, at);
+      if (!end) return;
+      trace("glide", { reason: "follow the answer", conversation: id.slice(0, 8), index: at, from: Math.round(list.scrollTop) });
+      glide(() => list.scrollTop + (end.getBoundingClientRect().bottom - (list.getBoundingClientRect().bottom - 12)));
     }
-  }, [annotations, streamingIds, captureAnchor]);
+  }, [annotations, cardOf, endOfPair, glide]);
+  useEffect(() => { goToRef.current = goTo; }, [goTo]);
+
+  // The pair the reader is on — the one shown focused. While following, the
+  // followed pair; otherwise the pair under the middle of the window (see the
+  // pick below), and failing that the last pair of the conversation the bar
+  // is bound to.
+  const focusedPair = useCallback((fallback: Annotation): { id: string; index: number } | null => {
+    const f = followRef.current;
+    if (f.id && f.index !== null) return { id: f.id, index: f.index };
+    if (viewPairRef.current) return viewPairRef.current;
+    const pairs = pairsOf(fallback);
+    return pairs.length ? { id: fallback.id, index: pairs[pairs.length - 1].start } : null;
+  }, []);
+  // The pair shown focused: the one being followed, in any mode — changing
+  // mode keeps it; only the reader's own scrolling moves it (see the pick) —
+  // or, before anything has been followed, the pair under the window's middle
+  const focusedOn: { id: string; index: number } | null =
+    follow.id && follow.index !== null ? { id: follow.id, index: follow.index } : viewPair;
+  // The reader's choice from the control applies to the focused pair
+  const chooseFollow = useCallback((mode: FollowMode, inView: Annotation) => {
+    const target = focusedPair(inView);
+    if (!target) return;
+    setFollowing({ id: target.id, index: target.index, mode }, "control");
+    goTo(mode, target.id, target.index);
+  }, [focusedPair, setFollowing, goTo]);
+  // A click anywhere in a pair's box: follow its question. The pair already
+  // focused is left as it is, in whatever mode it is in.
+  const focusPair = useCallback((id: string, index: number) => {
+    const f = followRef.current;
+    if (f.id === id && f.index === index) return;
+    setFollowing({ id, index, mode: "question" }, "pair clicked");
+    goTo("question", id, index);
+  }, [setFollowing, goTo]);
+
+  // Follow answer: the end of the pair is kept at the bottom edge as the
+  // answer grows — in both directions, so the browser's own shifts are
+  // undone too. Not while the reader's hand is on the list or a glide of ours
+  // is under way: then the geometry is a frame stale, and the hand wins.
+  useEffect(() => {
+    const list = scrollRef.current;
+    if (follow.mode !== "answer" || !follow.id || !list) return;
+    const id = follow.id;
+    const end = endOfPair(id, follow.index ?? Number.MAX_SAFE_INTEGER);
+    if (!end) return;
+    const align = () => {
+      const now = Date.now();
+      if (now < smoothUntil.current || now - lastInputAt.current < 400) return;
+      const delta = end.getBoundingClientRect().bottom - (list.getBoundingClientRect().bottom - 12);
+      if (Math.abs(delta) <= 1) return;
+      const from = list.scrollTop;
+      list.scrollTop = Math.max(0, Math.min(from + delta, list.scrollHeight - list.clientHeight));
+      captureAnchor();
+      trace("follow-answer", { conversation: id.slice(0, 8), from: Math.round(from), to: Math.round(list.scrollTop), by: Math.round(delta) });
+    };
+    align();
+    // The answer is complete: WebKit re-anchors a frame after content
+    // changes under it, so the last word is had one frame later
+    if (!streamingIds.has(id)) {
+      requestAnimationFrame(() => {
+        const f = followRef.current;
+        if (f.mode === "answer" && f.id === id && list.isConnected) align();
+      });
+    }
+  }, [annotations, streamingIds, follow, captureAnchor, endOfPair]);
+
+  // The next conversation after the one the bar is on: its beginning comes
+  // into view, and whatever was being followed is let go — the reader is
+  // going somewhere else
+  const nextAfter = (from: Annotation) => annotations[annotations.findIndex((a) => a.id === from.id) + 1] ?? null;
+  const jumpToNext = useCallback((from: Annotation) => {
+    const next = annotations[annotations.findIndex((a) => a.id === from.id) + 1];
+    if (!next) return;
+    const el = cardOf(next.id);
+    if (!el) return;
+    trace("glide", { reason: "next conversation, by the button", conversation: next.id.slice(0, 8) });
+    pinned.current = null;
+    const f = followRef.current;
+    if (f.mode !== "free") setFollowing({ ...f, mode: "free" }, "next");
+    // The glide counts as the reader's own scrolling, so the focus moves to
+    // where it lands — and only the glide: a moment, not a second
+    lastInputAt.current = Date.now() + 100;
+    const list = scrollRef.current;
+    if (!list) return;
+    glide(() => list.scrollTop + (el.getBoundingClientRect().top - list.getBoundingClientRect().top));
+  }, [annotations, cardOf, setFollowing, glide]);
+
   useEffect(() => {
     const list = scrollRef.current;
     if (!list) return;
     // A trackpad keeps sending the tail of an earlier flick for a moment;
     // that is not the reader taking over
     const release = (via: string) => {
-      if (pinned.current && Date.now() - pinned.current.since > 800) { trace("release", { via }); pinned.current = null; }
+      if (Date.now() - followSince.current <= 800) return;
+      if (pinned.current) { trace("release", { via }); pinned.current = null; }
+      const f = followRef.current;
+      if (f.mode !== "free") setFollowing({ ...f, mode: "free" }, via);
     };
-    const scrolling = () => { lastInputAt.current = Date.now(); };
+    const scrolling = () => { lastInputAt.current = Date.now(); cancelAnimationFrame(glideFrame.current); glideFrame.current = 0; smoothUntil.current = 0; };
     const onWheel = () => { scrolling(); release("wheel"); };
     const onTouch = () => { scrolling(); release("touch"); };
     // A click is a click; only the scrollbar, which is the list's own box
     // rather than anything in it, is the reader scrolling
-    const onMouse = (e: MouseEvent) => { if (e.target === list) scrolling(); release("mousedown"); };
+    const onMouse = (e: MouseEvent) => { if (e.target === list) { scrollbarDown.current = true; scrolling(); release("scrollbar"); } };
+    const onUp = () => { scrollbarDown.current = false; };
     const onKey = (e: KeyboardEvent) => {
       if ((e.target as HTMLElement | null)?.closest?.("textarea, input")) return;
       if (["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "].includes(e.key)) { scrolling(); release(`key ${e.key}`); }
@@ -1043,14 +1256,16 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
     list.addEventListener("wheel", onWheel, { passive: true });
     list.addEventListener("touchstart", onTouch, { passive: true });
     list.addEventListener("mousedown", onMouse);
+    window.addEventListener("mouseup", onUp);
     list.addEventListener("keydown", onKey);
     return () => {
       list.removeEventListener("wheel", onWheel);
       list.removeEventListener("touchstart", onTouch);
       list.removeEventListener("mousedown", onMouse);
+      window.removeEventListener("mouseup", onUp);
       list.removeEventListener("keydown", onKey);
     };
-  }, [isOpen, annotations.length]);
+  }, [isOpen, annotations.length, setFollowing]);
 
   // Which conversation the follow-up bar belongs to: the last one still on
   // screen, i.e. the one nearest the bar itself. Measured from scroll rather
@@ -1078,6 +1293,27 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
         if (r.bottom > view.top + 8 && r.top < view.bottom - 8) found = a.id;
       }
       setVisibleId(found);
+      const middle = view.top + view.height / 2;
+      let nearest: { id: string; index: number; distance: number } | null = null;
+      for (const a of openConversations) {
+        for (const pair of pairsOf(a)) {
+          const box = pairRefs.current[`${a.id}:${pair.start}`];
+          if (!box) continue;
+          const r = box.getBoundingClientRect();
+          if (r.height === 0) continue;
+          const distance = r.top <= middle && middle <= r.bottom ? 0 : Math.min(Math.abs(r.top - middle), Math.abs(r.bottom - middle));
+          if (!nearest || distance < nearest.distance) nearest = { id: a.id, index: pair.start, distance };
+        }
+      }
+      setViewPair((prev) => (prev?.id === nearest?.id && prev?.index === nearest?.index ? prev : nearest ? { id: nearest.id, index: nearest.index } : null));
+      // Scrolling of the reader's own, while nothing is followed, moves the
+      // focus to the pair they scrolled to. A scroll of ours (a landing, a
+      // re-anchor, a mode's glide) leaves it where it was.
+      const f = followRef.current;
+      const byHand = scrollbarDown.current || Date.now() - lastInputAt.current < 600;
+      if (nearest && f.mode === "free" && f.id && byHand && (f.id !== nearest.id || f.index !== nearest.index)) {
+        setFollowing({ id: nearest.id, index: nearest.index, mode: "free" }, "scrolled");
+      }
     };
     // Deferred, never synchronous — setState during an effect cascades a render
     const schedule = () => { if (!frame) frame = requestAnimationFrame(pick); };
@@ -1088,7 +1324,7 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
       if (frame) cancelAnimationFrame(frame);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [annotations, collapsedIds, annotationRefs]);
+  }, [annotations, collapsedIds, annotationRefs, setFollowing]);
 
   // Nothing open on screen still leaves the last open conversation to write to;
   // the bar only goes away when there is nothing writable at all.
@@ -1157,11 +1393,12 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
         {annotation.label}
       </button>
       <button
-        onClick={() => jumpToEnd(annotation)}
-        className="btn-icon ml-auto shrink-0 px-1.5 py-0.5 text-[10px]"
-        title="Jump to the end of the answer"
+        onClick={() => jumpToNext(annotation)}
+        disabled={!nextAfter(annotation)}
+        className="btn-icon ml-auto shrink-0 px-1.5 py-0.5 text-[10px] disabled:opacity-40"
+        title={nextAfter(annotation) ? "Jump to the next conversation" : "This is the last conversation"}
       >
-        ↓ end
+        ↓ next
       </button>
       <button
         onClick={() => toggleCollapsed(annotation.id)}
@@ -1170,6 +1407,28 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
       >
         ▾ fold
       </button>
+    </div>
+    <div className="flex items-center gap-1 mb-1.5" role="group" aria-label="Follow">
+      <span className="text-[10px] uppercase tracking-widest shrink-0 mr-0.5" style={{ color: "var(--ink-faint)" }}>Follow</span>
+      {([
+        ["question", "Hold the question in view; it rises to the top as the answer arrives"],
+        ["answer", "Keep the end of the answer in view as it arrives"],
+        ["free", "Follow nothing — stay where you scrolled"],
+      ] as [FollowMode, string][]).map(([mode, hint]) => {
+        const on = follow.mode === mode;
+        return (
+          <button
+            key={mode}
+            onClick={() => chooseFollow(mode, annotation)}
+            aria-pressed={on}
+            className="text-[10px] px-1.5 py-0.5 rounded transition-colors"
+            style={{ border: `1px solid ${on ? "var(--accent)" : "var(--border)"}`, color: on ? "var(--accent)" : "var(--ink-muted)", background: on ? "rgba(232,120,76,0.08)" : "transparent" }}
+            title={hint}
+          >
+            {mode}
+          </button>
+        );
+      })}
     </div>
     {followUpImage[annotation.id] && (
       <div className="flex items-center gap-2 mb-2">
@@ -1704,9 +1963,51 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
                 );
               })()}
 
-              {/* Messages */}
+              {/* Messages, as question–answer pairs: each a box the reader
+                  can see focused and click to follow */}
               <div data-quotable="" className="px-4 pt-3 pb-2 space-y-3">
-                {annotation.messages.map((msg, i) => {
+                {pairsOf(annotation).map((pair) => {
+                  const focused = focusedOn?.id === annotation.id && focusedOn.index === pair.start;
+                  return (
+                    <div
+                      key={pair.start}
+                      ref={(el) => { pairRefs.current[`${annotation.id}:${pair.start}`] = el; }}
+                      data-pair={pair.start}
+                      data-focused={focused ? "" : undefined}
+                      className="space-y-3 rounded-md"
+                      style={focused ? { outline: "1px solid var(--accent)", outlineOffset: 6 } : undefined}
+                      onClick={(e) => {
+                        const target = e.target as HTMLElement;
+                        // Buttons, links and boxes in the pair are their own
+                        // thing; and a drag that selected text is not a click
+                        if (target.closest("button, a, textarea, input, select, [data-editing], [data-quote-chip]")) return;
+                        if (typeof window !== "undefined" && window.getSelection?.()?.toString()) return;
+                        focusPair(annotation.id, pair.start);
+                      }}
+                    >
+                      {annotation.messages.slice(pair.start, pair.end).map((m, k) => renderMessage(m, pair.start + k))}
+                    </div>
+                  );
+                })}
+              </div>
+
+              {streamingIds.has(annotation.id) && onStop && (
+                <div className="px-4 pb-3 -mt-1">
+                  <button
+                    onClick={() => onStop(annotation.id)}
+                    className="text-[11px] px-2 py-0.5 rounded transition-colors"
+                    style={{ border: "1px solid var(--border)", color: "#F87171" }}
+                    title="Stop this answer and keep what has arrived"
+                  >
+                    ■ Stop generating
+                  </button>
+                </div>
+              )}
+
+              </>)}
+            </div>
+          );
+          function renderMessage(msg: Message, i: number) {
                   const isUser = msg.role === "user";
                   const isFollowUp = isUser && i > 0;
                   // Every ask seeds an empty assistant message before streaming,
@@ -1862,25 +2163,7 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
                       )}
                     </div>
                   );
-                })}
-              </div>
-
-              {streamingIds.has(annotation.id) && onStop && (
-                <div className="px-4 pb-3 -mt-1">
-                  <button
-                    onClick={() => onStop(annotation.id)}
-                    className="text-[11px] px-2 py-0.5 rounded transition-colors"
-                    style={{ border: "1px solid var(--border)", color: "#F87171" }}
-                    title="Stop this answer and keep what has arrived"
-                  >
-                    ■ Stop generating
-                  </button>
-                </div>
-              )}
-
-              </>)}
-            </div>
-          );
+          }
         })}
         <div ref={bottomRef} />
       </div>
