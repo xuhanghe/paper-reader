@@ -19,6 +19,8 @@ import { alignRectsToZoteroLines, type PdfTextItem, type PdfTextStyle } from "@/
 import {
   buildPdfSelectionModel,
   hitTestPdfSelection,
+  pdfSelectionWordAt,
+  pdfSelectionLineAt,
   pdfSelectionRangeForText,
   pdfSelectionAcrossPages,
   selectionSegmentsText,
@@ -525,6 +527,9 @@ type SelectionEnd = { entry: SelectionPageEntry; boundary: number };
 type ActivePdfSelection = {
   anchor: SelectionEnd;
   focus: SelectionEnd;
+  // Made by a double or triple click — a word, a line — and not extended by
+  // the pointer moving before the button comes up
+  locked?: boolean;
 };
 
 type ControlledPdfSelection = {
@@ -2250,8 +2255,13 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
     e.preventDefault();
     clearSelection();
     setHighlightMenu(null);
-    const end = { entry, boundary: hit.boundary };
-    const active: ActivePdfSelection = { anchor: end, focus: { ...end } };
+    // A double click takes the word under the pointer, a triple click the
+    // line, as they do in any text; the selection is then complete, and the
+    // button coming up shows it
+    const span = e.detail >= 3 ? pdfSelectionLineAt(entry.model, hit.charIndex) : e.detail === 2 ? pdfSelectionWordAt(entry.model, hit.charIndex) : null;
+    const active: ActivePdfSelection = span
+      ? { anchor: { entry, boundary: span.start }, focus: { entry, boundary: span.end }, locked: true }
+      : { anchor: { entry, boundary: hit.boundary }, focus: { entry, boundary: hit.boundary } };
     activePdfSelectionRef.current = active;
     updatePdfSelection(active);
   }, [findPageParts, captureMode, onMouseDown, prepareSelectionPage, pdfPointForMouse, clearSelection, updatePdfSelection]);
@@ -2263,6 +2273,7 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
     }
     const active = activePdfSelectionRef.current;
     if (!active) return;
+    if (active.locked) { e.preventDefault(); return; }
     const focus = selectionEndAtPointer(e, active.focus, 4);
     if (!focus) return;
     e.preventDefault();
@@ -2285,7 +2296,7 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
     }
     const active = activePdfSelectionRef.current;
     if (active) {
-      const focus = selectionEndAtPointer(e, active.focus, 4);
+      const focus = active.locked ? null : selectionEndAtPointer(e, active.focus, 4);
       if (focus) active.focus = focus;
       const controlled = updatePdfSelection(active);
       activePdfSelectionRef.current = null;

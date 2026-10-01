@@ -7,6 +7,8 @@ import {
   pdfSelectionRangeForText,
   pdfSelectionAcrossPages,
   selectionSegmentsText,
+  pdfSelectionWordAt,
+  pdfSelectionLineAt,
 } from "../lib/pdf-selection-model";
 
 const styles = {
@@ -176,4 +178,35 @@ test("a ligature on the page is matched by its letters", () => {
   const model = buildPdfSelectionModel([item("a ﬁne-grained sparse selection", 50, 420)], styles);
   const cited = pdfSelectionRangeForText(model, "fine-grained sparse");
   assert.ok(cited, "found");
+});
+
+// A double click selects the word under the pointer, a triple click the
+// line — as in any text. The viewer's own selection used to swallow both.
+test("a double click takes the word under the pointer", () => {
+  const model = buildPdfSelectionModel([item("tensor parallelism, done.", 50, 420)], styles);
+  const at = (needle: string) => model.characters.findIndex((c, i) => model.characters.slice(i, i + needle.length).map((x) => x.text).join("") === needle);
+  const word = (span: { start: number; end: number } | null) => span && model.characters.slice(span.start, span.end).map((c) => c.text).join("");
+  assert.equal(word(pdfSelectionWordAt(model, at("rallel") + 2)), "parallelism");
+  assert.equal(word(pdfSelectionWordAt(model, at("tensor"))), "tensor", "from its first character too");
+  assert.equal(word(pdfSelectionWordAt(model, at("done") + 3)), "done", "and its last");
+  // On the comma: the word before it; on the space after the comma: the word after it
+  assert.equal(word(pdfSelectionWordAt(model, at(","))), "parallelism");
+  assert.equal(word(pdfSelectionWordAt(model, at(" done"))), "done");
+});
+
+test("a double click on Chinese takes the word, not the single character", () => {
+  const model = buildPdfSelectionModel([item("混合精度量化方法", 50, 420)], styles);
+  const span = pdfSelectionWordAt(model, 2);
+  assert.ok(span && span.end - span.start >= 1 && span.start <= 2 && span.end > 2);
+});
+
+test("a triple click takes the printed line", () => {
+  const model = buildPdfSelectionModel([
+    item("tensor parallelism", 50, 420),
+    item("We first examine how", 50, 408),
+  ], styles);
+  const second = model.characters.findIndex((c) => c.lineIndex === 1);
+  const span = pdfSelectionLineAt(model, second + 3);
+  assert.ok(span);
+  assert.equal(model.characters.slice(span.start, span.end).map((c) => c.text).join(""), "We first examine how");
 });

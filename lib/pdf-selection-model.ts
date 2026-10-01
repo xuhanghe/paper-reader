@@ -202,6 +202,61 @@ export function hitTestPdfSelection(
   };
 }
 
+// The word around a character, as insertion points, the way a double click
+// selects one. Words are found the way the browser finds them — by script,
+// through Intl.Segmenter — within the character's printed line; a click on
+// a space or a punctuation mark takes the word beside it. Without a
+// segmenter (an old runtime), a run of letters, digits and marks is a word.
+export function pdfSelectionWordAt(model: PdfSelectionModel, charIndex: number): { start: number; end: number } | null {
+  const character = model.characters[charIndex];
+  if (!character) return null;
+  const line = model.lines[character.lineIndex];
+  if (!line) return null;
+  // The line as a string, and which character each unit of it came from
+  let text = "";
+  const owner: number[] = [];
+  let clicked = -1;
+  for (const index of line.charIndexes) {
+    if (index === charIndex) clicked = text.length;
+    const piece = model.characters[index].text;
+    text += piece;
+    for (let i = 0; i < piece.length; i++) owner.push(index);
+  }
+  if (clicked < 0) return null;
+
+  const span = (from: number, to: number) => (to > from ? { start: owner[from], end: owner[to - 1] + 1 } : null);
+  type Segmenter = { segment(input: string): Iterable<{ segment: string; index: number; isWordLike?: boolean }> };
+  const Ctor = (Intl as unknown as { Segmenter?: new (locale?: string, opts?: { granularity: string }) => Segmenter }).Segmenter;
+  if (Ctor) {
+    const parts = Array.from(new Ctor(undefined, { granularity: "word" }).segment(text));
+    const at = parts.findIndex((part) => part.index <= clicked && clicked < part.index + part.segment.length);
+    if (at < 0) return null;
+    // A space or a mark: the word before it, else the word after it
+    const pick = parts[at].isWordLike ? at : [at - 1, at + 1].find((k) => parts[k]?.isWordLike);
+    const part = pick === undefined ? parts[at] : parts[pick];
+    return span(part.index, part.index + part.segment.length);
+  }
+  const wordy = (unit: string) => /[\p{L}\p{N}\p{M}_]/u.test(unit);
+  if (!wordy(text[clicked])) {
+    const before = clicked > 0 && wordy(text[clicked - 1]) ? clicked - 1 : clicked < text.length - 1 && wordy(text[clicked + 1]) ? clicked + 1 : -1;
+    if (before < 0) return span(clicked, clicked + 1);
+    return pdfSelectionWordAt(model, owner[before]);
+  }
+  let from = clicked;
+  let to = clicked + 1;
+  while (from > 0 && wordy(text[from - 1])) from--;
+  while (to < text.length && wordy(text[to])) to++;
+  return span(from, to);
+}
+
+// The printed line around a character, as insertion points — a triple click
+export function pdfSelectionLineAt(model: PdfSelectionModel, charIndex: number): { start: number; end: number } | null {
+  const character = model.characters[charIndex];
+  const line = character && model.lines[character.lineIndex];
+  if (!line || line.charIndexes.length === 0) return null;
+  return { start: line.charIndexes[0], end: line.charIndexes[line.charIndexes.length - 1] + 1 };
+}
+
 export function pdfSelectionRange(
   model: PdfSelectionModel,
   anchorBoundary: number,
