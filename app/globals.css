@@ -16,6 +16,11 @@
 
   --accent:       #E1C369;
   --accent-bright:#ECD47F;
+  /* The reader's own words, in the conversation: a second hue, so a
+     question is told from an answer before either is read */
+  --you:          #6FA3EF;
+  --you-bright:   #8DB8F5;
+  --you-dim:      rgba(96, 150, 230, 0.13);
   --accent-dim:   rgba(225, 195, 105, 0.18);
   --accent-faint: rgba(225, 195, 105, 0.09);
 

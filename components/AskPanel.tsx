@@ -2078,14 +2078,16 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
                       // Room above when scrolled to, so a landed-on question is
                       // not flush against the panel's edge. A question sits in
                       // a solid grey box with its label, apart from the answer.
-                      // Its side margins undo its side padding, so its label's
-                      // bullet lines up with the answer's
-                      style={{ scrollMarginTop: 12, ...(isUser ? { background: "var(--border-light)", padding: "8px 9px", margin: "0 -9px" } : {}) }}
+                      // A question sits on a soft blue, its label blue too:
+                      // the reader's hue, against the explainer's gold. Its
+                      // side margins undo its side padding, so its label's
+                      // bullet lines up with the answer's.
+                      style={{ scrollMarginTop: 12, ...(isUser ? { background: "var(--you-dim, rgba(96,150,230,0.13))", padding: "8px 9px", margin: "0 -9px" } : {}) }}
                     >
-                      <p className="text-[10px] font-semibold mb-1 tracking-wide uppercase flex items-center gap-1.5" style={{ color: isUser ? "var(--ink-faint)" : "var(--accent)" }}>
+                      <p className="text-[10px] font-semibold mb-1 tracking-wide uppercase flex items-center gap-1.5" style={{ color: isUser ? "var(--you-bright, #8DB8F5)" : "var(--accent)" }}>
                         <span
                           className="w-1.5 h-1.5 rounded-full inline-block"
-                          style={{ background: isUser ? "var(--ink-faint)" : "linear-gradient(135deg, var(--accent-bright), var(--accent))" }}
+                          style={{ background: isUser ? "var(--you, #6FA3EF)" : "linear-gradient(135deg, var(--accent-bright), var(--accent))" }}
                         />
                         {isUser ? "you" : "explainer"}
                       </p>
