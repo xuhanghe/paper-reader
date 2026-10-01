@@ -31,9 +31,14 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
+    // Browser extensions stamp attributes on <html> before React hydrates —
+    // the Zotero Connector adds data-zotero-connector-injected — and React
+    // would report the page as mismatched for it. The attributes on this one
+    // element are left unchecked; everything inside is still verified.
     <html
       lang="en"
       className={`${geistSans.variable} ${geistMono.variable} ${lora.variable} h-full antialiased`}
+      suppressHydrationWarning
     >
       <body className="h-full flex flex-col overflow-hidden">{children}</body>
     </html>
