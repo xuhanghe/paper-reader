@@ -2023,23 +2023,23 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
                       }}
                     >
                       {annotation.messages.slice(pair.start, pair.end).map((m, k) => renderMessage(m, pair.start + k))}
+                      {/* Stop belongs to the pair being answered, inside its box */}
+                      {pair.end === annotation.messages.length && streamingIds.has(annotation.id) && onStop && (
+                        <div className="pt-0.5">
+                          <button
+                            onClick={() => onStop(annotation.id)}
+                            className="text-[11px] px-2 py-0.5 rounded transition-colors"
+                            style={{ border: "1px solid var(--border)", color: "#F87171" }}
+                            title="Stop this answer and keep what has arrived"
+                          >
+                            ■ Stop generating
+                          </button>
+                        </div>
+                      )}
                     </div>
                   );
                 })}
               </div>
-
-              {streamingIds.has(annotation.id) && onStop && (
-                <div className="px-4 pb-3 -mt-1">
-                  <button
-                    onClick={() => onStop(annotation.id)}
-                    className="text-[11px] px-2 py-0.5 rounded transition-colors"
-                    style={{ border: "1px solid var(--border)", color: "#F87171" }}
-                    title="Stop this answer and keep what has arrived"
-                  >
-                    ■ Stop generating
-                  </button>
-                </div>
-              )}
 
               </>)}
             </div>

@@ -1216,6 +1216,16 @@ describe("following the question, the answer, or nothing", () => {
     if (inner) { click(inner); assert.equal(focusedPair(host), "a1:2", "a click on a button in another pair does not move the focus"); }
   });
 
+  test("Stop sits inside the box of the pair being answered", () => {
+    const host = freshRoot();
+    const root = createRoot(host);
+    const live = thread([{ role: "user", content: "q" }, { role: "assistant", content: "" }], "a1", "A");
+    act(() => { root.render(createElement(ExplainPanel, { ...props([live], ["a1"]), onStop: () => {} })); });
+    const stop = Array.from(host.querySelectorAll("button")).find((b) => b.textContent?.includes("Stop generating"));
+    assert.ok(stop, "offered while answering");
+    assert.ok(stop!.closest("[data-pair='0']"), "and inside the pair's box, so the box's outline contains it");
+  });
+
   test("an explain's answer, with no question of the reader's, is a pair of its own", () => {
     const host = freshRoot();
     const root = createRoot(host);
