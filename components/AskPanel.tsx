@@ -38,10 +38,6 @@ type Props = {
   // to where a jump started
   scrollHandle?: React.Ref<PanelScroll>;
   // Undoing a jump, and redoing it
-  canGoBack?: boolean;
-  canGoForward?: boolean;
-  onGoBack?: () => void;
-  onGoForward?: () => void;
   isOpen: boolean;
   onToggle: () => void;
   width?: number;
@@ -332,7 +328,7 @@ const FONT_SIZES = [12, 13, 14, 15, 16, 17, 18, 20];
 const DEFAULT_FONT_IDX = 3; // 15px
 const COLLAPSE_CHARS = 300;
 
-export function ExplainPanel({ annotations, activeId, model, streamingIds, onFollowUp, onStop, onEditMessage, onAskGeneral, onDelete, onReExplainImage, onViewInPdf, onCitePaper, annotationRefs, scrollHandle, canGoBack, canGoForward, onGoBack, onGoForward, isOpen, onToggle, width = 460, modelControls, positionKey, askSeq }: Props) {
+export function ExplainPanel({ annotations, activeId, model, streamingIds, onFollowUp, onStop, onEditMessage, onAskGeneral, onDelete, onReExplainImage, onViewInPdf, onCitePaper, annotationRefs, scrollHandle, isOpen, onToggle, width = 460, modelControls, positionKey, askSeq }: Props) {
   const [followUpText, setFollowUpText] = useState<Record<string, string>>({});
   const [generalQuestion, setGeneralQuestion] = useState("");
   const [composerImage, setComposerImage] = useState<string | null>(null);
@@ -1214,8 +1210,8 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
   // pair to the one before or after it, across conversations (folded ones
   // skipped). In question mode the next question goes to the top and is
   // followed; in answer mode the next pair's end to the bottom, followed;
-  // in free mode the next question to the top, followed by nothing. Reading
-  // in between is scrolling, which never changes the mode.
+  // from free mode, stepping is following the question. Reading in between
+  // is scrolling, which switches to free as ever.
   const pairSequence = useCallback(() => {
     const out: { id: string; index: number }[] = [];
     for (const a of annotations) {
@@ -1234,10 +1230,11 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
   const stepPair = useCallback((direction: 1 | -1, fallback: Annotation) => {
     const next = pairAfter(direction, focusedPair(fallback));
     if (!next) return;
-    const mode = followRef.current.mode;
+    // Stepping is following: from free mode, the question
+    const mode: FollowMode = followRef.current.mode === "answer" ? "answer" : "question";
     trace("step", { direction, conversation: next.id.slice(0, 8), index: next.index, mode });
     setFollowing({ id: next.id, index: next.index, mode }, "step");
-    goTo(mode === "answer" ? "answer" : "question", next.id, next.index);
+    goTo(mode, next.id, next.index);
   }, [pairAfter, focusedPair, setFollowing, goTo]);
   // ] and [ step too, from anywhere but a box being typed in
   const barAnnotationRef = useRef<Annotation | null>(null);
@@ -1712,30 +1709,6 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
           title="Larger text (Ctrl+scroll)"
         >+</button>
       </span>
-      {(onGoBack || onGoForward) && (
-        // Undo a jump, and redo it. Kept beside the conversations because that
-        // is where most jumps are taken from, and both panes move together.
-        <span className="inline-flex items-center mr-1">
-          <button
-            onClick={onGoBack}
-            disabled={!canGoBack}
-            className="btn-icon w-6 h-6 text-[11px] disabled:opacity-30"
-            title="Back to where you jumped from"
-            aria-label="Back"
-          >
-            ↰
-          </button>
-          <button
-            onClick={onGoForward}
-            disabled={!canGoForward}
-            className="btn-icon w-6 h-6 text-[11px] disabled:opacity-30"
-            title="Forward again"
-            aria-label="Forward"
-          >
-            ↱
-          </button>
-        </span>
-      )}
       {annotations.length > 1 && (
         <button
           onClick={toggleAll}

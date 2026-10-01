@@ -1299,10 +1299,12 @@ describe("following the question, the answer, or nothing", () => {
     // conversation boundary
     click(step("↑ pair"));
     assert.equal(focusedPair(host), "a1:2");
-    assert.deepEqual(pressed(host), ["free"], "stepping in free mode follows nothing");
+    assert.deepEqual(pressed(host), ["question"], "stepping from free mode is following the question");
+    await settled();
     click(step("↓ pair"));
     assert.equal(focusedPair(host), "b2:0");
     assert.equal(step("↓ pair").disabled, true, "nothing after the last pair");
+    await settled();
     click(button(host, "answer"));
     await settled();
     click(step("↑ pair"));

@@ -4,7 +4,6 @@ import { useRef, useState, useCallback, useEffect, useMemo, useSyncExternalStore
 import { extractZoteroItemText } from "@/lib/extract-text";
 import { isStale, mergeTakeaways } from "@/lib/takeaways";
 import type { PdfRects } from "@/types/session";
-import { emptyNav, record as recordSpot, back as navBack, forward as navForward, type Spot } from "@/lib/nav-history";
 import dynamic from "next/dynamic";
 import { useSession, sessionIdFor } from "@/hooks/useSession";
 import { MindmapSidebar } from "@/components/MindmapSidebar";
@@ -523,53 +522,9 @@ export default function Home() {
 
   // Land on the highlight itself. Text search is only the fallback: it starts
   // at the top of the page and, for CJK, often doesn't match the passage at all.
-  // ── Going back to where a jump started ──────────────────────────────
-  // Every jump in the reader — a citation into the paper, an underlined
-  // passage into a conversation, a quote back to where it was said — is
-  // recorded before it happens, so it can be undone and redone.
   const panelScroll = useRef<PanelScroll>(null);
-  const [nav, setNav] = useState(emptyNav);
-
-  // Where the reader is right now, in both panes at once
-  const spotNow = useCallback(
-    (): Spot => ({
-      doc: pdfViewerRef.current?.getScroll?.() ?? 0,
-      panel: panelScroll.current?.get() ?? 0,
-      activeId: activeAnnotationId,
-    }),
-    [activeAnnotationId]
-  );
-
-  // Called by every jump, before it moves anything
-  const recordJump = useCallback(() => {
-    const from = spotNow();
-    setNav((state) => recordSpot(state, from));
-  }, [spotNow]);
-
-  const goTo = useCallback((spot: Spot) => {
-    pdfViewerRef.current?.setScroll?.(spot.doc);
-    panelScroll.current?.set(spot.panel);
-    setActiveAnnotationId(spot.activeId);
-  }, []);
-
-  // Moving happens here, not inside the state updater: an updater has to be
-  // pure, and React may run it twice
-  const goBack = useCallback(() => {
-    const step = navBack(nav, spotNow());
-    if (!step) return;
-    goTo(step.to);
-    setNav(step.state);
-  }, [nav, spotNow, goTo]);
-
-  const goForward = useCallback(() => {
-    const step = navForward(nav, spotNow());
-    if (!step) return;
-    goTo(step.to);
-    setNav(step.state);
-  }, [nav, spotNow, goTo]);
 
   const jumpToHighlight = useCallback(async (id: string, page: number | undefined, text: string) => {
-    recordJump();
     const landed = await pdfViewerRef.current?.scrollToHighlight?.(id, page);
     if (!landed && page) pdfViewerRef.current?.highlightText(page, text);
   }, []);
@@ -581,10 +536,9 @@ export default function Home() {
     // prefixed so it cannot collide with a conversation's own passage
     const annotationId = id.startsWith("cited:") ? id.split(":")[1] : id;
     if (!annotationId || annotationId === "?") return;
-    recordJump();
     setExplainOpen(true);
     setActiveAnnotationId(annotationId);
-  }, [recordJump]);
+  }, []);
 
   const handleDelete = useCallback((id: string) => {
     removeAnnotation(id);
@@ -868,12 +822,11 @@ export default function Home() {
 
   const handleViewInPdf = useCallback(
     (annotationId: string) => {
-      recordJump();
       const annotation = session.annotations.find((a) => a.id === annotationId);
       if (!annotation?.selectedText || !annotation.pageNumber) return;
       pdfViewerRef.current?.highlightText(annotation.pageNumber, annotation.selectedText);
     },
-    [session.annotations, recordJump]
+    [session.annotations]
   );
 
   // "Explain" reads the passage in the paper; "Define" asks what the term is
@@ -1640,15 +1593,10 @@ export default function Home() {
           onReExplainImage={handleReExplainImage}
           onViewInPdf={handleViewInPdf}
           onCitePaper={(page: number, quote: string, fromAnnotationId?: string) => {
-            recordJump();
             void followCitation(page, quote, fromAnnotationId);
           }}
           annotationRefs={annotationRefs}
           scrollHandle={panelScroll}
-          canGoBack={nav.back.length > 0}
-          canGoForward={nav.forward.length > 0}
-          onGoBack={goBack}
-          onGoForward={goForward}
           isOpen={explainOpen}
           onToggle={() => setExplainOpen((v) => !v)}
           width={explainWidth}
@@ -1664,7 +1612,7 @@ export default function Home() {
           mindmapError={mindmapError}
           hasPdf={!!session.pdfDataUrl}
           onGenerateMindmap={handleGenerateMindmap}
-          onJumpToSource={(page, quote) => { recordJump(); pdfViewerRef.current?.highlightText(page, quote); }}
+          onJumpToSource={(page, quote) => { pdfViewerRef.current?.highlightText(page, quote); }}
           onJumpToHighlight={jumpToHighlight}
           onAskAboutNode={handleAskAboutSelection}
           onQuote={handleQuoteSelection}
