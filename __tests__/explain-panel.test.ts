@@ -146,23 +146,20 @@ describe("follow-up box stays reachable", () => {
     assert.equal(countFollowUps(renderPanel([CARD_A])), 1);
   });
 
-  test("it sits after the whole list, flush above the paper composer", () => {
+  test("it sits after the whole list, and it is the only composer", () => {
     const html = renderPanel([CARD_A, CARD_B]);
     assert.ok(
       html.indexOf(FOLLOW_UP) > html.lastIndexOf("answer B"),
       "the box must come after the last conversation, not inside the scrolling list"
     );
-    assert.ok(
-      html.indexOf(FOLLOW_UP) < html.indexOf("Ask anything about the paper"),
-      "and before the paper composer"
-    );
+    assert.equal(html.includes("Ask anything about the paper"), false, "one box, not a second one for new questions");
   });
 
   test("it says which conversation it will post to", () => {
     const html = renderPanel([CARD_A, CARD_B]);
-    assert.ok(html.includes("Follow up on"));
-    const bar = html.slice(html.indexOf("Follow up on"));
-    assert.ok(bar.includes("conversation B"), "binds to the conversation nearest the bar");
+    assert.ok(html.includes("Follow up"));
+    const bar = html.slice(html.indexOf("Follow up"));
+    assert.ok(bar.includes("conversation B"), "binds to the conversation nearest the box");
   });
 
   test("no conversations, no bar", () => {
@@ -267,7 +264,7 @@ describe("folding hides the conversation", () => {
     mount([CARD_A, CARD_B]);
     click(headers()[1]);                       // fold the last one
     assert.equal(boxes(), 1, "there is still an open conversation to write to");
-    const bar = host.textContent?.slice(host.textContent.indexOf("Follow up on")) ?? "";
+    const bar = host.textContent?.slice(host.textContent.indexOf("Follow up")) ?? "";
     assert.ok(bar.includes("conversation A"), "the box points at the open conversation");
   });
 
@@ -503,7 +500,7 @@ describe("quoting a passage out of a conversation", () => {
     selectInside("answer A");
     click(button("Quote")!);
     // the follow-up box is bound to conversation B, and the quote is still held
-    const bar = host.textContent?.slice(host.textContent.indexOf("Follow up on")) ?? "";
+    const bar = host.textContent?.slice(host.textContent.indexOf("Follow up")) ?? "";
     assert.ok(bar.includes("conversation B"), "asking into B");
     assert.ok(host.textContent?.includes("Quoting"), "with A's passage still attached");
   });
@@ -766,17 +763,129 @@ describe("landing point after a turn", () => {
   });
 });
 
+// One box for both kinds of question. A switch beside it says where the
+// text goes: into the conversation you are on, or a new one about the paper.
+describe("one composer, a switch for where the question goes", () => {
+  let host: HTMLElement;
+  let followUps: [string, string][];
+  let generals: [string, boolean | undefined][];
+  const mount = (annotations: Annotation[], activeId: string | null = null) => {
+    host = freshRoot();
+    followUps = [];
+    generals = [];
+    act(() => {
+      createRoot(host).render(
+        createElement(ExplainPanel, {
+          annotations, activeId, model: "m", streamingIds: new Set<string>(),
+          onFollowUp: (id: string, q: string) => { followUps.push([id, q]); },
+          onAskGeneral: (q: string, _img?: string, _ref?: unknown, web?: boolean) => { generals.push([q, web]); },
+          onDelete: () => {}, onReExplainImage: () => {}, onViewInPdf: () => {},
+          annotationRefs: { current: {} }, isOpen: true, onToggle: () => {},
+        })
+      );
+    });
+  };
+  const box = () => host.querySelector("textarea[data-composer]") as HTMLTextAreaElement;
+  const pressedMode = () => Array.from(host.querySelectorAll('[aria-label="Send as"] button')).filter((b) => b.getAttribute("aria-pressed") === "true").map((b) => b.textContent);
+  const type = (text: string) => act(() => {
+    const el = box();
+    const setter = Object.getOwnPropertyDescriptor(dom.window.HTMLTextAreaElement.prototype, "value")!.set!;
+    setter.call(el, text);
+    el.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+  });
+  const key = (k: string, init: KeyboardEventInit = {}) => act(() => { box().dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: k, bubbles: true, ...init })); });
+  const click = (el: Element) => act(() => { el.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })); });
+
+  test("with a conversation, the box follows up on it by default, and Tab flips to a new question and back", () => {
+    mount([CARD_A, CARD_B]);
+    assert.deepEqual(pressedMode(), ["Follow up"]);
+    assert.match(box().placeholder, /follow-up/);
+    key("Tab");
+    assert.deepEqual(pressedMode(), ["New"]);
+    assert.match(box().placeholder, /anything about the paper/);
+    key("Tab");
+    assert.deepEqual(pressedMode(), ["Follow up"]);
+    key("Tab", { shiftKey: true });
+    assert.deepEqual(pressedMode(), ["Follow up"], "Shift+Tab is left to move the focus");
+  });
+
+  test("the draft survives the switch, and Enter sends it where the switch says", () => {
+    mount([CARD_A, CARD_B]);
+    type("is this right?");
+    key("Tab");
+    assert.equal(box().value, "is this right?");
+    key("Enter");
+    assert.deepEqual(generals, [["is this right?", true]], "a new question, web on");
+    assert.deepEqual(followUps, []);
+    type("and then?");
+    key("Tab");
+    key("Enter");
+    assert.deepEqual(followUps, [["b2", "and then?"]], "a follow-up on the conversation nearest the box");
+    assert.equal(box().value, "", "sent and cleared");
+  });
+
+  test("a follow-up goes to the conversation of the focused pair, not the one nearest the box", () => {
+    mount([CARD_A, CARD_B]);
+    const pairInA = host.querySelector("[data-annotation-id='a1'] [data-pair='0'] [style*='scroll-margin']") as HTMLElement;
+    click(pairInA);
+    const bar = host.textContent?.slice(host.textContent.indexOf("Follow up")) ?? "";
+    assert.ok(bar.includes("conversation A"), "the box now names A");
+    type("more on A?");
+    key("Enter");
+    assert.deepEqual(followUps, [["a1", "more on A?"]]);
+  });
+
+  test("the switch is only offered when there is a conversation to follow up on; references go with new questions", () => {
+    mount([]);
+    assert.equal(host.querySelector('[aria-label="Send as"]'), null);
+    assert.match(box().placeholder, /anything about the paper/);
+    const at = () => Array.from(host.querySelectorAll("button")).find((b) => b.textContent === "@") as HTMLButtonElement;
+    assert.equal(at().disabled, false);
+    mount([CARD_A]);
+    assert.equal(at().disabled, true, "no reference on a follow-up");
+    key("Tab");
+    assert.equal(at().disabled, false);
+  });
+
+  test("a conversation just arrived at — by an explain — is where a follow-up goes", () => {
+    // Nothing is focused yet; the box leans on the conversation nearest it (B).
+    // A new conversation C arrives active, as an explain makes one: the focus
+    // moves to C, and so does the box.
+    mount([CARD_A, CARD_B]);
+    const C = thread([{ role: "assistant", content: "explained C" }], "c3", "conversation C");
+    act(() => {
+      createRoot(host).render(createElement(ExplainPanel, {
+        annotations: [CARD_A, CARD_B, C], activeId: "c3", model: "m", streamingIds: new Set<string>(["c3"]),
+        onFollowUp: (id: string, q: string) => { followUps.push([id, q]); }, onAskGeneral: () => {},
+        onDelete: () => {}, onReExplainImage: () => {}, onViewInPdf: () => {},
+        annotationRefs: { current: {} }, isOpen: true, onToggle: () => {},
+      }));
+    });
+    const bar = host.textContent?.slice(host.textContent.indexOf("Follow up")) ?? "";
+    assert.ok(bar.includes("conversation C"), `the box names C, got: ${bar.slice(0, 60)}`);
+    assert.deepEqual(Array.from(host.querySelectorAll("[data-annotation-id][data-lit]")).map((el) => el.getAttribute("data-annotation-id")), ["c3"]);
+  });
+
+  test("the Follow modes live in the top toolbar, above the list", () => {
+    mount([CARD_A]);
+    const control = host.querySelector('[aria-label="Follow"]') as HTMLElement;
+    assert.ok(control.closest(".pr-explain-toolbar"), "in the toolbar");
+    assert.ok(!control.closest("[data-composer]"));
+  });
+});
+
 describe("question boxes hold more than one line", () => {
   // They were single-line <input>s: a newline could not be typed at all, and a
   // long question scrolled sideways with its own beginning off screen. Growth
   // itself needs layout, which jsdom has none of — this guards the element type
   // the behaviour depends on.
-  test("both question boxes are textareas, not single-line inputs", () => {
+  test("the question box is a textarea, not a single-line input, in either mode", () => {
     const html = renderPanel([CARD_A]);
     assert.match(html, /<textarea[^>]*placeholder="Ask a follow-up/);
-    assert.match(html, /<textarea[^>]*data-composer="general"/);
     assert.equal(/<input[^>]*placeholder="Ask a follow-up/.test(html), false);
-    assert.equal(/<input[^>]*data-composer="general"/.test(html), false);
+    const empty = renderPanel([]);
+    assert.match(empty, /<textarea[^>]*data-composer="general"/);
+    assert.equal(/<input[^>]*data-composer="general"/.test(empty), false);
   });
 
   test("they do not show a resize grip — the height is managed", () => {

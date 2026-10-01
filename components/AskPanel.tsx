@@ -329,9 +329,14 @@ const DEFAULT_FONT_IDX = 3; // 15px
 const COLLAPSE_CHARS = 300;
 
 export function ExplainPanel({ annotations, activeId, model, streamingIds, onFollowUp, onStop, onEditMessage, onAskGeneral, onDelete, onReExplainImage, onViewInPdf, onCitePaper, annotationRefs, scrollHandle, isOpen, onToggle, width = 460, modelControls, positionKey, askSeq }: Props) {
-  const [followUpText, setFollowUpText] = useState<Record<string, string>>({});
-  const [generalQuestion, setGeneralQuestion] = useState("");
+  // One composer for both kinds of question. What is typed is kept across
+  // the switch, so flipping it never loses a draft.
+  const [draft, setDraft] = useState("");
   const [composerImage, setComposerImage] = useState<string | null>(null);
+  // Where the next question goes: into the conversation you are on, or a
+  // new one about the paper. Follow up is the default whenever there is a
+  // conversation to follow up on; with none, the box can only ask anew.
+  const [composeMode, setComposeMode] = useState<"followup" | "new">("followup");
   const [composerRef, setComposerRef] = useState<{ key: string; title: string } | null>(null);
   const [refPickerOpen, setRefPickerOpen] = useState(false);
   const [refQuery, setRefQuery] = useState("");
@@ -358,16 +363,6 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
     reader.readAsDataURL(file);
   };
 
-  const submitGeneral = () => {
-    if (!generalQuestion.trim()) return;
-    onAskGeneral(withQuotes(generalQuestion.trim(), quotes), composerImage || undefined, composerRef || undefined, true);
-    setQuotes([]);
-    setGeneralQuestion("");
-    setComposerImage(null);
-    setComposerRef(null);
-    setRefPickerOpen(false);
-  };
-  const [followUpImage, setFollowUpImage] = useState<Record<string, string>>({});
   const [lightboxState, setLightboxState] = useState<{ src: string; annotationId: string } | null>(null);
   const [expandedText, setExpandedText] = useState<Set<string>>(new Set());
   const [collapsedIds, setCollapsedIds] = useState<Set<string>>(new Set());
@@ -635,11 +630,7 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
     const label = quoteLabel(index);
     const box = lastBox.current;
     if (!box) {
-      if (showFollowUpBar && barAnnotation) {
-        setFollowUpText((prev) => ({ ...prev, [barAnnotation.id]: appendLabel(label)(prev[barAnnotation.id] || "") }));
-      } else {
-        setGeneralQuestion(appendLabel(label));
-      }
+      setDraft(appendLabel(label));
       return;
     }
     const el = box.el;
@@ -1020,9 +1011,14 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
       trace("scrollIntoView", { reason: "switched to a conversation", target: describeForTrace(card), block: "start" });
       smoothUntil.current = Date.now() + 700;
       card.scrollIntoView({ behavior: "smooth", block: "start" });
-      // Going to another conversation is leaving the followed one
+      // Arriving at a conversation — opened, or just made by an explain — is
+      // leaving the followed one for it: its first pair is now the focus,
+      // followed by nothing, and where a follow-up goes
       const f = followRef.current;
-      if (f.mode !== "free" && f.id !== activeId) { pinned.current = null; setFollowing({ ...f, mode: "free" }, "switched"); }
+      if (f.id !== activeId) {
+        pinned.current = null;
+        setFollowing({ id: activeId, index: pairsOf(active)[0]?.start ?? 0, mode: "free" }, "switched");
+      }
     }
   }, [activeId, annotations, annotationRefs, askSeq, captureAnchor, foldedQuotes, expandedText, landOn, setFollowing, positionKey]);
 
@@ -1352,7 +1348,10 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
   const barAnnotation =
     openConversations.find((a) => a.id === visibleId) ?? openConversations[openConversations.length - 1];
   useEffect(() => { barAnnotationRef.current = barAnnotation ?? null; }, [barAnnotation]);
-  const showFollowUpBar = !!barAnnotation;
+  // The conversation a follow-up goes to: the one the focused pair is in,
+  // else the one nearest the box
+  const target: Annotation | null = openConversations.find((a) => a.id === focusedOn?.id) ?? barAnnotation ?? null;
+  const mode: "followup" | "new" = target ? composeMode : "new";
 
   if (!isOpen) {
     return (
@@ -1390,192 +1389,91 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
   // past its own containing block.
   // Quoted passages ride along with whichever question is asked next, in either
   // box — that is what makes them work across conversations.
-  const submitFollowUp = (annotationId: string) => {
-    const text = followUpText[annotationId]?.trim();
+  const send = () => {
+    const text = draft.trim();
     if (!text) return;
-    onFollowUp(annotationId, withQuotes(text, quotes), followUpImage[annotationId]);
-    setFollowUpText((prev) => ({ ...prev, [annotationId]: "" }));
-    setFollowUpImage((prev) => { const next = { ...prev }; delete next[annotationId]; return next; });
+    if (mode === "followup" && target) {
+      onFollowUp(target.id, withQuotes(text, quotes), composerImage || undefined);
+    } else {
+      onAskGeneral(withQuotes(text, quotes), composerImage || undefined, composerRef || undefined, true);
+      setComposerRef(null);
+      setRefPickerOpen(false);
+    }
     setQuotes([]);
+    setDraft("");
+    setComposerImage(null);
   };
-
-  const followUpBar = (annotation: Annotation) => (
-  <div
-    className="shrink-0 px-3 pt-2 pb-2.5"
-    style={{ background: "var(--surface)", borderTop: "1px solid var(--border)" }}
-  >
-    <div className="flex items-center gap-1.5 mb-1.5">
-      <span className="text-[10px] uppercase tracking-widest shrink-0" style={{ color: "var(--ink-faint)" }}>Follow up on</span>
-      <button
-        onClick={() => { trace("scrollIntoView", { reason: "follow-up bar label clicked", conversation: annotation.id.slice(0, 8), block: "start" }); smoothUntil.current = Date.now() + 700; annotationRefs.current[annotation.id]?.scrollIntoView({ behavior: "smooth", block: "start" }); }}
-        className="text-[11px] min-w-0 truncate transition-opacity hover:opacity-70"
-        style={{ color: "var(--accent)" }}
-        title="Scroll to this conversation"
-      >
-        {annotation.label}
-      </button>
-      <button
-        onClick={() => stepPair(-1, annotation)}
-        disabled={!pairAfter(-1, focusedOn)}
-        className="btn-icon ml-auto shrink-0 px-1.5 py-0.5 text-[10px] disabled:opacity-40"
-        title="Previous question–answer pair, in the current mode  ([)"
-      >
-        ↑ pair
-      </button>
-      <button
-        onClick={() => stepPair(1, annotation)}
-        disabled={!pairAfter(1, focusedOn)}
-        className="btn-icon shrink-0 px-1.5 py-0.5 text-[10px] disabled:opacity-40"
-        title="Next question–answer pair, in the current mode  (])"
-      >
-        ↓ pair
-      </button>
-      <button
-        onClick={() => toggleCollapsed(annotation.id)}
-        className="btn-icon shrink-0 px-1.5 py-0.5 text-[10px]"
-        title="Collapse this conversation"
-      >
-        ▾ fold
-      </button>
-    </div>
-    <div className="flex items-center gap-1 mb-1.5" role="group" aria-label="Follow">
-      <span className="text-[10px] uppercase tracking-widest shrink-0 mr-0.5" style={{ color: "var(--ink-faint)" }}>Follow</span>
-      {([
-        ["question", "Hold the question in view; it rises to the top as the answer arrives"],
-        ["answer", "Keep the end of the answer in view as it arrives"],
-        ["free", "Follow nothing — stay where you scrolled"],
-      ] as [FollowMode, string][]).map(([mode, hint]) => {
-        const on = follow.mode === mode;
-        return (
-          <button
-            key={mode}
-            onClick={() => chooseFollow(mode, annotation)}
-            aria-pressed={on}
-            className="text-[10px] px-1.5 py-0.5 rounded transition-colors"
-            style={{ border: `1px solid ${on ? "var(--accent)" : "var(--border)"}`, color: on ? "var(--accent)" : "var(--ink-muted)", background: on ? "rgba(232,120,76,0.08)" : "transparent" }}
-            title={hint}
-          >
-            {mode}
-          </button>
-        );
-      })}
-    </div>
-    {followUpImage[annotation.id] && (
-      <div className="flex items-center gap-2 mb-2">
-        <img
-          src={followUpImage[annotation.id]}
-          alt="figure to attach"
-          className="max-h-14 object-contain"
-          style={{ border: "1px solid var(--accent)", borderRadius: "3px" }}
-        />
-        <span className="text-[10px]" style={{ color: "var(--ink-faint)" }}>figure attached</span>
-        <button
-          onClick={() => setFollowUpImage((prev) => { const next = { ...prev }; delete next[annotation.id]; return next; })}
-          className="btn-icon w-5 h-5 text-[10px]"
-          title="Remove figure"
-        >
-          ✕
-        </button>
-      </div>
-    )}
-    <div className="flex gap-2 items-end">
-      <GrowingTextarea
-        placeholder="Ask a follow-up… (paste a figure to attach it)"
-        value={followUpText[annotation.id] || ""}
-        onChange={(e) =>
-          setFollowUpText((prev) => ({ ...prev, [annotation.id]: e.target.value }))
-        }
-        onPaste={(e) => {
-          const file = Array.from(e.clipboardData.items)
-            .find((item) => item.type.startsWith("image/"))
-            ?.getAsFile();
-          if (!file) return;
-          e.preventDefault();
-          const reader = new FileReader();
-          reader.onload = () =>
-            setFollowUpImage((prev) => ({ ...prev, [annotation.id]: reader.result as string }));
-          reader.readAsDataURL(file);
-        }}
-        onKeyDown={(e) => {
-          if (isSubmitKey(e)) {
-            // Enter sends (Shift+Enter breaks a line). Without this the
-            // keystroke also lands as a newline in the box just emptied,
-            // leaving a blank line behind — or in an empty box, for nothing.
-            e.preventDefault();
-            if (followUpText[annotation.id]?.trim()) submitFollowUp(annotation.id);
-          }
-        }}
-        className="flex-1 min-w-0 text-sm px-3 py-1.5 rounded-md focus:outline-none transition-colors resize-none"
-        style={{
-          border: "1px solid var(--border)",
-          background: "var(--paper)",
-          color: "var(--ink)",
-          fontFamily: "var(--font-geist-mono), monospace",
-          fontSize: "0.8em",
-          lineHeight: 1.5,
-        }}
-        onFocus={(e) => {
-          e.currentTarget.style.borderColor = "var(--accent)";
-          const el = e.currentTarget;
-          lastBox.current = {
-            el,
-            setText: (update) =>
-              setFollowUpText((prev) => ({ ...prev, [annotation.id]: update(prev[annotation.id] || "") })),
-          };
-        }}
-        onBlur={(e) => (e.currentTarget.style.borderColor = "var(--border)")}
-      />
-      <label
-        className="btn-icon w-8 self-stretch flex items-center justify-center cursor-pointer text-sm"
-        title="Attach a figure image"
-      >
-        📎
-        <input
-          type="file"
-          accept="image/*"
-          className="hidden"
-          onChange={(e) => {
-            const file = e.target.files?.[0];
-            if (!file) return;
-            const reader = new FileReader();
-            reader.onload = () =>
-              setFollowUpImage((prev) => ({ ...prev, [annotation.id]: reader.result as string }));
-            reader.readAsDataURL(file);
-            e.target.value = "";
-          }}
-        />
-      </label>
-      {streamingIds.has(annotation.id) && onStop ? (
-        // While an answer is arriving, the same slot stops it — the chat-box
-        // gesture, and the only control that has to be reachable mid-answer
-        <button
-          onClick={() => onStop(annotation.id)}
-          className="text-sm px-3 py-1.5 rounded-md transition-colors shrink-0"
-          style={{ border: "1px solid #F87171", color: "#F87171" }}
-          title="Stop this answer and keep what has arrived"
-        >
-          ■ Stop
-        </button>
-      ) : (
-        <button
-          onClick={() => {
-            if (followUpText[annotation.id]?.trim()) {
-              submitFollowUp(annotation.id);
-            }
-          }}
-          className="btn-primary text-sm px-3 py-1.5"
-        >
-          Ask
-        </button>
-      )}
-    </div>
-  </div>
-  );
-
-  // Bottom composer — ask about the paper without selecting anything first;
-  // supports a pasted/attached image and referencing another library paper
+  const stoppable = !!target && mode === "followup" && streamingIds.has(target.id) && !!onStop;
+  // Quoted passages ride along with whichever question is asked next, in
+  // either mode — that is what makes them work across conversations.
   const composer = (
-    <div className="shrink-0 px-3 py-2.5 space-y-1.5" style={{ borderTop: "1px solid var(--border)", background: "var(--paper)" }}>
+    <div
+      className="shrink-0 px-3 pt-2 pb-2.5 space-y-1.5"
+      style={{ background: "var(--surface)", borderTop: "1px solid var(--border)" }}
+    >
+      {target && (
+        <div className="flex items-center gap-1.5 min-w-0">
+          <span role="group" aria-label="Send as" className="inline-flex shrink-0 rounded overflow-hidden" style={{ border: "1px solid var(--border)" }}>
+            {([
+              ["followup", "Follow up", "Follow up on the conversation you are on  (Tab)"],
+              ["new", "New", "Start a new conversation about the paper  (Tab)"],
+            ] as ["followup" | "new", string, string][]).map(([m, label, hint]) => {
+              const on = mode === m;
+              return (
+                <button
+                  key={m}
+                  onClick={() => setComposeMode(m)}
+                  aria-pressed={on}
+                  className="text-[10.5px] px-2 py-0.5 transition-colors"
+                  style={{ color: on ? "var(--accent)" : "var(--ink-muted)", background: on ? "rgba(225,195,105,0.14)" : "transparent" }}
+                  title={hint}
+                >
+                  {label}
+                </button>
+              );
+            })}
+          </span>
+          {mode === "followup" ? (
+            <>
+              <span className="text-[10px] shrink-0" style={{ color: "var(--ink-faint)" }}>on</span>
+              <button
+                onClick={() => { trace("scrollIntoView", { reason: "composer label clicked", conversation: target.id.slice(0, 8), block: "start" }); smoothUntil.current = Date.now() + 700; annotationRefs.current[target.id]?.scrollIntoView({ behavior: "smooth", block: "start" }); }}
+                className="text-[11px] min-w-0 truncate transition-opacity hover:opacity-70"
+                style={{ color: "var(--accent)" }}
+                title="Scroll to this conversation"
+              >
+                {target.label}
+              </button>
+            </>
+          ) : (
+            <span className="text-[10px] min-w-0 truncate" style={{ color: "var(--ink-faint)" }}>about the paper, web available</span>
+          )}
+          <button
+            onClick={() => stepPair(-1, target)}
+            disabled={!pairAfter(-1, focusedOn)}
+            className="btn-icon ml-auto shrink-0 px-1.5 py-0.5 text-[10px] disabled:opacity-40"
+            title="Previous question–answer pair, in the current mode  ([)"
+          >
+            ↑ pair
+          </button>
+          <button
+            onClick={() => stepPair(1, target)}
+            disabled={!pairAfter(1, focusedOn)}
+            className="btn-icon shrink-0 px-1.5 py-0.5 text-[10px] disabled:opacity-40"
+            title="Next question–answer pair, in the current mode  (])"
+          >
+            ↓ pair
+          </button>
+          <button
+            onClick={() => toggleCollapsed(target.id)}
+            className="btn-icon shrink-0 px-1.5 py-0.5 text-[10px]"
+            title="Collapse this conversation"
+          >
+            ▾ fold
+          </button>
+        </div>
+      )}
+
       {(composerImage || composerRef) && (
         <div className="flex items-center gap-2 flex-wrap">
           {composerImage && (
@@ -1631,9 +1529,10 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
       <div className="flex gap-1.5 items-end">
         <button
           onClick={() => setRefPickerOpen((v) => !v)}
-          className="btn-icon w-7 h-7 text-sm shrink-0"
+          disabled={mode === "followup"}
+          className="btn-icon w-7 h-7 text-sm shrink-0 disabled:opacity-30"
           style={refPickerOpen || composerRef ? { color: "var(--badge-fig-fg)" } : {}}
-          title="Reference another paper from your Zotero library"
+          title={mode === "followup" ? "References go with a new question" : "Reference another paper from your Zotero library"}
         >
           @
         </button>
@@ -1651,10 +1550,10 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
           />
         </label>
         <GrowingTextarea
-          value={generalQuestion}
-          placeholder="Ask anything about the paper — web available…"
-          onChange={(e) => setGeneralQuestion(e.target.value)}
-          data-composer="general"
+          value={draft}
+          placeholder={mode === "followup" ? "Ask a follow-up… (paste a figure to attach it)" : "Ask anything about the paper — web available…"}
+          onChange={(e) => setDraft(e.target.value)}
+          data-composer={mode === "followup" ? "followup" : "general"}
           onPaste={(e) => {
             const file = Array.from(e.clipboardData.items)
               .find((item) => item.type.startsWith("image/"))
@@ -1664,66 +1563,124 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
               readImageFile(file);
             }
           }}
-          onKeyDown={(e) => { if (isSubmitKey(e)) { e.preventDefault(); submitGeneral(); } }}
+          onKeyDown={(e) => {
+            // Tab flips the switch, while there is something to follow up on
+            if (e.key === "Tab" && target && !e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey) {
+              e.preventDefault();
+              setComposeMode((m) => (m === "followup" ? "new" : "followup"));
+              return;
+            }
+            // Enter sends (Shift+Enter breaks a line). Without this the
+            // keystroke also lands as a newline in the box just emptied.
+            if (isSubmitKey(e)) { e.preventDefault(); send(); }
+          }}
           className="flex-1 min-w-0 text-sm px-3 py-2 rounded-md focus:outline-none transition-all resize-none"
-          style={{ border: "1px solid var(--border)", background: "var(--surface)", color: "var(--ink)", lineHeight: 1.5 }}
+          style={{ border: "1px solid var(--border)", background: "var(--paper)", color: "var(--ink)", lineHeight: 1.5 }}
           onFocus={(e) => {
             e.currentTarget.style.borderColor = "var(--accent)";
             const el = e.currentTarget;
-            lastBox.current = { el, setText: (update) => setGeneralQuestion((prev) => update(prev)) };
+            lastBox.current = { el, setText: (update) => setDraft((prev) => update(prev)) };
           }}
           onBlur={(e) => (e.currentTarget.style.borderColor = "var(--border)")}
         />
-        <button
-          onClick={submitGeneral}
-          disabled={!generalQuestion.trim()}
-          className="btn-primary text-sm px-3 py-1.5 disabled:opacity-40"
-        >
-          Ask
-        </button>
+        {stoppable ? (
+          // While an answer is arriving, the same slot stops it — the chat-box
+          // gesture, and the only control that has to be reachable mid-answer
+          <button
+            onClick={() => onStop?.(target!.id)}
+            className="text-sm px-3 py-1.5 rounded-md transition-colors shrink-0"
+            style={{ border: "1px solid #F87171", color: "#F87171" }}
+            title="Stop this answer and keep what has arrived"
+          >
+            ■ Stop
+          </button>
+        ) : (
+          <button
+            onClick={send}
+            disabled={!draft.trim()}
+            className="btn-primary text-sm px-3 py-1.5 disabled:opacity-40"
+          >
+            Ask
+          </button>
+        )}
       </div>
     </div>
   );
 
+  // Two rows, by what they are for. The top row is touched while reading:
+  // how the view follows an answer, folding every conversation, hiding the
+  // panel. The row under it is set once and left: the text size, the model
+  // and its effort.
+  const followControl = annotations.length > 0 && (
+    <span className="inline-flex shrink-0 items-center gap-1" role="group" aria-label="Follow">
+      <span className="text-[10px] uppercase tracking-widest mr-0.5" style={{ color: "var(--ink-faint)" }}>Follow</span>
+      {([
+        ["question", "Hold the question in view; it rises to the top as the answer arrives"],
+        ["answer", "Keep the end of the answer in view as it arrives"],
+        ["free", "Follow nothing — stay where you scrolled"],
+      ] as [FollowMode, string][]).map(([m, hint]) => {
+        const on = follow.mode === m;
+        return (
+          <button
+            key={m}
+            onClick={() => { const from = target ?? barAnnotation ?? annotations[0]; if (from) chooseFollow(m, from); }}
+            aria-pressed={on}
+            className="text-[10px] px-1.5 py-0.5 rounded transition-colors"
+            style={{ border: `1px solid ${on ? "var(--accent)" : "var(--border)"}`, color: on ? "var(--accent)" : "var(--ink-muted)", background: on ? "rgba(225,195,105,0.12)" : "transparent" }}
+            title={hint}
+          >
+            {m}
+          </button>
+        );
+      })}
+    </span>
+  );
   const toolbar = (
-    <div className="pr-explain-toolbar shrink-0 flex flex-wrap items-center gap-1 px-3 py-1.5" style={{ background: "var(--paper)", borderBottom: "1px solid var(--border)" }}>
-      <span className="inline-flex shrink-0 items-center gap-1">
-        <span className="text-[10px] uppercase tracking-widest mr-1" style={{ color: "var(--ink-faint)" }}>Text</span>
-        <button
-          onClick={() => setFontIdx((i) => Math.max(0, i - 1))}
-          disabled={!canDecrease}
-          className="btn-icon w-7 h-7 text-base leading-none"
-          title="Smaller text (Ctrl+scroll)"
-        >−</button>
-        <button
-          onClick={() => setFontIdx(DEFAULT_FONT_IDX)}
-          className="btn-icon px-2 py-0.5 text-xs min-w-[44px] text-center tabular-nums"
-          title="Reset text size"
-        >
-          {fontSize}px
-        </button>
-        <button
-          onClick={() => setFontIdx((i) => Math.min(FONT_SIZES.length - 1, i + 1))}
-          disabled={!canIncrease}
-          className="btn-icon w-7 h-7 text-base leading-none"
-          title="Larger text (Ctrl+scroll)"
-        >+</button>
-      </span>
-      {annotations.length > 1 && (
-        <button
-          onClick={toggleAll}
-          className="btn-icon px-2 py-0.5 text-[11px] ml-1 whitespace-nowrap"
-          title={allCollapsed ? "Expand every conversation" : "Collapse every conversation"}
-        >
-          <span>⇕</span><span className="pr-collapse-all-label"> {allCollapsed ? "expand all" : "collapse all"}</span>
-        </button>
-      )}
-      <span className="pr-explain-models ml-auto inline-flex shrink-0 max-w-full items-center justify-end gap-1">
-        {modelControls}
-      </span>
-      <button onClick={onToggle} className="pr-explain-toggle btn-icon shrink-0 w-6 h-6 text-xs" title="Collapse panel">
-        ›
-      </button>
+    <div className="pr-explain-toolbar shrink-0 px-3 py-1.5 space-y-1" style={{ background: "var(--paper)", borderBottom: "1px solid var(--border)" }}>
+      <div className="flex flex-wrap items-center gap-1">
+        {followControl || <span className="text-[10px] uppercase tracking-widest" style={{ color: "var(--ink-faint)" }}>Ask</span>}
+        <span className="ml-auto inline-flex shrink-0 items-center gap-1">
+          {annotations.length > 1 && (
+            <button
+              onClick={toggleAll}
+              className="btn-icon px-2 py-0.5 text-[11px] whitespace-nowrap"
+              title={allCollapsed ? "Expand every conversation" : "Collapse every conversation"}
+            >
+              <span>⇕</span><span className="pr-collapse-all-label"> {allCollapsed ? "expand all" : "collapse all"}</span>
+            </button>
+          )}
+          <button onClick={onToggle} className="pr-explain-toggle btn-icon shrink-0 w-6 h-6 text-xs" title="Collapse panel">
+            ›
+          </button>
+        </span>
+      </div>
+      <div className="flex flex-wrap items-center gap-1">
+        <span className="inline-flex shrink-0 items-center gap-0.5">
+          <span className="text-[10px] uppercase tracking-widest mr-1" style={{ color: "var(--ink-faint)" }}>Text</span>
+          <button
+            onClick={() => setFontIdx((i) => Math.max(0, i - 1))}
+            disabled={!canDecrease}
+            className="btn-icon w-6 h-6 text-base leading-none"
+            title="Smaller text (Ctrl+scroll)"
+          >−</button>
+          <button
+            onClick={() => setFontIdx(DEFAULT_FONT_IDX)}
+            className="btn-icon px-1.5 py-0.5 text-xs min-w-[40px] text-center tabular-nums"
+            title="Reset text size"
+          >
+            {fontSize}px
+          </button>
+          <button
+            onClick={() => setFontIdx((i) => Math.min(FONT_SIZES.length - 1, i + 1))}
+            disabled={!canIncrease}
+            className="btn-icon w-6 h-6 text-base leading-none"
+            title="Larger text (Ctrl+scroll)"
+          >+</button>
+        </span>
+        <span className="pr-explain-models ml-auto inline-flex shrink-0 max-w-full items-center justify-end gap-1">
+          {modelControls}
+        </span>
+      </div>
     </div>
   );
 
@@ -2208,7 +2165,6 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
 
       {quoteStrip}
 
-      {showFollowUpBar && followUpBar(barAnnotation)}
       {composer}
     </div>
   );
