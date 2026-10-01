@@ -62,5 +62,8 @@
       "identity": null
     },
     "afterPack": "desktop/after-pack.cjs"
+  },
+  "overrides": {
+    "katex": "$katex"
   }
 }
