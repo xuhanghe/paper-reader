@@ -2078,7 +2078,9 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
                       // Room above when scrolled to, so a landed-on question is
                       // not flush against the panel's edge. A question sits in
                       // a solid grey box with its label, apart from the answer.
-                      style={{ scrollMarginTop: 12, ...(isUser ? { background: "var(--border-light)", padding: "8px 10px" } : {}) }}
+                      // Its side margins undo its side padding, so its label's
+                      // bullet lines up with the answer's
+                      style={{ scrollMarginTop: 12, ...(isUser ? { background: "var(--border-light)", padding: "8px 9px", margin: "0 -9px" } : {}) }}
                     >
                       <p className="text-[10px] font-semibold mb-1 tracking-wide uppercase flex items-center gap-1.5" style={{ color: isUser ? "var(--ink-faint)" : "var(--accent)" }}>
                         <span
