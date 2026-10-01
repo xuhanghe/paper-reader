@@ -2002,7 +2002,7 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
 
               {/* Messages, as question–answer pairs: each a box the reader
                   can see focused and click to follow */}
-              <div data-quotable="" className="px-4 pt-3 pb-2 space-y-3">
+              <div data-quotable="" className="px-4 pt-2 pb-2 space-y-1">
                 {pairsOf(annotation).map((pair) => {
                   const focused = focusedOn?.id === annotation.id && focusedOn.index === pair.start;
                   return (
@@ -2011,8 +2011,20 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
                       ref={(el) => { pairRefs.current[`${annotation.id}:${pair.start}`] = el; }}
                       data-pair={pair.start}
                       data-focused={focused ? "" : undefined}
+                      // The focused pair sits on a lighter panel with a rail
+                      // down its left edge and a soft ring, plain to see at a
+                      // glance. Every pair has the same padding and margins
+                      // whether focused or not, so focus moving never shifts
+                      // the text, and the view with it.
                       className="space-y-3 rounded-md"
-                      style={focused ? { outline: "1px solid var(--accent)", outlineOffset: 6 } : undefined}
+                      style={{
+                        margin: "0 -10px",
+                        padding: "8px 10px 8px 9px",
+                        borderLeft: `3px solid ${focused ? "var(--accent)" : "transparent"}`,
+                        background: focused ? "rgba(230,237,243,0.07)" : "transparent",
+                        boxShadow: focused ? "0 0 0 1px rgba(225,195,105,0.45)" : "none",
+                        transition: "background-color 0.2s, border-color 0.2s, box-shadow 0.2s",
+                      }}
                       onClick={(e) => {
                         const target = e.target as HTMLElement;
                         // Buttons, links and boxes in the pair are their own
@@ -2046,7 +2058,6 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
           );
           function renderMessage(msg: Message, i: number) {
                   const isUser = msg.role === "user";
-                  const isFollowUp = isUser && i > 0;
                   // Every ask seeds an empty assistant message before streaming,
                   // so the newest one is where the reply is about to land
                   const isEditing = editing?.id === annotation.id && editing.index === i;
@@ -2062,10 +2073,12 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
                     <div
                       key={i}
                       ref={(el) => { messageRefs.current[`${annotation.id}:${i}`] = el; }}
-                      className={isFollowUp ? "pt-3" : ""}
+                      data-question={isUser ? "" : undefined}
+                      className={isUser ? "rounded-md" : ""}
                       // Room above when scrolled to, so a landed-on question is
-                      // not flush against the panel's edge
-                      style={{ scrollMarginTop: 12, ...(isFollowUp ? { borderTop: "1px solid var(--border-light)" } : {}) }}
+                      // not flush against the panel's edge. A question sits in
+                      // a solid grey box with its label, apart from the answer.
+                      style={{ scrollMarginTop: 12, ...(isUser ? { background: "var(--border-light)", padding: "8px 10px" } : {}) }}
                     >
                       <p className="text-[10px] font-semibold mb-1 tracking-wide uppercase flex items-center gap-1.5" style={{ color: isUser ? "var(--ink-faint)" : "var(--accent)" }}>
                         <span
