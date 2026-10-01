@@ -1276,29 +1276,75 @@ describe("following the question, the answer, or nothing", () => {
     assert.deepEqual(pressed(host), ["answer"], "back where it was left");
   });
 
-  test("↓ next goes to the start of the next conversation, and lets go of what was followed", async () => {
+  test("↑ pair and ↓ pair step through the pairs in the current mode, across conversations", async () => {
+    const host = freshRoot();
+    const root = createRoot(host);
+    const a = thread([{ role: "user", content: "qa1" }, { role: "assistant", content: "answer A1" }, { role: "user", content: "qa2" }, { role: "assistant", content: "answer A2" }], "a1", "conversation A");
+    const b = thread([{ role: "user", content: "qb" }, { role: "assistant", content: "answer B" }], "b2", "conversation B");
+    act(() => { root.render(createElement(ExplainPanel, props([a, b], []))); });
+    lay(host, { cardTop: 100, cardBottom: 900 });
+    const step = (text: string) => Array.from(host.querySelectorAll("button")).find((x) => x.textContent === text) as HTMLButtonElement;
+    // The bar is on B and nothing has been focused yet (no geometry for the
+    // pick here), so B's last pair stands in: ↑ goes before it, across the
+    // conversation boundary
+    click(step("↑ pair"));
+    assert.equal(focusedPair(host), "a1:2");
+    assert.deepEqual(pressed(host), ["free"], "stepping in free mode follows nothing");
+    click(step("↓ pair"));
+    assert.equal(focusedPair(host), "b2:0");
+    assert.equal(step("↓ pair").disabled, true, "nothing after the last pair");
+    click(button(host, "answer"));
+    await settled();
+    click(step("↑ pair"));
+    assert.equal(focusedPair(host), "a1:2");
+    assert.deepEqual(pressed(host), ["answer"], "the mode comes along");
+    click(step("↑ pair"));
+    assert.equal(focusedPair(host), "a1:0");
+    assert.equal(step("↑ pair").disabled, true, "nothing before the first pair");
+    click(step("↓ pair"));
+    assert.equal(focusedPair(host), "a1:2");
+    assert.deepEqual(pressed(host), ["answer"]);
+    // The keys do the same, except while typing in a box
+    const key = (k: string, target: { dispatchEvent(e: Event): boolean } = dom.window) => act(() => { target.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: k, bubbles: true })); });
+    key("]");
+    assert.equal(focusedPair(host), "b2:0");
+    key("[");
+    assert.equal(focusedPair(host), "a1:2");
+    const box = host.querySelector("textarea") as HTMLTextAreaElement;
+    key("]", box);
+    assert.equal(focusedPair(host), "a1:2", "a bracket typed into a box is a bracket");
+  });
+
+  test("the thread holding the focused pair is lit with it", () => {
     const host = freshRoot();
     const root = createRoot(host);
     const a = thread([{ role: "user", content: "qa" }, { role: "assistant", content: "answer A" }], "a1", "conversation A");
     const b = thread([{ role: "user", content: "qb" }, { role: "assistant", content: "answer B" }], "b2", "conversation B");
-    act(() => { root.render(createElement(ExplainPanel, props([a, b], []))); });
-    // The bar is on the last conversation: nothing after it
-    const next = () => Array.from(host.querySelectorAll("button")).find((x) => x.textContent === "↓ next") as HTMLButtonElement;
-    assert.equal(next().disabled, true);
-    // Fold B: the bar moves to A, and B is next
-    const foldB = Array.from(host.querySelectorAll("button")).filter((x) => x.title === "Collapse this conversation").pop() as HTMLElement;
-    click(foldB);
-    const list = lay(host, { cardTop: 100, cardBottom: 900 });
-    // B's card sits 1500px down the content
-    const cardB = host.querySelectorAll("[data-annotation-id]")[1] as HTMLElement;
-    cardB.getBoundingClientRect = () => box(1500 - list.scrollTop, 1800 - list.scrollTop);
-    click(button(host, "answer"));
-    assert.deepEqual(pressed(host), ["answer"]);
-    await settled();
-    assert.equal(next().disabled, false);
-    click(next());
-    assert.deepEqual(pressed(host), ["free"]);
-    await settled();
-    assert.equal(Math.round(list.scrollTop), 1500, "B's start at the top of the window");
+    act(() => { root.render(createElement(ExplainPanel, { ...props([a, b], []), activeId: "a1" })); });
+    lay(host, { cardTop: 100, cardBottom: 900 });
+    const lit = () => Array.from(host.querySelectorAll("[data-annotation-id][data-lit]")).map((el) => el.getAttribute("data-annotation-id"));
+    assert.deepEqual(lit(), ["a1"], "nothing focused yet: the active one");
+    const pairB = host.querySelector("[data-annotation-id='b2'] [data-pair='0'] [style*='scroll-margin']") as HTMLElement;
+    click(pairB);
+    assert.equal(focusedPair(host), "b2:0");
+    assert.deepEqual(lit(), ["b2"], "the thread of the focused pair, and only it");
+  });
+
+  test("a folded conversation is stepped over", () => {
+    const host = freshRoot();
+    const root = createRoot(host);
+    const a = thread([{ role: "user", content: "qa" }, { role: "assistant", content: "answer A" }], "a1", "conversation A");
+    const b = thread([{ role: "user", content: "qb" }, { role: "assistant", content: "answer B" }], "b2", "conversation B");
+    const c = thread([{ role: "user", content: "qc" }, { role: "assistant", content: "answer C" }], "c3", "conversation C");
+    act(() => { root.render(createElement(ExplainPanel, props([a, b, c], []))); });
+    lay(host, { cardTop: 100, cardBottom: 900 });
+    const folds = Array.from(host.querySelectorAll("button")).filter((x) => x.title === "Collapse this conversation");
+    click(folds[1]);
+    const step = (text: string) => Array.from(host.querySelectorAll("button")).find((x) => x.textContent === text) as HTMLButtonElement;
+    // The bar is on C, the last open one, whose pair stands in for the focus
+    click(step("↑ pair"));
+    assert.equal(focusedPair(host), "a1:0", "B, folded, is skipped");
+    click(step("↓ pair"));
+    assert.equal(focusedPair(host), "c3:0");
   });
 });

@@ -1210,26 +1210,50 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
     }
   }, [annotations, streamingIds, follow, captureAnchor, endOfPair]);
 
-  // The next conversation after the one the bar is on: its beginning comes
-  // into view, and whatever was being followed is let go — the reader is
-  // going somewhere else
-  const nextAfter = (from: Annotation) => annotations[annotations.findIndex((a) => a.id === from.id) + 1] ?? null;
-  const jumpToNext = useCallback((from: Annotation) => {
-    const next = annotations[annotations.findIndex((a) => a.id === from.id) + 1];
+  // Stepping pair by pair, in the mode the reader is in: from the focused
+  // pair to the one before or after it, across conversations (folded ones
+  // skipped). In question mode the next question goes to the top and is
+  // followed; in answer mode the next pair's end to the bottom, followed;
+  // in free mode the next question to the top, followed by nothing. Reading
+  // in between is scrolling, which never changes the mode.
+  const pairSequence = useCallback(() => {
+    const out: { id: string; index: number }[] = [];
+    for (const a of annotations) {
+      if (collapsedIds.has(a.id)) continue;
+      for (const pair of pairsOf(a)) out.push({ id: a.id, index: pair.start });
+    }
+    return out;
+  }, [annotations, collapsedIds]);
+  // From a given pair (the focused one: read off state while rendering, off
+  // the refs when a key or a button is handled)
+  const pairAfter = useCallback((direction: 1 | -1, here: { id: string; index: number } | null): { id: string; index: number } | null => {
+    const sequence = pairSequence();
+    const at = here ? sequence.findIndex((p) => p.id === here.id && p.index === here.index) : -1;
+    return (at < 0 ? (direction > 0 ? sequence[0] : sequence[sequence.length - 1]) : sequence[at + direction]) ?? null;
+  }, [pairSequence]);
+  const stepPair = useCallback((direction: 1 | -1, fallback: Annotation) => {
+    const next = pairAfter(direction, focusedPair(fallback));
     if (!next) return;
-    const el = cardOf(next.id);
-    if (!el) return;
-    trace("glide", { reason: "next conversation, by the button", conversation: next.id.slice(0, 8) });
-    pinned.current = null;
-    const f = followRef.current;
-    if (f.mode !== "free") setFollowing({ ...f, mode: "free" }, "next");
-    // The glide counts as the reader's own scrolling, so the focus moves to
-    // where it lands — and only the glide: a moment, not a second
-    lastInputAt.current = Date.now() + 100;
-    const list = scrollRef.current;
-    if (!list) return;
-    glide(() => list.scrollTop + (el.getBoundingClientRect().top - list.getBoundingClientRect().top));
-  }, [annotations, cardOf, setFollowing, glide]);
+    const mode = followRef.current.mode;
+    trace("step", { direction, conversation: next.id.slice(0, 8), index: next.index, mode });
+    setFollowing({ id: next.id, index: next.index, mode }, "step");
+    goTo(mode === "answer" ? "answer" : "question", next.id, next.index);
+  }, [pairAfter, focusedPair, setFollowing, goTo]);
+  // ] and [ step too, from anywhere but a box being typed in
+  const barAnnotationRef = useRef<Annotation | null>(null);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if ((e.target as HTMLElement | null)?.closest?.("textarea, input, select, [contenteditable]")) return;
+      if (e.key !== "]" && e.key !== "[") return;
+      const from = barAnnotationRef.current;
+      if (!from) return;
+      e.preventDefault();
+      stepPair(e.key === "]" ? 1 : -1, from);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [stepPair]);
 
   useEffect(() => {
     const list = scrollRef.current;
@@ -1330,6 +1354,7 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
   // the bar only goes away when there is nothing writable at all.
   const barAnnotation =
     openConversations.find((a) => a.id === visibleId) ?? openConversations[openConversations.length - 1];
+  useEffect(() => { barAnnotationRef.current = barAnnotation ?? null; }, [barAnnotation]);
   const showFollowUpBar = !!barAnnotation;
 
   if (!isOpen) {
@@ -1393,12 +1418,20 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
         {annotation.label}
       </button>
       <button
-        onClick={() => jumpToNext(annotation)}
-        disabled={!nextAfter(annotation)}
+        onClick={() => stepPair(-1, annotation)}
+        disabled={!pairAfter(-1, focusedOn)}
         className="btn-icon ml-auto shrink-0 px-1.5 py-0.5 text-[10px] disabled:opacity-40"
-        title={nextAfter(annotation) ? "Jump to the next conversation" : "This is the last conversation"}
+        title="Previous question–answer pair, in the current mode  ([)"
       >
-        ↓ next
+        ↑ pair
+      </button>
+      <button
+        onClick={() => stepPair(1, annotation)}
+        disabled={!pairAfter(1, focusedOn)}
+        className="btn-icon shrink-0 px-1.5 py-0.5 text-[10px] disabled:opacity-40"
+        title="Next question–answer pair, in the current mode  (])"
+      >
+        ↓ pair
       </button>
       <button
         onClick={() => toggleCollapsed(annotation.id)}
@@ -1817,6 +1850,9 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
       <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 space-y-4" style={{ fontSize }}>
         {annotations.map((annotation) => {
           const isActive = annotation.id === activeId;
+          // The card lit is the one holding the focused pair — the thread you
+          // are in — or, before anything is focused, the active one
+          const lit = focusedOn ? focusedOn.id === annotation.id : isActive;
           const collapsed = collapsedIds.has(annotation.id);
           const replies = annotation.messages.filter((m) => m.role === "assistant" && m.content).length;
           return (
@@ -1825,11 +1861,12 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
               ref={(el) => { annotationRefs.current[annotation.id] = el; }}
               data-conversation={annotation.label}
               data-annotation-id={annotation.id}
+              data-lit={lit ? "" : undefined}
               className="rounded-lg overflow-hidden transition-all pr-fade-up"
               style={{
                 background: "var(--surface)",
-                border: isActive ? "1px solid var(--accent)" : "1px solid var(--border)",
-                boxShadow: isActive ? "0 0 0 1px var(--accent), 0 4px 20px rgba(232,120,76,0.15)" : "var(--shadow-card)",
+                border: lit ? "1px solid var(--accent)" : "1px solid var(--border)",
+                boxShadow: lit ? "0 0 0 1px var(--accent), 0 4px 20px rgba(232,120,76,0.15)" : "var(--shadow-card)",
               }}
             >
               {/* Card header — doubles as the collapse toggle */}
