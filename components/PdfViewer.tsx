@@ -467,6 +467,11 @@ const ZOOM_COMMIT_PAUSE_MS = 220;
 // phones. Chrome and the desktop app have the memory, and keep pdf.js's own
 // defaults.
 const IS_SAFARI = typeof navigator !== "undefined" && /AppleWebKit/.test(navigator.userAgent) && !/Chrome|Chromium|CriOS|Edg\//.test(navigator.userAgent);
+const IS_FIREFOX = typeof navigator !== "undefined" && /\bGecko\/\d/.test(navigator.userAgent);
+// Browsers that restyle the whole document for every font registered with
+// document.fonts: Safari (a quarter second per font with a long panel open)
+// and Firefox (a tenth). Chrome restyles only the font's users.
+const DRAW_GLYPHS_FROM_OUTLINES = IS_SAFARI || IS_FIREFOX;
 
 // With the trace on, where a page's paint went
 type PaintTiming = { items: number; calibrateMs: number; wrapMs: number; measureMs: number; applyMs: number; bandsMs: number };
@@ -1874,19 +1879,19 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
       }
     });
 
-    // Safari draws glyphs from their outlines rather than registering each
-    // embedded font subset with the document. Every font added to
-    // document.fonts makes WebKit restyle and lay out the whole document —
-    // the panel's thousands of formula parts, every page's text layer —
-    // which cost a quarter second per font, and a paper carries dozens of
-    // subsets: that was the stall on every page that brought a new one. Drawn
-    // from outlines, a page's print costs the canvas a few milliseconds and
-    // the document nothing. A font the PDF does not embed is then pdf.js's
-    // stand-in, served from the package (useSystemFonts is off with this).
-    // Chrome scopes the restyle to the font's users and keeps native text.
+    // Safari and Firefox draw glyphs from their outlines rather than
+    // registering each embedded font subset with the document. Every font
+    // added to document.fonts makes them restyle and lay out the whole
+    // document — the panel's thousands of formula parts, every page's text
+    // layer — a quarter second per font in Safari, a tenth in Firefox, and a
+    // paper carries dozens of subsets: that was the stall on every page that
+    // brought a new one. Drawn from outlines, a page's print costs the canvas
+    // a few milliseconds and the document nothing. A font the PDF does not
+    // embed is then pdf.js's stand-in, served from the package (useSystemFonts
+    // is off with this). Chrome scopes the restyle and keeps native text.
     const loadingTask = getDocument({
       url: pdfDataUrl,
-      disableFontFace: IS_SAFARI,
+      disableFontFace: DRAW_GLYPHS_FROM_OUTLINES,
       standardFontDataUrl: "/api/pdfjs/standard-fonts/",
       cMapUrl: "/api/pdfjs/cmaps/",
       cMapPacked: true,
