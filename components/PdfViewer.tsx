@@ -467,6 +467,17 @@ const ZOOM_COMMIT_PAUSE_MS = 220;
 // phones. Chrome and the desktop app have the memory, and keep pdf.js's own
 // defaults.
 const IS_SAFARI = typeof navigator !== "undefined" && /AppleWebKit/.test(navigator.userAgent) && !/Chrome|Chromium|CriOS|Edg\//.test(navigator.userAgent);
+
+// With the trace on, where a page's paint went
+type PaintTiming = { items: number; calibrateMs: number; wrapMs: number; measureMs: number; applyMs: number; bandsMs: number };
+
+// A fling: the view moving faster than this, measured from the latest scroll
+// event back to one at least the span earlier. Pages drawn during one wait to
+// be dressed (see the viewer lifecycle) until the speed drops, or until no
+// scroll event has come for the settle time.
+const FLING_PX_PER_MS = 1.5;
+const FLING_SPAN_MS = 50;
+const FLING_SETTLE_MS = 160;
 const SAFARI_MAX_CANVAS_PIXELS = 2 ** 22;
 const BUTTON_ZOOM_FACTOR = 1.2;
 // These are PDF.js's own scale limits. Keeping the animation target inside the
@@ -846,7 +857,9 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
     }
   }, []);
 
-  const paintPageHighlights = useCallback((pageNumber: number, allowCalibration = false) => {
+  const paintPageHighlights = useCallback((pageNumber: number, allowCalibration = false): PaintTiming | void => {
+    const timed = traceEnabled();
+    const tStart = timed ? performance.now() : 0;
     const container = containerRef.current;
     const pageEl = container?.querySelector(`.page[data-page-number="${pageNumber}"]`);
     const layer = pageEl?.querySelector(".textLayer") as HTMLElement | null;
@@ -874,6 +887,7 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
     if (allowCalibration && needsLegacyCalibration) {
       calibrateTextLayer(layer, pageEl, pageNumber);
     }
+    const tWrap = timed ? performance.now() : 0;
     clearMarks(layer, "pr-highlight");
     clearMarks(layer, "pr-asked");
     for (const a of pageAsked) {
@@ -967,6 +981,7 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
 
     // Measure first, all of it, before any mark moves — every rect below is
     // the text layer's own geometry
+    const tMeasure = timed ? performance.now() : 0;
     type Line = { rect: SelectionRect; marks: HTMLElement[] };
     const measured: { item: (typeof marked)[number]; lines: Line[] }[] = [];
     for (const item of marked) {
@@ -1023,6 +1038,7 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
     // record, so every stored line is painted exactly once; measured marks only
     // provide invisible click targets. For legacy records without rectangles,
     // the text layer + ink remains the fallback.
+    const tApply = timed ? performance.now() : 0;
     const bands: HighlightBand[] = [];
     for (const { item, lines } of measured) {
       if (item.stored) {
@@ -1101,8 +1117,13 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
     // Keep the previous page-relative overlay during the short CSS-only zoom
     // window. A legacy text-only annotation needs the finished canvas to be
     // recalibrated; replacing it with an incomplete set here causes a flash.
+    const tBands = timed ? performance.now() : 0;
     if (pageWrapper && (allowCalibration || !needsLegacyCalibration)) {
       renderPageBands(pageWrapper, bands);
+    }
+    if (timed) {
+      const now = performance.now();
+      return { items: marked.length, calibrateMs: Math.round(tWrap - tStart), wrapMs: Math.round(tMeasure - tWrap), measureMs: Math.round(tApply - tMeasure), applyMs: Math.round(tBands - tApply), bandsMs: Math.round(now - tBands) };
     }
   }, [calibrateTextLayer]);
 
@@ -1278,6 +1299,10 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
 
     const cached = selectionPageCacheRef.current.get(pageNumber);
     if (cached?.layer === layer) return cached;
+    // The spans are measured as they will be shown. A selection begun on a
+    // page still waiting to be dressed after a fling would otherwise measure
+    // them before the fit, and keep those widths for the life of the layer.
+    fitTextLayer(layer, String(viewerRef.current?.currentScale ?? 1));
     const pending = getPageTextContent(pageNumber);
     if (!pending) return null;
 
@@ -1291,6 +1316,7 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
       if (strings.some((text, index) => text !== items[index].str)) return null;
 
       const spans = divs.map((div) => div?.isConnected ? div : null);
+      const t0 = performance.now();
       const fractions = items.map((item, index) => itemBoundaryFractions(spans[index], item.str));
       const entry: SelectionPageEntry = {
         pageNumber,
@@ -1298,6 +1324,7 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
         spans,
         model: buildPdfSelectionModel(items, content.styles as Record<string, PdfTextStyle>, fractions),
       };
+      if (traceEnabled()) trace("select-prep", { page: pageNumber, items: items.length, ms: Math.round(performance.now() - t0) });
       selectionPageCacheRef.current.set(pageNumber, entry);
       layer.dataset.prSelectionReady = String(entry.model.characters.length);
       return entry;
@@ -1683,18 +1710,83 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
     eventBus.on("pagechanging", (e: { pageNumber: number }) => {
       if (!cancelled && Number.isInteger(e.pageNumber)) setCurrentPage(e.pageNumber);
     });
+    // What a page gets once pdf.js has drawn it is ours and synchronous: its
+    // spans fitted to the print, the marks and rules of its passages, its
+    // reference links — a frame's worth of layout per page. In a fling the
+    // pages come several a second, and that work done the moment each one
+    // arrived held the main thread for most of every frame; Safari paints
+    // nothing while it waits, and the viewer went black. So a drawn page is
+    // queued, and dressed one per frame once the reader has slowed down, the
+    // page nearest the view first. A page still waiting shows its print and
+    // selectable text; its rules follow a frame or two after the scroll eases.
+    type Dressing = { dress: boolean; calibrate: boolean; links: boolean };
+    const decorateQueue = new Map<number, Dressing>();
+    let decorateFrame = 0;
+    const scrollSamples: { t: number; top: number }[] = [];
+    // Speed from the latest scroll event back to one at least a few frames
+    // earlier — not over a fixed window: a page render that blocks the thread
+    // longer than any window would leave one event in it, and a fling would
+    // read as settled in the middle. No event for the settle time is settled.
+    const scrollSpeed = () => {
+      const now = performance.now();
+      const last = scrollSamples[scrollSamples.length - 1];
+      if (!last || now - last.t > FLING_SETTLE_MS) return 0;
+      let first = scrollSamples[0];
+      for (let i = scrollSamples.length - 2; i >= 0; i--) {
+        if (last.t - scrollSamples[i].t >= FLING_SPAN_MS) { first = scrollSamples[i]; break; }
+      }
+      const dt = last.t - first.t;
+      return dt > 0 ? Math.abs(last.top - first.top) / dt : 0;
+    };
+    const onFlingSample = () => {
+      scrollSamples.push({ t: performance.now(), top: container.scrollTop });
+      if (scrollSamples.length > 40) scrollSamples.shift();
+    };
+    const decoratePage = (pageNumber: number, job: Dressing) => {
+      const t0 = performance.now();
+      let fitMs = 0, marksMs = 0;
+      let timing: PaintTiming | undefined;
+      if (job.dress) {
+        const layer = container.querySelector(`.page[data-page-number="${pageNumber}"] .textLayer`) as HTMLElement | null;
+        if (layer) fitTextLayer(layer, String(viewer.currentScale));
+        const t1 = performance.now();
+        fitMs = t1 - t0;
+        timing = paintPageHighlights(pageNumber, job.calibrate) ?? undefined;
+        marksMs = performance.now() - t1;
+        // The character measure that selection needs is a few hundred ms a
+        // page: warmed only for the page in view, the others measure when
+        // a selection first reaches them
+        if (Math.abs(pageNumber - viewer.currentPageNumber) <= 1) scheduleSelectionPreparation(pageNumber);
+      }
+      if (job.dress || job.links) void paintReferenceLinks(pageNumber);
+      scheduleSelectionPaint();
+      if (traceEnabled()) trace("decorate", { page: pageNumber, ...job, fitMs: Math.round(fitMs), marksMs: Math.round(marksMs), ...timing, ms: Math.round(performance.now() - t0), queued: decorateQueue.size });
+    };
+    const flushDecorations = () => {
+      decorateFrame = 0;
+      if (cancelled || decorateQueue.size === 0) return;
+      if (scrollSpeed() > FLING_PX_PER_MS) {
+        decorateFrame = requestAnimationFrame(flushDecorations);
+        return;
+      }
+      const current = viewer.currentPageNumber;
+      let next: number | null = null;
+      for (const n of decorateQueue.keys()) if (next === null || Math.abs(n - current) < Math.abs(next - current)) next = n;
+      const job = decorateQueue.get(next!)!;
+      decorateQueue.delete(next!);
+      decoratePage(next!, job);
+      if (decorateQueue.size) decorateFrame = requestAnimationFrame(flushDecorations);
+    };
+    const queueDecoration = (pageNumber: number, wanted: Partial<Dressing>) => {
+      const had = decorateQueue.get(pageNumber);
+      decorateQueue.set(pageNumber, { dress: !!(wanted.dress || had?.dress), calibrate: !!(wanted.calibrate || had?.calibrate), links: !!(wanted.links || had?.links) });
+      if (!decorateFrame) decorateFrame = requestAnimationFrame(flushDecorations);
+    };
+    container.addEventListener("scroll", onFlingSample, { passive: true });
+
     // Text layers rebuild on zoom/virtualization — re-paint highlights each time
     eventBus.on("textlayerrendered", (e: { pageNumber: number }) => {
-      if (!cancelled) {
-        const layer = container.querySelector(
-          `.page[data-page-number="${e.pageNumber}"] .textLayer`
-        ) as HTMLElement | null;
-        if (layer) fitTextLayer(layer, String(viewer.currentScale));
-        paintPageHighlights(e.pageNumber);
-        scheduleSelectionPreparation(e.pageNumber);
-        void paintReferenceLinks(e.pageNumber);
-        scheduleSelectionPaint();
-      }
+      if (!cancelled) queueDecoration(e.pageNumber, { dress: true, links: true });
     });
     // The text layer can finish before the canvas has any ink on it, and a
     // band snapped against a blank canvas silently keeps the text layer's raw
@@ -1711,11 +1803,9 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
         const needsCanvasAlignment = [...highlightsRef.current, ...askedRef.current].some(
           (item) => (!item.pageNumber || item.pageNumber === e.pageNumber) && !item.position
         );
-        if (needsCanvasAlignment) paintPageHighlights(e.pageNumber, true);
         const pageView = viewer.getPageView(e.pageNumber - 1) as PdfPageView | undefined;
-        if (!pageView?.div?.querySelector(".pr-page-reference-links")) {
-          void paintReferenceLinks(e.pageNumber);
-        }
+        const unlinked = !pageView?.div?.querySelector(".pr-page-reference-links");
+        if (needsCanvasAlignment || unlinked) queueDecoration(e.pageNumber, { dress: needsCanvasAlignment, calibrate: needsCanvasAlignment, links: unlinked });
         scheduleSelectionPaint();
       }
     });
@@ -1741,6 +1831,9 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
 
     return () => {
       cancelled = true;
+      cancelAnimationFrame(decorateFrame);
+      decorateQueue.clear();
+      container.removeEventListener("scroll", onFlingSample);
       // Where this paper was left, under its own key — the key changes only
       // after every teardown has run
       clearTimeout(positionTimerRef.current);
@@ -1905,21 +1998,27 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
         px += c.width * c.height;
         maxW = Math.max(maxW, c.width);
         maxH = Math.max(maxH, c.height);
+        // Reading pixels back from a canvas stalls Safari for a good part of
+        // a frame per canvas — the first trace of a fling was one long frame
+        // of its own census. Only the pages in view are read, and only once
+        // the view has settled.
+        const page = c.closest(".page")?.getAttribute("data-page-number") ?? "?";
+        if (reason !== "settled" || !visible.includes(Number(page))) continue;
         try {
           const ctx = c.getContext("2d");
           if (!ctx || c.width === 0 || c.height === 0) continue;
           let dark = 0;
-          const points: [number, number][] = [[0.2, 0.2], [0.5, 0.5], [0.8, 0.8], [0.5, 0.2], [0.2, 0.8], [0.5, 0.9]];
+          const points: [number, number][] = [[0.3, 0.3], [0.5, 0.5], [0.7, 0.7]];
           for (const [fx, fy] of points) {
             const d = ctx.getImageData(Math.floor(c.width * fx), Math.floor(c.height * fy), 1, 1).data;
             if (d[3] === 0 || d[0] + d[1] + d[2] < 30) dark++;
           }
-          if (dark === points.length) black.push(c.closest(".page")?.getAttribute("data-page-number") ?? "?");
+          if (dark === points.length) black.push(page);
         } catch {
           // a canvas that cannot be read is reported by its size alone
         }
       }
-      trace("canvases", { reason, canvases: canvases.length, MB: Math.round(px * 4 / 1048576), maxCanvas: `${maxW}x${maxH}`, black, visible, scale: viewer ? +viewer.currentScale.toFixed(3) : null, scrollTop: Math.round(container.scrollTop) });
+      trace("canvases", { reason, canvases: canvases.length, MB: Math.round(px * 4 / 1048576), maxCanvas: `${maxW}x${maxH}`, black: reason === "settled" ? black : "unread", visible, scale: viewer ? +viewer.currentScale.toFixed(3) : null, scrollTop: Math.round(container.scrollTop) });
     };
     const onScroll = () => {
       const now = performance.now();
@@ -1928,20 +2027,29 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
       clearTimeout(settleTimer);
       settleTimer = window.setTimeout(() => { lastCensus = performance.now(); census("settled"); }, 700);
     };
+    // A tab in the background gets no frames at all; the gap when it comes
+    // back is the time away, not a frame
+    let hiddenSince = 0;
+    const onVisibility = () => {
+      if (document.hidden) hiddenSince = performance.now();
+      else { lastFrame = performance.now(); if (hiddenSince) trace("tab-returned", { awayMs: Math.round(performance.now() - hiddenSince) }); hiddenSince = 0; }
+    };
     const tick = (now: number) => {
       const gap = now - lastFrame;
       lastFrame = now;
-      if (gap > 80) {
+      if (gap > 80 && !document.hidden && gap < 5000) {
         trace("long-frame", { ms: Math.round(gap), scrolling: now - lastScrollAt < 400, zooming: zoomTargetScaleRef.current !== null || now - lastScaleAtRef.current < 600, scrollTop: Math.round(container.scrollTop) });
       }
       frame = requestAnimationFrame(tick);
     };
     frame = requestAnimationFrame(tick);
     container.addEventListener("scroll", onScroll, { passive: true });
+    document.addEventListener("visibilitychange", onVisibility);
     return () => {
       cancelAnimationFrame(frame);
       clearTimeout(settleTimer);
       container.removeEventListener("scroll", onScroll);
+      document.removeEventListener("visibilitychange", onVisibility);
     };
   }, []);
 

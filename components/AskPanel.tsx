@@ -1873,17 +1873,17 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
               data-annotation-id={annotation.id}
               data-lit={lit ? "" : undefined}
               className="rounded-lg overflow-hidden transition-all pr-fade-up"
-              // Cards off screen are neither laid out nor painted until they
-              // come near: a long thread of formulas cost the browser most of
-              // every scroll frame in layout and paint. Once rendered, a card
-              // keeps its measured size as its placeholder, so nothing shifts.
-              // The lit card and the active one are always laid out in full:
-              // landing, following and the focus measure them.
+              // Every card is laid out in full, always. Skipping the layout of
+              // cards off screen (content-visibility: auto, with a placeholder
+              // height) saved a little paint and cost the whole list: WebKit
+              // sized a skipped card at its placeholder, so each time the lit
+              // card changed under a scroll the list's height jumped by
+              // thousands of pixels and the scroll offset was clamped back —
+              // the reader could not scroll past a long thread at all.
               style={{
                 background: "var(--surface)",
                 border: lit ? "1px solid var(--accent)" : "1px solid var(--border)",
                 boxShadow: lit ? "0 0 0 1px var(--accent), 0 4px 20px rgba(232,120,76,0.15)" : "var(--shadow-card)",
-                ...(lit || isActive ? {} : { contentVisibility: "auto" as const, containIntrinsicSize: "auto 600px" }),
               }}
             >
               {/* Card header — doubles as the collapse toggle */}
