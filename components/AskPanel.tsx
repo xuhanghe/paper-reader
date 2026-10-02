@@ -1872,7 +1872,10 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
               data-conversation={annotation.label}
               data-annotation-id={annotation.id}
               data-lit={lit ? "" : undefined}
-              className="rounded-lg overflow-hidden transition-all pr-fade-up"
+              // No transition on the card itself: a fading box-shadow repaints
+              // the whole card, formulas and all, for every frame of the fade,
+              // and a card can be thousands of pixels tall
+              className="rounded-lg overflow-hidden pr-fade-up"
               // Every card is laid out in full, always. Skipping the layout of
               // cards off screen (content-visibility: auto, with a placeholder
               // height) saved a little paint and cost the whole list: WebKit

@@ -1969,10 +1969,18 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
     }
   }, [stepZoomAnimation]);
 
-  // With the trace on: every long frame, flagged with what was going on, and
+  // With the trace on: every long task, flagged with what was going on, and
   // a census of the page canvases as the view scrolls and once it settles —
   // how many, how big, how much memory, and whether any reads back black,
   // which is what Safari leaves when its canvas budget is exceeded.
+  //
+  // The long tasks are found with a timer, never with requestAnimationFrame.
+  // A frame callback asks the browser for a frame sixty times a second even
+  // when nothing on the page changes, and in Safari every one of those frames
+  // re-walked every positioned element on the page — thousands of text-layer
+  // spans and formula parts — leaving the main thread at 90% with nothing to
+  // show for it. A timer that fires late has measured the same long task
+  // without asking for anything to be drawn.
   const lastScaleAtRef = useRef(0);
   useEffect(() => {
     if (!traceEnabled()) return;
@@ -1981,8 +1989,9 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
     let lastScrollAt = 0;
     let lastCensus = 0;
     let settleTimer = 0;
-    let frame = 0;
+    let probe = 0;
     let lastFrame = performance.now();
+    const PROBE_MS = 50;
     const census = (reason: string) => {
       const box = container.getBoundingClientRect();
       const viewer = viewerRef.current;
@@ -2034,19 +2043,21 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
       if (document.hidden) hiddenSince = performance.now();
       else { lastFrame = performance.now(); if (hiddenSince) trace("tab-returned", { awayMs: Math.round(performance.now() - hiddenSince) }); hiddenSince = 0; }
     };
-    const tick = (now: number) => {
-      const gap = now - lastFrame;
+    const tick = () => {
+      const now = performance.now();
+      // How late the timer fired is how long the thread was held
+      const gap = now - lastFrame - PROBE_MS;
       lastFrame = now;
       if (gap > 80 && !document.hidden && gap < 5000) {
         trace("long-frame", { ms: Math.round(gap), scrolling: now - lastScrollAt < 400, zooming: zoomTargetScaleRef.current !== null || now - lastScaleAtRef.current < 600, scrollTop: Math.round(container.scrollTop) });
       }
-      frame = requestAnimationFrame(tick);
+      probe = window.setTimeout(tick, PROBE_MS);
     };
-    frame = requestAnimationFrame(tick);
+    probe = window.setTimeout(tick, PROBE_MS);
     container.addEventListener("scroll", onScroll, { passive: true });
     document.addEventListener("visibilitychange", onVisibility);
     return () => {
-      cancelAnimationFrame(frame);
+      clearTimeout(probe);
       clearTimeout(settleTimer);
       container.removeEventListener("scroll", onScroll);
       document.removeEventListener("visibilitychange", onVisibility);
