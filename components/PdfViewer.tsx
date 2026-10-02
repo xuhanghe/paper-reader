@@ -12,7 +12,7 @@ import { loadReadingPosition, saveReadingPosition } from "@/lib/reading-position
 import { useTextSelection } from "@/hooks/useTextSelection";
 import { useRegionDrag } from "@/hooks/useRegionDrag";
 import { RegionResult } from "@/hooks/useRegionDrag";
-import { markTextInContainer, clearMarks, findIgnoringWhitespace, occurrenceAt } from "@/lib/highlight-dom";
+import { markTextInContainer, clearMarks, findIgnoringWhitespace, indexText, occurrenceAt } from "@/lib/highlight-dom";
 import { chooseInkRun, mergeIntoLines, nearestInkRun, nearestStoredLine, relativeToPage, type InkRun } from "@/lib/ink-bands";
 import { logicalSelectionBands } from "@/lib/selection-geometry";
 import { alignRectsToZoteroLines, type PdfTextItem, type PdfTextStyle } from "@/lib/zotero-selection-geometry";
@@ -471,6 +471,41 @@ const IS_SAFARI = typeof navigator !== "undefined" && /AppleWebKit/.test(navigat
 // With the trace on, where a page's paint went
 type PaintTiming = { items: number; calibrateMs: number; wrapMs: number; measureMs: number; applyMs: number; bandsMs: number };
 
+// With the trace on, what pdf.js asked the canvas to do while drawing a page:
+// every 2D-context call of the kinds that cost, with its time. Installed once,
+// on the prototype, so pdf.js's own contexts report without being touched.
+type CanvasOpTally = Record<string, { calls: number; ms: number; max: number }>;
+let canvasOps: CanvasOpTally | null = null;
+let canvasOpsInstalled = false;
+function installCanvasOpTimers() {
+  if (canvasOpsInstalled || typeof CanvasRenderingContext2D === "undefined") return;
+  canvasOpsInstalled = true;
+  const proto = CanvasRenderingContext2D.prototype as unknown as Record<string, (...args: unknown[]) => unknown>;
+  for (const op of ["fill", "stroke", "fillText", "strokeText", "drawImage", "putImageData", "clip", "fillRect", "createPattern", "getImageData"]) {
+    const real = proto[op];
+    if (typeof real !== "function") continue;
+    proto[op] = function (this: unknown, ...args: unknown[]) {
+      if (!canvasOps) return real.apply(this, args);
+      const t0 = performance.now();
+      const out = real.apply(this, args);
+      const dt = performance.now() - t0;
+      const e = (canvasOps[op] ??= { calls: 0, ms: 0, max: 0 });
+      e.calls++; e.ms += dt; if (dt > e.max) e.max = dt;
+      return out;
+    };
+  }
+}
+function canvasOpsSummary(): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  let total = 0;
+  for (const [op, e] of Object.entries(canvasOps ?? {})) {
+    total += e.ms;
+    out[op] = `${e.calls}x ${e.ms.toFixed(0)}ms (max ${e.max.toFixed(0)})`;
+  }
+  out.drawMs = Math.round(total);
+  return out;
+}
+
 // A fling: the view moving faster than this, measured from the latest scroll
 // event back to one at least the span earlier. Pages drawn during one wait to
 // be dressed (see the viewer lifecycle) until the speed drops, or until no
@@ -888,29 +923,36 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
       calibrateTextLayer(layer, pageEl, pageNumber);
     }
     const tWrap = timed ? performance.now() : 0;
-    clearMarks(layer, "pr-highlight");
-    clearMarks(layer, "pr-asked");
-    for (const a of pageAsked) {
-      const cited = a.kind === "cited";
-      const title = cited
+    const askedTitle = (a: AskedPassage) =>
+      a.kind === "cited"
         ? a.label
           ? `Cited in: ${a.label}`
           : "The model cited this — click to open the answer"
         : a.label
           ? `Asked about: ${a.label}`
           : "You asked about this — click to open the conversation";
-      // A passage selected across pages is matched by its words on this page
-      markTextInContainer(layer, shareOnPage(a, pageNumber).text, "pr-asked", title, { id: a.id, occurrence: a.occurrence });
-    }
-    for (const h of pageHighlights) {
-      const cls = ["pr-highlight", h.note ? "pr-has-note" : ""].filter(Boolean).join(" ");
-      markTextInContainer(
-        layer,
-        h.text,
-        cls,
-        h.note ? `Note: ${h.note} — click to edit` : "Click to recolour or remove",
-        { id: h.id, occurrence: h.occurrence }
-      );
+    const highlightTitle = (h: Highlight) => (h.note ? `Note: ${h.note} — click to edit` : "Click to recolour or remove");
+    // The marks already in the layer are kept when they are the ones wanted:
+    // a page is painted again whenever its canvas or a highlight anywhere
+    // changes, and wrapping twenty passages is the dearest part of a paint
+    const wanted = JSON.stringify([
+      pageAsked.map((a) => [a.id, a.occurrence ?? 0, shareOnPage(a, pageNumber).text, askedTitle(a)]),
+      pageHighlights.map((h) => [h.id, h.occurrence ?? 0, h.text, highlightTitle(h), !!h.note]),
+    ]);
+    const marksPresent = !!layer.querySelector("mark.pr-asked, mark.pr-highlight");
+    if (layer.dataset.prMarked !== wanted || marksPresent !== pageAsked.length + pageHighlights.length > 0) {
+      clearMarks(layer, "pr-highlight");
+      clearMarks(layer, "pr-asked");
+      const index = indexText(layer);
+      for (const a of pageAsked) {
+        // A passage selected across pages is matched by its words on this page
+        markTextInContainer(layer, shareOnPage(a, pageNumber).text, "pr-asked", askedTitle(a), { id: a.id, occurrence: a.occurrence, index });
+      }
+      for (const h of pageHighlights) {
+        const cls = ["pr-highlight", h.note ? "pr-has-note" : ""].filter(Boolean).join(" ");
+        markTextInContainer(layer, h.text, cls, highlightTitle(h), { id: h.id, occurrence: h.occurrence, index });
+      }
+      layer.dataset.prMarked = wanted;
     }
     // Everything marked on this page, measured once, from raw geometry.
     //
@@ -1786,18 +1828,40 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
 
     // Text layers rebuild on zoom/virtualization — re-paint highlights each time
     eventBus.on("textlayerrendered", (e: { pageNumber: number }) => {
-      if (!cancelled) queueDecoration(e.pageNumber, { dress: true, links: true });
+      if (cancelled) return;
+      if (traceEnabled()) {
+        // The spans just appended have no layout yet; measuring one forces
+        // it, which is the cost the browser was about to pay anyway
+        const layer = container.querySelector(`.page[data-page-number="${e.pageNumber}"] .textLayer`) as HTMLElement | null;
+        const t0 = performance.now();
+        layer?.getBoundingClientRect();
+        trace("text-layer", { page: e.pageNumber, spans: layer?.querySelectorAll("span").length ?? 0, layoutMs: Math.round(performance.now() - t0) });
+      }
+      queueDecoration(e.pageNumber, { dress: true, links: true });
     });
     // The text layer can finish before the canvas has any ink on it, and a
     // band snapped against a blank canvas silently keeps the text layer's raw
     // geometry. Repaint once the pixels exist.
+    // With the trace on: when a page's drawing starts, what the canvas was
+    // asked to do, and what the text layer cost to lay out
+    let renderStartedAt = 0;
+    if (traceEnabled()) {
+      installCanvasOpTimers();
+      eventBus.on("pagerender", (e: { pageNumber: number }) => {
+        if (cancelled) return;
+        renderStartedAt = performance.now();
+        canvasOps = {};
+        trace("page-render-start", { page: e.pageNumber, scrollTop: Math.round(container.scrollTop) });
+      });
+    }
     eventBus.on("pagerendered", (e: { pageNumber: number }) => {
       if (traceEnabled() && !cancelled) {
         const pv = viewer.getPageView(e.pageNumber - 1) as (PdfPageView & { canvas?: HTMLCanvasElement; viewport?: { width: number; height: number } }) | undefined;
         const c = pv?.canvas;
         const vp = pv?.viewport;
         const dpr = window.devicePixelRatio || 1;
-        trace("page-rendered", { page: e.pageNumber, canvas: c ? `${c.width}x${c.height}` : null, canvasMB: c ? +(c.width * c.height * 4 / 1048576).toFixed(1) : null, css: vp ? `${Math.round(vp.width)}x${Math.round(vp.height)}` : null, restricted: c && vp ? c.width < Math.round(vp.width * dpr) - 2 : null });
+        trace("page-rendered", { page: e.pageNumber, canvas: c ? `${c.width}x${c.height}` : null, canvasMB: c ? +(c.width * c.height * 4 / 1048576).toFixed(1) : null, css: vp ? `${Math.round(vp.width)}x${Math.round(vp.height)}` : null, restricted: c && vp ? c.width < Math.round(vp.width * dpr) - 2 : null, wallMs: renderStartedAt ? Math.round(performance.now() - renderStartedAt) : null, ...canvasOpsSummary() });
+        canvasOps = null;
       }
       if (!cancelled) {
         const needsCanvasAlignment = [...highlightsRef.current, ...askedRef.current].some(
@@ -1810,7 +1874,23 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
       }
     });
 
-    const loadingTask = getDocument(pdfDataUrl);
+    // Safari draws glyphs from their outlines rather than registering each
+    // embedded font subset with the document. Every font added to
+    // document.fonts makes WebKit restyle and lay out the whole document —
+    // the panel's thousands of formula parts, every page's text layer —
+    // which cost a quarter second per font, and a paper carries dozens of
+    // subsets: that was the stall on every page that brought a new one. Drawn
+    // from outlines, a page's print costs the canvas a few milliseconds and
+    // the document nothing. A font the PDF does not embed is then pdf.js's
+    // stand-in, served from the package (useSystemFonts is off with this).
+    // Chrome scopes the restyle to the font's users and keeps native text.
+    const loadingTask = getDocument({
+      url: pdfDataUrl,
+      disableFontFace: IS_SAFARI,
+      standardFontDataUrl: "/api/pdfjs/standard-fonts/",
+      cMapUrl: "/api/pdfjs/cmaps/",
+      cMapPacked: true,
+    });
     loadingTask.promise.then(
       (pdf) => {
         if (cancelled) return;

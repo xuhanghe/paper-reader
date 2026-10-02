@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import {
   findIgnoringWhitespace,
   findAllIgnoringWhitespace,
+  indexText,
   markTextInContainer,
   occurrenceAt,
 } from "../lib/highlight-dom.js";
@@ -123,5 +124,50 @@ describe("repeated phrases", () => {
     const el = dom.window.document.createElement("div") as unknown as HTMLElement;
     el.textContent = "aaaa";
     assert.equal(findAllIgnoringWhitespace(el.textContent!, "aa").length, 2);
+  });
+});
+
+// A page with twenty highlights used to walk and normalise its text twenty
+// times; one index serves every mark on the page.
+describe("markTextInContainer — one index for many marks", () => {
+  const page = () => {
+    const el = dom.window.document.createElement("div") as unknown as HTMLElement;
+    el.innerHTML =
+      "<span>We begin by studying operator-level granularities in the</span>" +
+      "<span> attention kernel, </span>" +
+      "<span>Notably, operator-level granularities recur in the contributions.</span>";
+    return el;
+  };
+  const marked = (el: HTMLElement) => Array.from(el.querySelectorAll("mark")).map((m) => `${m.className}:${m.textContent}`);
+
+  test("marks placed through an index match those placed one by one", () => {
+    const one = page();
+    markTextInContainer(one, "attention kernel", "pr-asked");
+    markTextInContainer(one, "operator-level granularities", "pr-highlight", undefined, { occurrence: 1 });
+    markTextInContainer(one, "We begin", "pr-highlight");
+    const many = page();
+    const index = indexText(many);
+    markTextInContainer(many, "attention kernel", "pr-asked", undefined, { index });
+    markTextInContainer(many, "operator-level granularities", "pr-highlight", undefined, { occurrence: 1, index });
+    markTextInContainer(many, "We begin", "pr-highlight", undefined, { index });
+    assert.deepEqual(marked(many), marked(one));
+    assert.equal(many.textContent, one.textContent);
+  });
+
+  test("a mark after another in the same span still lands on its own words", () => {
+    const el = page();
+    const index = indexText(el);
+    // Both inside the first span: the first wrap splits that span's text node
+    markTextInContainer(el, "We begin", "pr-highlight", undefined, { index });
+    markTextInContainer(el, "granularities in the", "pr-highlight", undefined, { index });
+    assert.deepEqual(marked(el), ["pr-highlight:We begin", "pr-highlight:granularities in the"]);
+  });
+
+  test("a passage that is not on the page marks nothing and leaves the index usable", () => {
+    const el = page();
+    const index = indexText(el);
+    assert.equal(markTextInContainer(el, "no such words", "pr-highlight", undefined, { index }), false);
+    assert.equal(markTextInContainer(el, "Notably", "pr-highlight", undefined, { index }), true);
+    assert.deepEqual(marked(el), ["pr-highlight:Notably"]);
   });
 });

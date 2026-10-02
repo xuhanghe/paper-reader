@@ -36,20 +36,38 @@ function foldChar(ch: string): string {
 // contributions — and painting the first match means highlighting a passage
 // the reader did not select.
 export function findAllIgnoringWhitespace(full: string, query: string): { start: number; end: number }[] {
-  let q = "";
-  for (const ch of query) if (!/\s/.test(ch)) q += foldChar(ch);
-  if (!q) return [];
+  return findAllNormalized(normalizeText(full), query);
+}
 
-  // Whitespace-free, lowercased string → raw index mapping
+// The whitespace-free, lowercased form of a container's text with the map
+// back to raw offsets. Twenty passages on one page used to normalise the
+// page's text twenty times; one index serves them all, and wrapping a match
+// in a <mark> changes which text nodes hold the text but not the text itself.
+type Normalized = { norm: string; normToRaw: number[] };
+export type TextIndex = Normalized & {
+  full: string;
+  skipSelector?: string;
+  // The text nodes as last walked; null once a wrap has split them
+  nodes: { node: Text; start: number }[] | null;
+};
+
+const WHITESPACE = /\s/;
+function normalizeText(full: string): Normalized {
   let norm = "";
   const normToRaw: number[] = [];
   for (let i = 0; i < full.length; i++) {
     const ch = full[i];
-    if (/\s/.test(ch)) continue;
+    if (WHITESPACE.test(ch)) continue;
     norm += foldChar(ch);
     normToRaw.push(i);
   }
+  return { norm, normToRaw };
+}
 
+function findAllNormalized({ norm, normToRaw }: Normalized, query: string): { start: number; end: number }[] {
+  let q = "";
+  for (const ch of query) if (!WHITESPACE.test(ch)) q += foldChar(ch);
+  if (!q) return [];
   const hits: { start: number; end: number }[] = [];
   // Overlapping occurrences are not distinct places to a reader, so each
   // search resumes past the one just found
@@ -57,6 +75,12 @@ export function findAllIgnoringWhitespace(full: string, query: string): { start:
     hits.push({ start: normToRaw[at], end: normToRaw[at + q.length - 1] + 1 });
   }
   return hits;
+}
+
+// One index for a container about to receive many marks
+export function indexText(container: HTMLElement, skipSelector?: string): TextIndex {
+  const { nodes, full } = textNodesIn(container, skipSelector);
+  return { ...normalizeText(full), full, skipSelector, nodes };
 }
 
 // Locate `query` in `full`. `occurrence` picks which one; out of range falls
@@ -79,7 +103,11 @@ const NON_PROSE = new Set(["SCRIPT", "STYLE", "NOSCRIPT", "TEMPLATE", "TITLE"]);
 // Where a passage sits in a container: the text nodes it spans, and its
 // start/end offsets in their concatenated text
 function textNodesIn(container: HTMLElement, skipSelector?: string) {
-  const walker = container.ownerDocument.createTreeWalker(container, NodeFilter.SHOW_TEXT, {
+  // A filter callback is a call out of the engine for every text node; a
+  // page's text layer has over a thousand and nothing to filter. The walk
+  // runs unfiltered unless there is something to skip.
+  const needsFilter = !!skipSelector || !!container.querySelector("script,style,noscript,template,title");
+  const walker = container.ownerDocument.createTreeWalker(container, NodeFilter.SHOW_TEXT, needsFilter ? {
     acceptNode: (node) => {
       const parent = node.parentNode as Element | null;
       if (NON_PROSE.has(parent?.nodeName ?? "")) return NodeFilter.FILTER_REJECT;
@@ -88,7 +116,7 @@ function textNodesIn(container: HTMLElement, skipSelector?: string) {
       if (skipSelector && parent?.closest?.(skipSelector)) return NodeFilter.FILTER_REJECT;
       return NodeFilter.FILTER_ACCEPT;
     },
-  });
+  } : null);
   const nodes: { node: Text; start: number }[] = [];
   let full = "";
   while (walker.nextNode()) {
@@ -150,9 +178,19 @@ export function markTextInContainer(
   query: string,
   className: string,
   title?: string,
-  options?: { id?: string; color?: string; skipSelector?: string; occurrence?: number }
+  options?: { id?: string; color?: string; skipSelector?: string; occurrence?: number; index?: TextIndex }
 ): boolean {
-  const found = locateText(container, query, options?.skipSelector, options?.occurrence);
+  let found: { nodes: { node: Text; start: number }[]; rawStart: number; rawEnd: number } | null;
+  const index = options?.index;
+  if (index) {
+    const hits = findAllNormalized(index, query);
+    const match = hits[options?.occurrence ?? 0] ?? hits[0] ?? null;
+    if (!match) return false;
+    index.nodes ??= textNodesIn(container, index.skipSelector).nodes;
+    found = { nodes: index.nodes, rawStart: match.start, rawEnd: match.end };
+  } else {
+    found = locateText(container, query, options?.skipSelector, options?.occurrence);
+  }
   if (!found) return false;
   const { nodes, rawStart, rawEnd } = found;
   const doc = container.ownerDocument;
@@ -175,6 +213,8 @@ export function markTextInContainer(
     if (options?.color) mark.style.background = options.color;
     try {
       range.surroundContents(mark);
+      // The node was split around the mark: the next mark walks again
+      if (index) index.nodes = null;
     } catch {
       // skip un-wrappable fragments rather than break the layer
     }
