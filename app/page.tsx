@@ -45,6 +45,7 @@ const HtmlViewer = dynamic(() => import("@/components/HtmlViewer").then((m) => m
 const CUSTOM_API_KEY = "paper-reader:custom-api";
 
 const LAYOUT_KEY = "paper-reader:layout";
+const SETUP_SEEN_KEY = "paper-reader:setup-seen";
 
 // Panel sizes and open/closed state survive a refresh. First run opens the
 // library only — the map pops open when a material is opened, and the explain
@@ -165,6 +166,9 @@ export default function Home() {
   const [customApiModalOpen, setCustomApiModalOpen] = useState(false);
   const [skillsOpen, setSkillsOpen] = useState(false);
   const [setupOpen, setSetupOpen] = useState(false);
+  // Opened by itself once: a machine with no library and no agent has a
+  // reader that answers nothing, and the badge alone would not say why
+  const [setupFirstRun, setSetupFirstRun] = useState(false);
   // nonce, so clicking the same collection chip twice scrolls to it again
   const [revealCollection, setRevealCollection] = useState<{ key: string; nonce: number } | null>(null);
   // A quiet badge, not a blocking dialog: the reader still opens local PDFs
@@ -185,7 +189,14 @@ export default function Home() {
           !report.zoteroLocal?.reachable ||
           !report.anyProvider ||
           (report.zoteroKey?.configured && !report.zoteroKey?.canWrite);
-        if (!cancelled) setSetupNeedsAttention(Boolean(wrong));
+        if (cancelled) return;
+        setSetupNeedsAttention(Boolean(wrong));
+        // The assistant steps in on its own only while nothing is connected,
+        // and only until it has been seen once — after that it is the badge
+        const essentialMissing = !report.zoteroLocal?.reachable || !report.anyProvider;
+        let seen = false;
+        try { seen = localStorage.getItem(SETUP_SEEN_KEY) === "1"; } catch {}
+        if (essentialMissing && !seen) { setSetupFirstRun(true); setSetupOpen(true); }
       } catch {
         // the badge is a nicety — a failed probe should never surface an error
       }
@@ -1441,7 +1452,16 @@ export default function Home() {
         rememberAs="reader"
       />
 
-      {setupOpen && <SetupDialog onClose={() => setSetupOpen(false)} />}
+      {setupOpen && (
+        <SetupDialog
+          firstRun={setupFirstRun}
+          onClose={() => {
+            setSetupOpen(false);
+            setSetupFirstRun(false);
+            try { localStorage.setItem(SETUP_SEEN_KEY, "1"); } catch {}
+          }}
+        />
+      )}
 
       <SkillsDrawer
         open={skillsOpen}

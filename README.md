@@ -138,13 +138,17 @@ npm install
 npm run dev          # http://localhost:3000
 ```
 
-**Or just open ⚙ Setup in the header.** It checks the two things that quietly
-break a first run — whether Zotero is reachable and whether any provider CLI is
-actually visible to the server — and fixes what it can in place: paste a Zotero
-key and it is verified against zotero.org before being saved, and a CLI that is
-installed but off the server's `PATH` gets a one-click "use this path". A dot on
-the button means something needs attention. The steps below are the same thing
-done by hand.
+**Then let the setup assistant do the rest.** On a machine where nothing is
+connected yet it opens by itself; otherwise it is ⚙ Setup in the header. It
+walks four steps and does each one for you where a local app can: finds Zotero
+(or sends you to the download and notices when it is installed), starts it,
+switches its local API on by editing Zotero's own settings and restarting it,
+checks your zotero.org key against zotero.org before saving it, detects which
+coding agents are installed and whether they are signed in, installs a missing
+one with its own package manager, and opens a terminal on the sign-in command
+when a browser login is needed — then watches until it is done. A dot on the
+button means something needs attention. The steps below are the same thing done
+by hand.
 
 **Enable Zotero's local API.** In Zotero: *Settings → Advanced → Allow other
 applications on this computer to communicate with Zotero*. This is what lets the

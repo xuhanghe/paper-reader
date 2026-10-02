@@ -73,7 +73,7 @@ async function versionOf(bin: string, args: string[]): Promise<string | null> {
 
 // A bare command name has to be resolved before it can be stat'd. Mirrors
 // what spawn() would do, so a hit here means the server really can run it.
-async function resolveOnPath(name: string): Promise<string | null> {
+export async function resolveOnPath(name: string): Promise<string | null> {
   if (name.includes("/")) return (await isExecutable(name)) ? name : null;
   for (const dir of (process.env.PATH || "").split(path.delimiter)) {
     if (!dir) continue;
