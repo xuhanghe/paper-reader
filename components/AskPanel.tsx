@@ -383,6 +383,59 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
     reader.readAsDataURL(file);
   };
 
+  // An image dragged onto the panel — a screenshot from the desktop, a
+  // figure from a page — is attached to the next question, as a pasted or
+  // chosen one is. Counted in and out so the hint survives the drag passing
+  // over the panel's children.
+  const [dropping, setDropping] = useState(false);
+  const dragDepth = useRef(0);
+  const dragHasImage = (e: React.DragEvent) => {
+    const dt = e.dataTransfer;
+    if (!dt) return false;
+    if (Array.from(dt.types || []).includes("Files")) return true;
+    if (Array.from(dt.files || []).some((f) => f.type.startsWith("image/"))) return true;
+    return Array.from(dt.items || []).some((item) => item.kind === "file" && item.type.startsWith("image/"));
+  };
+  const dropHandlers = {
+    onDragEnter: (e: React.DragEvent) => {
+      if (!dragHasImage(e)) return;
+      e.preventDefault();
+      dragDepth.current += 1;
+      setDropping(true);
+    },
+    onDragOver: (e: React.DragEvent) => {
+      if (!dragHasImage(e)) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "copy";
+    },
+    onDragLeave: (e: React.DragEvent) => {
+      if (!dragHasImage(e)) return;
+      dragDepth.current = Math.max(0, dragDepth.current - 1);
+      if (dragDepth.current === 0) setDropping(false);
+    },
+    onDrop: (e: React.DragEvent) => {
+      dragDepth.current = 0;
+      setDropping(false);
+      const dt = e.dataTransfer;
+      if (!dt) return;
+      const file = Array.from(dt.files || []).find((f) => f.type.startsWith("image/"))
+        ?? Array.from(dt.items || []).find((item) => item.kind === "file" && item.type.startsWith("image/"))?.getAsFile()
+        ?? null;
+      if (!file) return;
+      e.preventDefault();
+      readImageFile(file);
+    },
+  };
+  const dropHint = dropping && (
+    <div
+      className="absolute inset-0 z-40 flex items-center justify-center pointer-events-none"
+      style={{ background: "rgba(12,15,18,0.72)", border: "2px dashed var(--accent)", borderRadius: 8, color: "var(--accent)" }}
+      data-drop-hint=""
+    >
+      <span className="text-sm font-medium">Drop the image to attach it to your next question</span>
+    </div>
+  );
+
   const [lightboxState, setLightboxState] = useState<{ src: string; annotationId: string } | null>(null);
   const [expandedText, setExpandedText] = useState<Set<string>>(new Set());
   const [collapsedIds, setCollapsedIds] = useState<Set<string>>(new Set());
@@ -1768,7 +1821,8 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
 
   if (annotations.length === 0) {
     return (
-      <div className="pr-explain-panel flex flex-col overflow-hidden" style={{ background: "var(--paper)", width: `${width}px`, minWidth: 250 }}>
+      <div className="pr-explain-panel relative flex flex-col overflow-hidden" style={{ background: "var(--paper)", width: `${width}px`, minWidth: 250 }} {...dropHandlers}>
+        {dropHint}
         {toolbar}
         <div className="flex-1 flex flex-col items-center justify-center gap-3 p-8">
           <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" style={{ color: "var(--ink-faint)" }}>
@@ -1791,7 +1845,8 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
   }
 
   return (
-    <div className="pr-explain-panel flex flex-col overflow-hidden" style={{ background: "var(--paper)", width: `${width}px`, minWidth: 250 }}>
+    <div className="pr-explain-panel relative flex flex-col overflow-hidden" style={{ background: "var(--paper)", width: `${width}px`, minWidth: 250 }} {...dropHandlers}>
+      {dropHint}
       {toolbar}
 
       {lightboxState && (

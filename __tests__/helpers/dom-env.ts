@@ -27,6 +27,8 @@ g.NodeFilter = dom.window.NodeFilter;
 g.Range = dom.window.Range;
 g.Text = dom.window.Text;
 g.IS_REACT_ACT_ENVIRONMENT = true;
+// Reading a dropped or pasted image
+g.FileReader = dom.window.FileReader;
 Object.defineProperty(globalThis, "navigator", {
   value: dom.window.navigator,
   configurable: true,

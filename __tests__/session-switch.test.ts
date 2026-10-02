@@ -108,6 +108,31 @@ describe("switching papers while an answer streams", () => {
     assert.equal(hook().session.concepts[0].summarizedTurns, 2);
   });
 
+  test("coming back to the surface restores the paper from memory, without fetching or re-saving it", async () => {
+    const first = mount();
+    await act(async () => { first.hook().setPdf("theta.pdf", PDF, "pdf", "KEYT"); });
+    await act(async () => { await wait(5); });
+    let id = "";
+    await act(async () => { id = first.hook().addAnnotation({ type: "text", selectedText: "x", messages: [{ role: "user", content: "q" }, { role: "assistant", content: "a" }] }); });
+    await act(async () => { await wait(900); });
+    const T = first.hook().paperId as string;
+    assert.ok(saved.some((s) => s.id === T), "the first save went out");
+    storage.set("paper-reader:last-session", T);
+    // The surface is left and come back to: a fresh mount of the hook
+    const gets: string[] = [];
+    const prior = globalThis.fetch as typeof fetch;
+    (globalThis as Record<string, unknown>).fetch = async (url: string, init?: { method?: string; body?: string }) => { if (!init?.method) gets.push(url); return prior(url as never, init as never); };
+    saved.length = 0;
+    const second = mount();
+    await act(async () => { await wait(20); });
+    assert.equal(second.hook().session.pdfName, "theta.pdf");
+    assert.equal(second.hook().session.annotations[0]?.id, id, "the conversation is there as left");
+    assert.deepEqual(gets.filter((u) => u.includes("/api/sessions")), [], "no fetch of the saved session");
+    await act(async () => { await wait(900); });
+    assert.deepEqual(saved.filter((s) => s.id === T), [], "nothing is written back that was not changed");
+    (globalThis as Record<string, unknown>).fetch = prior;
+  });
+
   test("an update with no paper named goes to the open one, as before", async () => {
     const { hook } = mount();
     await act(async () => { hook().setPdf("gamma.pdf", PDF, "pdf", "KEYG"); });

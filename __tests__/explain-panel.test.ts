@@ -874,6 +874,43 @@ describe("one composer, a switch for where the question goes", () => {
   });
 });
 
+// A screenshot dragged onto the panel is attached to the next question
+describe("dropping an image on the panel", () => {
+  const dragEvent = (type: string, files: File[]) => {
+    const ev = new dom.window.Event(type, { bubbles: true, cancelable: true });
+    Object.defineProperty(ev, "dataTransfer", { value: { types: ["Files"], files, items: [], dropEffect: "none" } });
+    return ev;
+  };
+  test("while an image is dragged over, the panel says so; dropped, it is attached", async () => {
+    const host = freshRoot();
+    act(() => { createRoot(host).render(createElement(ExplainPanel, { annotations: [CARD_A], activeId: null, model: "m", streamingIds: new Set<string>(), onFollowUp: () => {}, onAskGeneral: () => {}, onDelete: () => {}, onReExplainImage: () => {}, onViewInPdf: () => {}, annotationRefs: { current: {} }, isOpen: true, onToggle: () => {} })); });
+    const panel = host.querySelector(".pr-explain-panel") as HTMLElement;
+    const png = new dom.window.File([new Uint8Array([137, 80, 78, 71])], "shot.png", { type: "image/png" });
+    act(() => { panel.dispatchEvent(dragEvent("dragenter", [png])); });
+    assert.ok(host.querySelector("[data-drop-hint]"), "the hint shows");
+    act(() => { panel.dispatchEvent(dragEvent("dragleave", [png])); });
+    assert.equal(host.querySelector("[data-drop-hint]"), null, "and goes when the drag leaves");
+    act(() => { panel.dispatchEvent(dragEvent("dragenter", [png])); });
+    act(() => { panel.dispatchEvent(dragEvent("drop", [png])); });
+    assert.equal(host.querySelector("[data-drop-hint]"), null);
+    // The file is read asynchronously
+    let attached: HTMLImageElement | null = null;
+    for (let i = 0; i < 40 && !attached; i++) { await act(async () => { await new Promise((r) => setTimeout(r, 25)); }); attached = host.querySelector('img[alt="attached"]'); }
+    assert.ok(attached, "the image is attached to the composer");
+    assert.match(attached!.src, /^data:image\/png/);
+  });
+
+  test("a drag that carries no file is left alone", () => {
+    const host = freshRoot();
+    act(() => { createRoot(host).render(createElement(ExplainPanel, { annotations: [CARD_A], activeId: null, model: "m", streamingIds: new Set<string>(), onFollowUp: () => {}, onAskGeneral: () => {}, onDelete: () => {}, onReExplainImage: () => {}, onViewInPdf: () => {}, annotationRefs: { current: {} }, isOpen: true, onToggle: () => {} })); });
+    const panel = host.querySelector(".pr-explain-panel") as HTMLElement;
+    const ev = new dom.window.Event("dragenter", { bubbles: true, cancelable: true });
+    Object.defineProperty(ev, "dataTransfer", { value: { types: ["text/plain"], files: [], items: [] } });
+    act(() => { panel.dispatchEvent(ev); });
+    assert.equal(host.querySelector("[data-drop-hint]"), null);
+  });
+});
+
 describe("question boxes hold more than one line", () => {
   // They were single-line <input>s: a newline could not be typed at all, and a
   // long question scrolled sideways with its own beginning off screen. Growth

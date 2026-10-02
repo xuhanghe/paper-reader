@@ -19,6 +19,16 @@ const DEFAULT_STATE: SessionState = {
 const LAST_SESSION_KEY = "paper-reader:last-session";
 const AUTOSAVE_DELAY_MS = 800;
 
+// The latest state of every paper opened on this surface, kept across the
+// reader being unmounted — crossing to the Workspace and back. Coming back
+// used to fetch the saved session again and parse it (a paper not in Zotero
+// carries its whole PDF in there), then autosave the same bytes straight
+// back. The document itself is shared with the document cache.
+const keptSessions = new Map<string, SessionState>();
+// What was last written for each paper, so an autosave of the state just
+// loaded, or just written, is not written again
+const lastSaved = new Map<string, string>();
+
 // Stable per-paper session id: the Zotero item key when the paper lives in
 // Zotero (survives renames, consistent everywhere), else a name slug. Lives
 // in lib/session-id.ts; re-exported so callers keep importing it from here.
@@ -32,6 +42,7 @@ export function useSession() {
   const sessionRef = useRef(session);
   useEffect(() => {
     sessionRef.current = session;
+    if (session.pdfName && session.pdfDataUrl) keptSessions.set(sessionIdFor(session.pdfName, session.zoteroKey), session);
   }, [session]);
 
   // The id of the paper on screen, kept by hand so it is right the moment a
@@ -121,10 +132,18 @@ export function useSession() {
       try {
         const last = localStorage.getItem(LAST_SESSION_KEY);
         if (!last) return;
+        // Back from the other surface: the state is still here, as left
+        const kept = keptSessions.get(last);
+        if (kept) {
+          activeIdRef.current = last;
+          setSession(kept);
+          return;
+        }
         const res = await fetch(`/api/sessions?id=${encodeURIComponent(last)}`);
         if (!res.ok) return;
         const { state } = await res.json();
         if (!state?.pdfName) return;
+        lastSaved.set(last, JSON.stringify({ id: last, state }));
 
         if (!state.pdfDataUrl && state.zoteroKey) {
           // Already in memory from this browsing session (the other surface
@@ -182,10 +201,13 @@ export function useSession() {
       // Zero-copy: papers that live in Zotero are saved without the document
       // bytes — only the conversation context is stored locally
       const state = session.zoteroKey ? { ...session, pdfDataUrl: "" } : session;
+      const body = JSON.stringify({ id, state });
+      if (lastSaved.get(id) === body) return;
+      lastSaved.set(id, body);
       fetch("/api/sessions", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id, state }),
+        body,
       }).catch(() => {});
     }, AUTOSAVE_DELAY_MS);
     return () => clearTimeout(t);
