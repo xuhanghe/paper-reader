@@ -133,9 +133,20 @@ without it, but the library, highlight sync and notes all need it.
 
 ## Setup
 
+One command from a fresh clone to the reader open in your browser:
+
+```bash
+./start
+```
+
+It checks for Node.js (the one thing it can't install for you — `brew install
+node` or [nodejs.org](https://nodejs.org)), installs the dependencies the first
+time, starts the server and opens the reader when it answers. Stop it with
+Ctrl-C; run it again any time. On Windows, or by hand anywhere:
+
 ```bash
 npm install
-npm run dev          # http://localhost:3000
+npm run dev          # then open http://localhost:3000
 ```
 
 **Then let the setup assistant do the rest.** On a machine where nothing is
