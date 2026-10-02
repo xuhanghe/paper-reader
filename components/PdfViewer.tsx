@@ -458,6 +458,7 @@ function snapBandToInk(
 
 // Zoom gestures CSS-scale instantly; pages redraw at full resolution after this pause
 const DRAWING_DELAY_MS = 250;
+const ZOOM_COMMIT_PAUSE_MS = 220;
 // Safari keeps a hard budget for canvas memory (about 224 MB for a page) and
 // blanks canvases past it — the viewer going black while scrolling. pdf.js
 // keeps a dozen page canvases alive, so each is held to 4.2 megapixels (17 MB)
@@ -1583,6 +1584,23 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
     };
   }, [scheduleSelectionPaint]);
 
+  // The zoom animation's transform (see the animation below), cleared
+  // wherever an animation is abandoned
+  const zoomBaseRef = useRef<number | null>(null);
+  const zoomVisualRef = useRef(1);
+  const zoomInputAtRef = useRef(0);
+  const viewerInner = () => containerRef.current?.querySelector(".pdfViewer") as HTMLElement | null;
+  const clearZoomTransform = useCallback(() => {
+    const inner = viewerInner();
+    if (inner) { inner.style.transform = ""; inner.style.transformOrigin = ""; inner.style.willChange = ""; }
+    zoomBaseRef.current = null;
+  }, []);
+  const cancelZoomAnimation = useCallback(() => {
+    cancelAnimationFrame(zoomFrameRef.current);
+    zoomFrameRef.current = 0;
+    zoomTargetScaleRef.current = null;
+    clearZoomTransform();
+  }, [clearZoomTransform]);
   // ── Viewer lifecycle ────────────────────────────────────────────
   useEffect(() => {
     const container = containerRef.current;
@@ -1626,9 +1644,7 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
       // Skip if the container has been unmounted/detached (fast paper switch,
       // dev remount) — pdf.js would try to scroll a detached element.
       if (cancelled || !container.isConnected) return;
-      cancelAnimationFrame(zoomFrameRef.current);
-      zoomFrameRef.current = 0;
-      zoomTargetScaleRef.current = null;
+      cancelZoomAnimation();
       // Resume where this paper was left, at the zoom it was left at. The
       // scale has to be applied before the scroll: page-width and a numeric
       // scale give different document heights, so scrolling first would land
@@ -1743,9 +1759,7 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
       referencePreviewCache.clear();
       selectionPreparationJobs.forEach((cancel) => cancel());
       selectionPreparationJobs.clear();
-      cancelAnimationFrame(zoomFrameRef.current);
-      zoomFrameRef.current = 0;
-      zoomTargetScaleRef.current = null;
+      cancelZoomAnimation();
       clearTimeout(zoomLabelCommitTimerRef.current);
       cancelAnimationFrame(selectionPaintFrameRef.current);
       endReferenceHover();
@@ -1755,7 +1769,7 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
       linkServiceRef.current = null;
       eventBusRef.current = null;
     };
-  }, [pdfDataUrl, paintPageHighlights, scheduleSelectionPaint, scheduleSelectionPreparation, paintReferenceLinks, endReferenceHover]);
+  }, [pdfDataUrl, paintPageHighlights, scheduleSelectionPaint, scheduleSelectionPreparation, paintReferenceLinks, endReferenceHover, cancelZoomAnimation]);
 
   // ── Zoom ────────────────────────────────────────────────────────
   // Apply one inexpensive CSS-first PDF.js scale step. The high-resolution
@@ -1785,37 +1799,66 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
   // from tiny trackpad events therefore drops motion, while a mouse-wheel tick
   // can jump several dozen percent. Hold an exact target and approach it once
   // per animation frame in bounded steps: both input types become continuous.
+  //
+  // The frames of the animation scale the viewer with a transform, which the
+  // browser composites without laying anything out; the real scale is
+  // applied once, when the target is reached and the gesture has paused.
+  // Every frame used to change the real scale, and each change laid out
+  // every page and every text span again — a long frame per frame in Safari.
   const stepZoomAnimation = useCallback(function stepZoomAnimationFrame() {
     zoomFrameRef.current = 0;
     const viewer = viewerRef.current;
+    const el = containerRef.current;
     const target = zoomTargetScaleRef.current;
-    if (!viewer || target === null) return;
-
-    const before = viewer.currentScale;
-    const next = nextZoomFrameScale(before, target);
-    applyZoomFactor(next / before, zoomOriginRef.current);
-    const after = viewer.currentScale;
-
-    // If PDF.js rounded away a sub-percent step, retain the exact target so the
-    // next trackpad event accumulates onto it instead of losing that movement.
-    if (after === before) return;
-    const remaining = Math.abs(Math.log(target / after));
-    if (remaining <= 0.0025) {
+    if (!viewer || !el || target === null) return;
+    if (zoomBaseRef.current === null) {
+      zoomBaseRef.current = viewer.currentScale;
+      zoomVisualRef.current = viewer.currentScale;
+      // Its own compositing layer for the gesture: the GPU then scales the
+      // raster it has, instead of the engine re-rasterising every page and
+      // every text span at each frame's scale
+      const inner = viewerInner();
+      if (inner) inner.style.willChange = "transform";
+    }
+    const base = zoomBaseRef.current;
+    const next = nextZoomFrameScale(zoomVisualRef.current, target);
+    zoomVisualRef.current = next;
+    const inner = viewerInner();
+    if (inner) {
+      const rect = el.getBoundingClientRect();
+      const origin = zoomOriginRef.current;
+      const ox = origin ? origin[0] - rect.left : rect.width / 2;
+      const oy = origin ? origin[1] - rect.top : rect.height / 2;
+      // The point under the pointer stays put: the origin is that point in
+      // the viewer's own coordinates, which start at the scrolled content's
+      inner.style.transformOrigin = `${el.scrollLeft + ox}px ${el.scrollTop + oy}px`;
+      inner.style.transform = `scale(${next / base})`;
+    }
+    if (zoomPercentRef.current) zoomPercentRef.current.textContent = `${Math.round(next * 100)}%`;
+    const arrived = Math.abs(Math.log(target / next)) <= 0.0025;
+    // Commit once the gesture has paused: a pinch keeps moving the target,
+    // clicks come in bursts, and each commit is a layout of every page. The
+    // pause matches the delay pdf.js already takes before it redraws, so the
+    // layout and the crisp redraw come together, once, after the gesture.
+    if (arrived && performance.now() - zoomInputAtRef.current > ZOOM_COMMIT_PAUSE_MS) {
       zoomTargetScaleRef.current = null;
+      clearZoomTransform();
+      applyZoomFactor(target / base, zoomOriginRef.current);
       return;
     }
     zoomFrameRef.current = requestAnimationFrame(stepZoomAnimationFrame);
-  }, [applyZoomFactor]);
+  }, [applyZoomFactor, clearZoomTransform]);
 
   const queueZoomTarget = useCallback((requested: number, origin?: [number, number]) => {
     const viewer = viewerRef.current;
     if (!viewer || !Number.isFinite(requested)) return;
     // Never let a burst of wheel events build a long animation backlog. The
     // target advances again as the viewer catches up on following frames.
-    const current = viewer.currentScale;
+    const current = zoomBaseRef.current !== null ? zoomVisualRef.current : viewer.currentScale;
     const nearby = Math.max(current / 1.45, Math.min(current * 1.45, requested));
     zoomTargetScaleRef.current = Math.max(PDF_MIN_SCALE, Math.min(PDF_MAX_SCALE, nearby));
     zoomOriginRef.current = origin;
+    zoomInputAtRef.current = performance.now();
     if (!zoomFrameRef.current) {
       zoomFrameRef.current = requestAnimationFrame(stepZoomAnimation);
     }
@@ -1880,13 +1923,11 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
   }, [queueZoomTarget]);
 
   const zoomReset = useCallback(() => {
-    cancelAnimationFrame(zoomFrameRef.current);
-    zoomFrameRef.current = 0;
-    zoomTargetScaleRef.current = null;
+    cancelZoomAnimation();
     zoomOriginRef.current = undefined;
     const viewer = viewerRef.current;
     if (viewer) viewer.currentScaleValue = "page-width";
-  }, []);
+  }, [cancelZoomAnimation]);
 
   // ── Selection → explain / ask ───────────────────────────────────
   const getSelectionPageNumber = useCallback((): number | undefined => {
