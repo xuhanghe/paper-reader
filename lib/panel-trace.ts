@@ -1,12 +1,13 @@
-// A trace of what the Ask panel does to its own scroll position, and of the
-// underline rules the reader paints, written to a file on the machine the app
+// A trace of what the Ask panel does to its own scroll position, of the
+// underline rules the reader paints, and of the viewer's canvases and frame
+// times while it scrolls and zooms, written to a file on the machine the app
 // runs on. Off unless asked for: open the app with ?trace=1 once (it stays on
 // for that browser until ?trace=0). Every line carries the build stamp of the
 // code that wrote it, so a report from a browser can be matched against the
 // code it actually ran — a stale script and a live bug look the same from a
 // screenshot, and not from this.
 
-export const PANEL_BUILD = "2026-10-01.1";
+export const PANEL_BUILD = "2026-10-01.2";
 
 type Entry = Record<string, unknown> & { t: number; what: string; build: string };
 

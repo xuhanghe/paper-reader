@@ -1644,6 +1644,9 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
       // Skip if the container has been unmounted/detached (fast paper switch,
       // dev remount) — pdf.js would try to scroll a detached element.
       if (cancelled || !container.isConnected) return;
+      if (traceEnabled()) {
+        trace("viewer", { pages: viewer.pagesCount, dpr: window.devicePixelRatio, screen: `${window.screen.width}x${window.screen.height}`, window: `${window.innerWidth}x${window.innerHeight}`, viewer: `${Math.round(container.clientWidth)}x${Math.round(container.clientHeight)}`, safari: IS_SAFARI, maxCanvasPixels: IS_SAFARI ? SAFARI_MAX_CANVAS_PIXELS : "pdf.js default (2^25)" });
+      }
       cancelZoomAnimation();
       // Resume where this paper was left, at the zoom it was left at. The
       // scale has to be applied before the scroll: page-width and a numeric
@@ -1663,6 +1666,8 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
     });
     eventBus.on("scalechanging", (e: { scale: number }) => {
       if (cancelled) return;
+      lastScaleAtRef.current = performance.now();
+      if (traceEnabled()) trace("scale", { scale: +e.scale.toFixed(3), scrollTop: Math.round(container.scrollTop), scrollLeft: Math.round(container.scrollLeft) });
       // Updating one text node avoids rerendering this large client component
       // for every animation frame of a pinch gesture.
       if (zoomPercentRef.current) zoomPercentRef.current.textContent = `${Math.round(e.scale * 100)}%`;
@@ -1695,6 +1700,13 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
     // band snapped against a blank canvas silently keeps the text layer's raw
     // geometry. Repaint once the pixels exist.
     eventBus.on("pagerendered", (e: { pageNumber: number }) => {
+      if (traceEnabled() && !cancelled) {
+        const pv = viewer.getPageView(e.pageNumber - 1) as (PdfPageView & { canvas?: HTMLCanvasElement; viewport?: { width: number; height: number } }) | undefined;
+        const c = pv?.canvas;
+        const vp = pv?.viewport;
+        const dpr = window.devicePixelRatio || 1;
+        trace("page-rendered", { page: e.pageNumber, canvas: c ? `${c.width}x${c.height}` : null, canvasMB: c ? +(c.width * c.height * 4 / 1048576).toFixed(1) : null, css: vp ? `${Math.round(vp.width)}x${Math.round(vp.height)}` : null, restricted: c && vp ? c.width < Math.round(vp.width * dpr) - 2 : null });
+      }
       if (!cancelled) {
         const needsCanvasAlignment = [...highlightsRef.current, ...askedRef.current].some(
           (item) => (!item.pageNumber || item.pageNumber === e.pageNumber) && !item.position
@@ -1863,6 +1875,75 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
       zoomFrameRef.current = requestAnimationFrame(stepZoomAnimation);
     }
   }, [stepZoomAnimation]);
+
+  // With the trace on: every long frame, flagged with what was going on, and
+  // a census of the page canvases as the view scrolls and once it settles —
+  // how many, how big, how much memory, and whether any reads back black,
+  // which is what Safari leaves when its canvas budget is exceeded.
+  const lastScaleAtRef = useRef(0);
+  useEffect(() => {
+    if (!traceEnabled()) return;
+    const container = containerRef.current;
+    if (!container) return;
+    let lastScrollAt = 0;
+    let lastCensus = 0;
+    let settleTimer = 0;
+    let frame = 0;
+    let lastFrame = performance.now();
+    const census = (reason: string) => {
+      const box = container.getBoundingClientRect();
+      const viewer = viewerRef.current;
+      const visible: number[] = [];
+      for (const page of Array.from(container.querySelectorAll(".page[data-page-number]"))) {
+        const r = page.getBoundingClientRect();
+        if (r.bottom > box.top && r.top < box.bottom) visible.push(Number(page.getAttribute("data-page-number")));
+      }
+      let px = 0, maxW = 0, maxH = 0;
+      const black: string[] = [];
+      const canvases = Array.from(container.querySelectorAll(".pdfViewer canvas")) as HTMLCanvasElement[];
+      for (const c of canvases) {
+        px += c.width * c.height;
+        maxW = Math.max(maxW, c.width);
+        maxH = Math.max(maxH, c.height);
+        try {
+          const ctx = c.getContext("2d");
+          if (!ctx || c.width === 0 || c.height === 0) continue;
+          let dark = 0;
+          const points: [number, number][] = [[0.2, 0.2], [0.5, 0.5], [0.8, 0.8], [0.5, 0.2], [0.2, 0.8], [0.5, 0.9]];
+          for (const [fx, fy] of points) {
+            const d = ctx.getImageData(Math.floor(c.width * fx), Math.floor(c.height * fy), 1, 1).data;
+            if (d[3] === 0 || d[0] + d[1] + d[2] < 30) dark++;
+          }
+          if (dark === points.length) black.push(c.closest(".page")?.getAttribute("data-page-number") ?? "?");
+        } catch {
+          // a canvas that cannot be read is reported by its size alone
+        }
+      }
+      trace("canvases", { reason, canvases: canvases.length, MB: Math.round(px * 4 / 1048576), maxCanvas: `${maxW}x${maxH}`, black, visible, scale: viewer ? +viewer.currentScale.toFixed(3) : null, scrollTop: Math.round(container.scrollTop) });
+    };
+    const onScroll = () => {
+      const now = performance.now();
+      lastScrollAt = now;
+      if (now - lastCensus > 400) { lastCensus = now; census("scrolling"); }
+      clearTimeout(settleTimer);
+      settleTimer = window.setTimeout(() => { lastCensus = performance.now(); census("settled"); }, 700);
+    };
+    const tick = (now: number) => {
+      const gap = now - lastFrame;
+      lastFrame = now;
+      if (gap > 80) {
+        trace("long-frame", { ms: Math.round(gap), scrolling: now - lastScrollAt < 400, zooming: zoomTargetScaleRef.current !== null || now - lastScaleAtRef.current < 600, scrollTop: Math.round(container.scrollTop) });
+      }
+      frame = requestAnimationFrame(tick);
+    };
+    frame = requestAnimationFrame(tick);
+    container.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      cancelAnimationFrame(frame);
+      clearTimeout(settleTimer);
+      container.removeEventListener("scroll", onScroll);
+    };
+  }, []);
 
   // Record where reading got to. Debounced while scrolling, and flushed on
   // teardown so crossing to the other surface captures the last position
