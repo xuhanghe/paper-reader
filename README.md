@@ -142,7 +142,8 @@ One command from a fresh clone to the reader open in your browser:
 It checks for Node.js (the one thing it can't install for you — `brew install
 node` or [nodejs.org](https://nodejs.org)), installs the dependencies the first
 time, starts the server and opens the reader when it answers. Stop it with
-Ctrl-C; run it again any time. On Windows, or by hand anywhere:
+Ctrl-C; run it again any time. On Windows the same command is `start.cmd`.
+By hand, anywhere:
 
 ```bash
 npm install

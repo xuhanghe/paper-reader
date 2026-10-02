@@ -3,17 +3,17 @@
 #
 #   ./start
 #
-# It checks for Node.js (the one thing it cannot install for you), installs
-# the dependencies the first time or whenever they change, starts the server,
-# and opens the reader once the server answers. From there the setup assistant
-# inside the app connects Zotero and a coding agent. Stop it with Ctrl-C.
+# It checks for Node.js (the one thing it cannot install for you), then the
+# launcher installs the dependencies the first time or whenever they change,
+# starts the server, and opens the reader once the server answers. From there
+# the setup assistant inside the app connects Zotero and a coding agent. Stop
+# it with Ctrl-C. On Windows, start.cmd is the same thing.
 #
 #   PORT=3100 ./start              # a fixed port instead of the next free one
 #   PAPER_READER_NO_OPEN=1 ./start # don't open a browser (servers, tests)
 set -euo pipefail
 cd "$(dirname "$0")"
 
-# ── Node.js ────────────────────────────────────────────────────────────────
 # A GUI-launched terminal can miss the places Node installs to; look there too
 for dir in /opt/homebrew/bin /usr/local/bin "$HOME/.local/bin" "$HOME/.volta/bin" "$HOME/.nvm/versions/node"/*/bin "$HOME/.fnm/aliases/default/bin"; do
   [ -d "$dir" ] && case ":$PATH:" in *":$dir:"*) ;; *) PATH="$PATH:$dir" ;; esac
@@ -36,35 +36,4 @@ if [ "$major" -lt 20 ]; then
   exit 1
 fi
 
-# ── Dependencies ───────────────────────────────────────────────────────────
-# Installed on the first run, and again whenever the lockfile is newer than
-# what was installed last time
-if [ ! -d node_modules ] || [ package-lock.json -nt node_modules/.package-lock.json ]; then
-  echo "Installing dependencies (first run; a minute or two)…"
-  npm install --no-fund --no-audit
-fi
-
-# ── Server, then the browser ──────────────────────────────────────────────
-open_url() {
-  [ -n "${PAPER_READER_NO_OPEN:-}" ] && return 0
-  case "$(uname -s)" in
-    Darwin) open "$1" ;;
-    Linux)  (xdg-open "$1" >/dev/null 2>&1 || sensible-browser "$1" >/dev/null 2>&1 || true) ;;
-    *)      echo "Open $1 in your browser." ;;
-  esac
-}
-
-args=()
-[ -n "${PORT:-}" ] && args=(-- -p "$PORT")
-
-echo "Starting Paper Reader… (Ctrl-C stops it)"
-opened=""
-# The server's own output is passed through; the first URL it prints is the
-# one to open — it picks the next free port when 3000 is taken
-npm run dev "${args[@]}" 2>&1 | while IFS= read -r line; do
-  printf '%s\n' "$line"
-  if [ -z "$opened" ] && [[ "$line" =~ (http://localhost:[0-9]+) ]]; then
-    opened="${BASH_REMATCH[1]}"
-    ( sleep 1; open_url "$opened" ) &
-  fi
-done
+exec node scripts/start.mjs
