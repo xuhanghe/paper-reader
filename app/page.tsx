@@ -1177,10 +1177,19 @@ export default function Home() {
     let cancelled = false;
     let tries = 0;
 
+    // Page snapshots for multimodal models: rendered in the background, well
+    // after the paper has opened, and yielding between batches — thirty page
+    // renders are seconds of work that used to compete with the first read
+    const idle = () => new Promise<void>((resolve) => {
+      if (typeof window.requestIdleCallback === "function") window.requestIdleCallback(() => resolve(), { timeout: 2000 });
+      else setTimeout(resolve, 250);
+    });
     const uploadPageSnapshots = async () => {
       const PAGE_LIMIT = 30;
-      const CHUNK = 4;
+      const CHUNK = 2;
       for (let start = 1; start <= PAGE_LIMIT && !cancelled; start += CHUNK) {
+        await idle();
+        if (cancelled) return;
         const nums = Array.from({ length: CHUNK }, (_, i) => start + i);
         const imgs = await pdfViewerRef.current?.renderPageImages?.(nums);
         if (!imgs?.length) break;
@@ -1192,25 +1201,38 @@ export default function Home() {
       }
     };
 
+    const init = (body: Record<string, unknown>) =>
+      fetch("/api/paper/init", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id, title: session.pdfName, mindmap: mindmapAtInit ?? undefined, ...body }) })
+        .then((r) => r.json() as Promise<{ hasText?: boolean; pagesCount?: number }>);
+
+    // Ask first what the server already has: extracting a paper's text is
+    // seconds of work, and every reopen used to do it before asking
     const attempt = async () => {
       if (cancelled) return;
-      const text = await pdfViewerRef.current?.getDocumentText(150000);
+      let have: { hasText?: boolean; pagesCount?: number };
+      try {
+        have = await init({});
+      } catch {
+        return; // server unreachable — context files will be written on next open
+      }
       if (cancelled) return;
-      if (text?.trim()) {
-        paperInitDone.current = id;
-        try {
-          const res = await fetch("/api/paper/init", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ id, title: session.pdfName, text, mindmap: mindmapAtInit ?? undefined }),
-          });
-          const data = await res.json();
-          if (!cancelled && isPdf && !data.pagesCount) await uploadPageSnapshots();
-        } catch {
-          // server unreachable — context files will be written on next open
+      if (!have.hasText) {
+        const text = await pdfViewerRef.current?.getDocumentText(150000);
+        if (cancelled) return;
+        if (!text?.trim()) {
+          if (++tries < 15) setTimeout(attempt, 900);
+          return;
         }
-      } else if (++tries < 15) {
-        setTimeout(attempt, 900);
+        try {
+          have = await init({ text });
+        } catch {
+          return;
+        }
+      }
+      paperInitDone.current = id;
+      if (!cancelled && isPdf && !have.pagesCount) {
+        await new Promise((resolve) => setTimeout(resolve, 6000));
+        if (!cancelled) await uploadPageSnapshots();
       }
     };
     const t = setTimeout(attempt, 900);

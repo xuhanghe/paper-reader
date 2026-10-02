@@ -458,6 +458,15 @@ function snapBandToInk(
 
 // Zoom gestures CSS-scale instantly; pages redraw at full resolution after this pause
 const DRAWING_DELAY_MS = 250;
+// Safari keeps a hard budget for canvas memory (about 224 MB for a page) and
+// blanks canvases past it — the viewer going black while scrolling. pdf.js
+// keeps a dozen page canvases alive, so each is held to 4.2 megapixels (17 MB)
+// there; the visible part of a page beyond that size is drawn on a separate
+// detail canvas at full resolution, which is how pdf.js handles high zoom on
+// phones. Chrome and the desktop app have the memory, and keep pdf.js's own
+// defaults.
+const IS_SAFARI = typeof navigator !== "undefined" && /AppleWebKit/.test(navigator.userAgent) && !/Chrome|Chromium|CriOS|Edg\//.test(navigator.userAgent);
+const SAFARI_MAX_CANVAS_PIXELS = 2 ** 22;
 const BUTTON_ZOOM_FACTOR = 1.2;
 // These are PDF.js's own scale limits. Keeping the animation target inside the
 // same range prevents it from chasing a value the viewer can never reach.
@@ -1606,6 +1615,7 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
       linkService,
       findController,
       annotationMode: AnnotationMode.DISABLE,
+      maxCanvasPixels: IS_SAFARI ? SAFARI_MAX_CANVAS_PIXELS : undefined,
     });
     linkService.setViewer(viewer);
     linkServiceRef.current = linkService;

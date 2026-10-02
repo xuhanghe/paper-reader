@@ -2,17 +2,21 @@ import { writePaperText, hasPaperText, writeMindmapFile, readMindmapFile, countP
 
 export const runtime = "nodejs";
 
-// Called once when a paper opens: caches the extracted text as paper.md so
+// Called when a paper opens: caches the extracted text as paper.md so
 // agentic models can read it with their file tools, and seeds mindmap.json
-// from a restored session if the file doesn't exist yet.
+// from a restored session if the file doesn't exist yet. Called first
+// without text, it says what it already has — extracting a paper's text
+// is seconds of work the client should not repeat on every open.
 export async function POST(req: Request) {
   const { id, title, text, mindmap } = await req.json();
   if (!id || typeof id !== "string") return Response.json({ error: "id is required" }, { status: 400 });
 
   let wrotePaper = false;
-  if (typeof text === "string" && text.trim() && !(await hasPaperText(id))) {
+  let hasText = await hasPaperText(id);
+  if (typeof text === "string" && text.trim() && !hasText) {
     await writePaperText(id, typeof title === "string" ? title : "Untitled", text);
     wrotePaper = true;
+    hasText = true;
   }
 
   let wroteMap = false;
@@ -21,5 +25,5 @@ export async function POST(req: Request) {
     wroteMap = true;
   }
 
-  return Response.json({ ok: true, wrotePaper, wroteMap, pagesCount: await countPageImages(id) });
+  return Response.json({ ok: true, wrotePaper, wroteMap, hasText, pagesCount: await countPageImages(id) });
 }

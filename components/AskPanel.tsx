@@ -1,11 +1,12 @@
 "use client";
-import { Fragment, cloneElement, isValidElement, useRef, useEffect, useLayoutEffect, useMemo, useState, useCallback, memo, useImperativeHandle } from "react";
+import { Fragment, cloneElement, isValidElement, useRef, useEffect, useLayoutEffect, useMemo, useState, useCallback, useDeferredValue, memo, useImperativeHandle } from "react";
 import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import remarkCjkFriendly from "remark-cjk-friendly";
 import rehypeKatex from "rehype-katex";
 import { normalizeMathDelimiters } from "@/lib/math-delimiters";
+import { splitMarkdownBlocks } from "@/lib/markdown-blocks";
 import { Annotation, Message, Model } from "@/types/session";
 import { isSubmitKey } from "@/lib/keys";
 import { loadPanelScroll, savePanelScroll } from "@/lib/panel-scroll";
@@ -246,23 +247,42 @@ const REMARK_PLUGINS = [remarkGfm, remarkMath, remarkCjkFriendly];
 // blanked over one formula it cannot parse
 const REHYPE_PLUGINS = [[rehypeKatex, { throwOnError: false, strict: "ignore" as const }]] as const;
 
+// One block of an answer, parsed on its own. Memoised on its text: while an
+// answer streams, only the block being written changes, so only it is
+// parsed again — the rest keep their rendered trees.
+const Block = memo(function Block({ text, components }: { text: string; components: MarkdownComponents }) {
+  return (
+    <ReactMarkdown
+      remarkPlugins={REMARK_PLUGINS}
+      rehypePlugins={REHYPE_PLUGINS as unknown as import("react-markdown").Options["rehypePlugins"]}
+      components={components}
+      urlTransform={citationUrlTransform}
+    >
+      {text}
+    </ReactMarkdown>
+  );
+});
+
 const Answer = memo(function Answer({
   content,
   components,
+  streaming = false,
 }: {
   content: string;
   components: MarkdownComponents;
+  streaming?: boolean;
 }) {
+  // While streaming, the text shown may trail the text received: React
+  // renders the latest value when it gets to it, and chunks that arrive
+  // faster than a render takes are skipped rather than each parsed in turn
+  const deferred = useDeferredValue(content);
+  const shown = streaming ? deferred : content;
+  const blocks = useMemo(() => splitMarkdownBlocks(normalizeMathDelimiters(shown)), [shown]);
   return (
     <div className="prose-paper">
-      <ReactMarkdown
-        remarkPlugins={REMARK_PLUGINS}
-        rehypePlugins={REHYPE_PLUGINS as unknown as import("react-markdown").Options["rehypePlugins"]}
-        components={components}
-        urlTransform={citationUrlTransform}
-      >
-        {normalizeMathDelimiters(content)}
-      </ReactMarkdown>
+      {blocks.map((text, i) => (
+        <Block key={i} text={text} components={components} />
+      ))}
     </div>
   );
 });
@@ -535,16 +555,21 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
     let last = el.scrollTop;
     captureAnchor();
     let pending = false;
+    let lastCapture = 0;
     const onScroll = () => {
       last = el.scrollTop;
       settledScrollTop.current = last;
       clearTimeout(timer);
       timer = window.setTimeout(() => savePanelScroll(key, last), 300);
-      // Once per frame: where the reader is now, and a line of trace
-      if (!pending) {
+      // A few times a second: where the reader is now, and a line of trace.
+      // The anchor is read back only when content changes under the view, so
+      // a record a few frames old is as good as this frame's — and the hit
+      // tests it takes were a measurable share of a scroll's cost.
+      if (!pending && performance.now() - lastCapture > 120) {
         pending = true;
         requestAnimationFrame(() => {
           pending = false;
+          lastCapture = performance.now();
           if (!el.isConnected) return;
           captureAnchor();
           if (traceEnabled()) trace("scroll", { top: Math.round(el.scrollTop), max: Math.round(el.scrollHeight - el.clientHeight), atTop: describeForTrace(anchor.current?.el) });
@@ -2143,6 +2168,7 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
                         <Answer
                           content={msg.content || (streamingIds.has(annotation.id) ? "" : "▌")}
                           components={markdownComponents}
+                          streaming={streamingIds.has(annotation.id) && i === annotation.messages.length - 1}
                         />
                       )}
                     </div>
