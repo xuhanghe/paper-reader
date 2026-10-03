@@ -2,7 +2,7 @@
 import type { SelectionIntent } from "@/lib/prompts";
 import { trace, traceEnabled } from "@/lib/panel-trace";
 import { useRef, useState, useCallback, useEffect, forwardRef, useImperativeHandle } from "react";
-import { AnnotationMode, getDocument, GlobalWorkerOptions } from "pdfjs-dist";
+import { AnnotationEditorType, AnnotationMode, getDocument, GlobalWorkerOptions } from "pdfjs-dist";
 import type { PDFDocumentProxy } from "pdfjs-dist";
 import { EventBus, PDFViewer as PdfJsViewer, PDFLinkService, PDFFindController } from "pdfjs-dist/web/pdf_viewer.mjs";
 import "pdfjs-dist/web/pdf_viewer.css";
@@ -14,6 +14,7 @@ import { useRegionDrag } from "@/hooks/useRegionDrag";
 import { RegionResult } from "@/hooks/useRegionDrag";
 import { markTextInContainer, clearMarks, findIgnoringWhitespace, indexText, occurrenceAt } from "@/lib/highlight-dom";
 import { revealOffsets } from "@/lib/reveal-scroll";
+import { glideDuration, glideEase } from "@/lib/glide";
 import { chooseInkRun, mergeIntoLines, nearestInkRun, nearestStoredLine, relativeToPage, type InkRun } from "@/lib/ink-bands";
 import { logicalSelectionBands } from "@/lib/selection-geometry";
 import { alignRectsToZoteroLines, type PdfTextItem, type PdfTextStyle } from "@/lib/zotero-selection-geometry";
@@ -516,6 +517,9 @@ function canvasOpsSummary(): Record<string, unknown> {
 // event back to one at least the span earlier. Pages drawn during one wait to
 // be dressed (see the viewer lifecycle) until the speed drops, or until no
 // scroll event has come for the settle time.
+// Keys that scroll the viewer themselves: pressed mid-glide, the reader has
+// taken the view back
+const GLIDE_BREAKING_KEYS = new Set(["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "]);
 const FLING_PX_PER_MS = 1.5;
 const FLING_SPAN_MS = 50;
 const FLING_SETTLE_MS = 160;
@@ -711,6 +715,12 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
   const pdfDocRef = useRef<PDFDocumentProxy | null>(null);
   const textContentCacheRef = useRef<Map<number, Promise<PageTextContent>>>(new Map());
   const selectionPageCacheRef = useRef<Map<number, SelectionPageEntry>>(new Map());
+  // The character model from a page's text alone, without the drawn text
+  // layer's measurements: enough to know where a passage sits on a page that
+  // is not on screen yet, so a jump can set off straight for it
+  const roughModelCacheRef = useRef<Map<number, PdfSelectionModel>>(new Map());
+  // Ends the glide in flight, if any
+  const glideCancelRef = useRef<(() => void) | null>(null);
   const referenceModelCacheRef = useRef<Map<number, Promise<PdfSelectionModel>>>(new Map());
   const linkAnnotationCacheRef = useRef<Map<number, Promise<PdfLinkAnnotation[]>>>(new Map());
   const referencePreviewCacheRef = useRef<Map<string, Promise<ReferencePreviewData | null>>>(new Map());
@@ -1682,6 +1692,7 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
     if (!container) return;
     const textContentCache = textContentCacheRef.current;
     const selectionPageCache = selectionPageCacheRef.current;
+    const roughModelCache = roughModelCacheRef.current;
     const referenceModelCache = referenceModelCacheRef.current;
     const linkAnnotationCache = linkAnnotationCacheRef.current;
     const referencePreviewCache = referencePreviewCacheRef.current;
@@ -1708,6 +1719,11 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
       linkService,
       findController,
       annotationMode: AnnotationMode.DISABLE,
+      // No annotation editor either. Its manager listens for drops on the
+      // whole document and pastes any image dropped anywhere in the app — a
+      // screenshot dragged onto the Ask panel — onto the page as a "stamp",
+      // with resize handles, an alt-text button and a bin.
+      annotationEditorMode: AnnotationEditorType.DISABLE,
       maxCanvasPixels: IS_SAFARI ? SAFARI_MAX_CANVAS_PIXELS : undefined,
     });
     linkService.setViewer(viewer);
@@ -1903,6 +1919,7 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
         pdfDocRef.current = pdf;
         textContentCache.clear();
         selectionPageCache.clear();
+        roughModelCache.clear();
         referenceModelCache.clear();
         linkAnnotationCache.clear();
         referencePreviewCache.clear();
@@ -1945,11 +1962,13 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
       pdfDocRef.current = null;
       textContentCache.clear();
       selectionPageCache.clear();
+      roughModelCache.clear();
       referenceModelCache.clear();
       linkAnnotationCache.clear();
       referencePreviewCache.clear();
       selectionPreparationJobs.forEach((cancel) => cancel());
       selectionPreparationJobs.clear();
+      glideCancelRef.current?.();
       cancelZoomAnimation();
       clearTimeout(zoomLabelCommitTimerRef.current);
       cancelAnimationFrame(selectionPaintFrameRef.current);
@@ -2434,10 +2453,16 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
 
   const clientRectsForPosition = useCallback((position: AnnotationPosition): DOMRect[] => {
     const pageView = viewerRef.current?.getPageView(position.pageIndex) as PdfPageView | undefined;
-    const wrapper = pageView?.div?.querySelector(".canvasWrapper") as HTMLElement | null;
     const viewport = pageView?.viewport;
-    if (!wrapper || !viewport || !position.rects.length) return [];
-    const box = wrapper.getBoundingClientRect();
+    const pageDiv = pageView?.div;
+    if (!pageDiv || !viewport || !position.rects.length) return [];
+    // The canvas wrapper exists once the page has been drawn; until then the
+    // page's own content box is the same rectangle
+    const wrapper = pageDiv.querySelector(".canvasWrapper") as HTMLElement | null;
+    const box = wrapper ? wrapper.getBoundingClientRect() : (() => {
+      const outer = pageDiv.getBoundingClientRect();
+      return new DOMRect(outer.left + pageDiv.clientLeft, outer.top + pageDiv.clientTop, pageDiv.clientWidth, pageDiv.clientHeight);
+    })();
     return position.rects.map((rect) => {
       const [ax, ay] = viewport.convertToViewportPoint(rect[0], rect[1]);
       const [bx, by] = viewport.convertToViewportPoint(rect[2], rect[3]);
@@ -2673,6 +2698,118 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
     };
   })();
 
+  // ── Going to a passage ──────────────────────────────────────────
+  // The character model of a page from its text alone. The drawn text
+  // layer's measurements only refine where each character falls within its
+  // run; the runs and lines are the same, which is all a jump needs to set
+  // off for the right place.
+  const roughModelFor = useCallback(async (pageNumber: number): Promise<PdfSelectionModel | null> => {
+    const prepared = selectionPageCacheRef.current.get(pageNumber);
+    if (prepared?.layer.isConnected) return prepared.model;
+    const cached = roughModelCacheRef.current.get(pageNumber);
+    if (cached) return cached;
+    const pending = getPageTextContent(pageNumber);
+    if (!pending) return null;
+    try {
+      const content = await pending;
+      const items = content.items.filter((item) => "str" in item) as PdfTextItem[];
+      const model = buildPdfSelectionModel(items, content.styles as Record<string, PdfTextStyle>);
+      roughModelCacheRef.current.set(pageNumber, model);
+      return model;
+    } catch {
+      textContentCacheRef.current.delete(pageNumber);
+      return null;
+    }
+  }, [getPageTextContent]);
+
+  // The scroll offsets that show these lines: centred vertically, and
+  // sideways only when the page is wider than the window and they sit off it
+  const offsetsToShow = useCallback((rects: DOMRect[]): { top: number; left: number } | null => {
+    const container = containerRef.current;
+    if (!container || !rects[0]) return null;
+    const box = container.getBoundingClientRect();
+    return revealOffsets({
+      rects, box, scrollTop: container.scrollTop, scrollLeft: container.scrollLeft,
+      clientWidth: container.clientWidth, clientHeight: container.clientHeight,
+    });
+  }, []);
+
+  // The view glides from where the reader is to the target, so the eye
+  // follows the travel and knows which way it went — never a cut to the page
+  // followed by a short slide, which reads as a teleport. The reader taking
+  // hold of the view, or a change of zoom, ends the glide where it is.
+  // Resolves true on arrival.
+  const glideTo = useCallback((to: { top: number; left: number }, what: Record<string, unknown> = {}): Promise<boolean> => {
+    const container = containerRef.current;
+    if (!container) return Promise.resolve(false);
+    glideCancelRef.current?.();
+    const from = { top: container.scrollTop, left: container.scrollLeft };
+    const target = {
+      top: Math.max(0, Math.min(to.top, container.scrollHeight - container.clientHeight)),
+      left: Math.max(0, Math.min(to.left, container.scrollWidth - container.clientWidth)),
+    };
+    const distance = Math.hypot(target.top - from.top, target.left - from.left);
+    const still = typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const ms = still ? 0 : glideDuration(distance);
+    if (traceEnabled()) trace("glide", { ...what, from: Math.round(from.top), to: Math.round(target.top), px: Math.round(distance), ms });
+    if (ms === 0) {
+      if (distance > 0) container.scrollTo({ ...target, behavior: "instant" });
+      return Promise.resolve(true);
+    }
+    const scale = viewerRef.current?.currentScale;
+    // pdf.js draws every page the view passes over, and a page's canvas is
+    // a long task that would stall the motion. Drawing waits for arrival:
+    // the queue's one entry point is parked, and the viewer is told to look
+    // again at what is visible once the glide ends.
+    const queue = (viewerRef.current as unknown as { renderingQueue?: { renderHighestPriority?: unknown } } | null)?.renderingQueue;
+    const drawing = queue && typeof queue.renderHighestPriority === "function";
+    if (drawing) queue.renderHighestPriority = () => {};
+    return new Promise((resolve) => {
+      const ac = new AbortController();
+      let frame = 0;
+      let settled = false;
+      const finish = (arrived: boolean) => {
+        if (settled) return;
+        settled = true;
+        cancelAnimationFrame(frame);
+        ac.abort();
+        glideCancelRef.current = null;
+        if (drawing) {
+          delete queue.renderHighestPriority;
+          viewerRef.current?.update();
+        }
+        resolve(arrived);
+      };
+      const cancel = () => finish(false);
+      glideCancelRef.current = cancel;
+      for (const type of ["wheel", "touchstart", "pointerdown"]) {
+        container.addEventListener(type, cancel, { signal: ac.signal, passive: true });
+      }
+      window.addEventListener("keydown", (e) => {
+        if (GLIDE_BREAKING_KEYS.has(e.key) && !isTextEditingTarget(e.target)) cancel();
+      }, { signal: ac.signal });
+      let elapsed = 0;
+      let last = performance.now();
+      const step = (now: number) => {
+        if (viewerRef.current?.currentScale !== scale) { cancel(); return; }
+        // A long frame advances the glide by no more than two frames' worth,
+        // so a stall never shows as a jump
+        elapsed += Math.min(now - last, 34);
+        last = now;
+        const t = Math.min(1, elapsed / ms);
+        const k = glideEase(t);
+        container.scrollTo({
+          top: from.top + (target.top - from.top) * k,
+          left: from.left + (target.left - from.left) * k,
+          behavior: "instant",
+        });
+        if (t >= 1) finish(true);
+        else frame = requestAnimationFrame(step);
+      };
+      frame = requestAnimationFrame(step);
+    });
+  }, []);
+
   // ── Imperative handle ───────────────────────────────────────────
   useImperativeHandle(ref, () => ({
     getScroll: () => containerRef.current?.scrollTop ?? 0,
@@ -2685,35 +2822,34 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
       const viewer = viewerRef.current;
       const container = containerRef.current;
       if (!viewer || !container || !text.trim()) return null;
-      if (pageNumber >= 1 && pageNumber <= viewer.pagesCount) {
-        viewer.currentPageNumber = pageNumber;
-      }
+      if (pageNumber < 1 || pageNumber > viewer.pagesCount) return null;
+      // Where the passage sits, from the page's text alone, so the glide
+      // sets off for it before the page is drawn. A page that does not hold
+      // these words moves nothing: the caller may look elsewhere.
+      const rough = await roughModelFor(pageNumber);
+      const roughRange = rough ? pdfSelectionRangeForText(rough, text) : null;
+      if (!roughRange) return null;
+      let position: AnnotationPosition = { pageIndex: pageNumber - 1, rects: roughRange.rects };
+      const to = offsetsToShow(clientRectsForPosition(position));
+      if (!to) viewer.currentPageNumber = pageNumber;
+      else if (!(await glideTo(to, { page: pageNumber, exact: false }))) return { pageNumber, occurrence: 0, position };
+      // Once the page is drawn, its measured characters settle the exact
+      // lines — a last short glide if they differ, usually by nothing — and
+      // the flash lands on them
       for (let attempt = 0; attempt < 25; attempt++) {
         const entry = await prepareSelectionPage(pageNumber);
         const selected = entry ? pdfSelectionRangeForText(entry.model, text) : null;
         if (selected) {
-          const position: AnnotationPosition = { pageIndex: pageNumber - 1, rects: selected.rects };
-          const rects = clientRectsForPosition(position);
-          if (rects[0]) {
-            const target = container.querySelector(
-              `.page[data-page-number="${pageNumber}"]`
-            ) as HTMLElement | null;
-            // The passage's lines to the middle of the window — and, when
-            // the page is wider than the window and the passage sits off
-            // its edge (the right column, zoomed in), sideways to it as well
-            const box = container.getBoundingClientRect();
-            const { top, left } = revealOffsets({
-              rects, box, scrollTop: container.scrollTop, scrollLeft: container.scrollLeft,
-              clientWidth: container.clientWidth, clientHeight: container.clientHeight,
-            });
-            container.scrollTo({ top, left, behavior: target ? "smooth" : "auto" });
-            flashBands(rects, true);
-          }
-          return { pageNumber, occurrence: 0, position };
+          position = { pageIndex: pageNumber - 1, rects: selected.rects };
+          break;
         }
         await new Promise((resolve) => setTimeout(resolve, 80));
       }
-      return null;
+      const rects = clientRectsForPosition(position);
+      const exact = offsetsToShow(rects);
+      if (exact) await glideTo(exact, { page: pageNumber, exact: true });
+      flashBands(rects, true);
+      return { pageNumber, occurrence: 0, position };
     },
 
     // Scans the document's own text rather than the rendered layers: only a
@@ -2730,29 +2866,41 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
       return null;
     },
 
-    // Jumps to the exact passage rather than the top of its page: the painted
-    // <mark> already sits at the right spot, so scroll to that. The page has to
-    // be brought into view first for its text layer to exist at all.
+    // Lands on the highlight itself rather than the top of its page. Its
+    // recorded position says where to glide before the page is drawn; the
+    // painted <mark>, once there is one, sits at the exact spot.
     async scrollToHighlight(id: string, pageNumber?: number) {
       const viewer = viewerRef.current;
       const container = containerRef.current;
       if (!viewer || !container) return false;
       const selector = `mark.pr-highlight[data-highlight-id="${CSS.escape(id)}"]`;
+      const findMarks = () => Array.from(container.querySelectorAll(selector)) as HTMLElement[];
 
-      if (!container.querySelector(selector) && pageNumber && pageNumber >= 1 && pageNumber <= viewer.pagesCount) {
-        viewer.currentPageNumber = pageNumber;
-      }
-      // Text layers render asynchronously after a page change
-      for (let attempt = 0; attempt < 25; attempt++) {
-        const marks = Array.from(container.querySelectorAll(selector)) as HTMLElement[];
-        if (marks.length > 0) {
-          marks[0].scrollIntoView({ block: "center", behavior: "smooth" });
-          flashBands(marks.map((m) => m.getBoundingClientRect()));
-          return true;
+      if (!findMarks().length) {
+        const stored = highlights.find((h) => h.id === id)?.position;
+        const page = stored ? stored.pageIndex + 1 : pageNumber;
+        if (!page || page < 1 || page > viewer.pagesCount) return false;
+        let to = stored ? offsetsToShow(clientRectsForPosition(stored)) : null;
+        const pageDiv = (viewer.getPageView(page - 1) as PdfPageView | undefined)?.div;
+        if (!to && pageDiv) {
+          to = { top: container.scrollTop + pageDiv.getBoundingClientRect().top - container.getBoundingClientRect().top - 8, left: container.scrollLeft };
         }
-        await new Promise((resolve) => setTimeout(resolve, 80));
+        if (!to) viewer.currentPageNumber = page;
+        // The reader taking the view back counts as landed: a fallback
+        // search would only start another glide against them
+        else if (!(await glideTo(to, { page, highlight: id, exact: false }))) return true;
+        // The text layer, and the marks on it, come once the page is in view
+        for (let attempt = 0; attempt < 25 && !findMarks().length; attempt++) {
+          await new Promise((resolve) => setTimeout(resolve, 80));
+        }
       }
-      return false;
+      const marks = findMarks();
+      if (!marks.length) return false;
+      const rects = marks.map((m) => m.getBoundingClientRect());
+      const to = offsetsToShow(rects);
+      if (to) await glideTo(to, { highlight: id, exact: true });
+      flashBands(rects);
+      return true;
     },
 
     async getDocumentText(maxChars = 60000) {
