@@ -13,6 +13,7 @@ import { useTextSelection } from "@/hooks/useTextSelection";
 import { useRegionDrag } from "@/hooks/useRegionDrag";
 import { RegionResult } from "@/hooks/useRegionDrag";
 import { markTextInContainer, clearMarks, findIgnoringWhitespace, indexText, occurrenceAt } from "@/lib/highlight-dom";
+import { revealOffsets } from "@/lib/reveal-scroll";
 import { chooseInkRun, mergeIntoLines, nearestInkRun, nearestStoredLine, relativeToPage, type InkRun } from "@/lib/ink-bands";
 import { logicalSelectionBands } from "@/lib/selection-geometry";
 import { alignRectsToZoteroLines, type PdfTextItem, type PdfTextStyle } from "@/lib/zotero-selection-geometry";
@@ -2693,16 +2694,19 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
         if (selected) {
           const position: AnnotationPosition = { pageIndex: pageNumber - 1, rects: selected.rects };
           const rects = clientRectsForPosition(position);
-          const first = rects[0];
-          if (first) {
+          if (rects[0]) {
             const target = container.querySelector(
               `.page[data-page-number="${pageNumber}"]`
             ) as HTMLElement | null;
+            // The passage's lines to the middle of the window — and, when
+            // the page is wider than the window and the passage sits off
+            // its edge (the right column, zoomed in), sideways to it as well
             const box = container.getBoundingClientRect();
-            container.scrollTo({
-              top: container.scrollTop + (first.top - box.top) - container.clientHeight / 2,
-              behavior: target ? "smooth" : "auto",
+            const { top, left } = revealOffsets({
+              rects, box, scrollTop: container.scrollTop, scrollLeft: container.scrollLeft,
+              clientWidth: container.clientWidth, clientHeight: container.clientHeight,
             });
+            container.scrollTo({ top, left, behavior: target ? "smooth" : "auto" });
             flashBands(rects, true);
           }
           return { pageNumber, occurrence: 0, position };
