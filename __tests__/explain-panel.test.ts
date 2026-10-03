@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { createElement, act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
-import { ExplainPanel, shouldFoldQuotes } from "../components/AskPanel.js";
+import { ExplainPanel, type PanelScroll, shouldFoldQuotes } from "../components/AskPanel.js";
 import type { Annotation, Message } from "../types/session.js";
 import { withQuotes } from "../lib/quotes.js";
 
@@ -1297,6 +1297,68 @@ describe("following the question, the answer, or nothing", () => {
   const settled = () => act(async () => { await new Promise((r) => setTimeout(r, 650)); });
   const click = (el: Element) => act(() => { el.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })); });
   const button = (host: HTMLElement, text: string) => Array.from(host.querySelectorAll('[aria-label="Follow"] button')).find((b) => b.textContent === text) as HTMLElement;
+
+  // Pairs laid out in the list's content so the picker has something to
+  // measure: each [data-pair] box reports where it would be on screen
+  const layPairs = (host: HTMLElement, list: HTMLElement, spans: Record<string, [number, number]>) => {
+    for (const el of Array.from(host.querySelectorAll("[data-pair]")) as HTMLElement[]) {
+      const key = `${el.closest("[data-annotation-id]")?.getAttribute("data-annotation-id")}:${el.getAttribute("data-pair")}`;
+      const span = spans[key];
+      if (span) el.getBoundingClientRect = () => box(span[0] - list.scrollTop, span[1] - list.scrollTop);
+    }
+  };
+  const scrollByHand = (list: HTMLElement, to: number) => act(async () => {
+    list.dispatchEvent(new dom.window.Event("wheel", { bubbles: true }));
+    list.scrollTop = to;
+    list.dispatchEvent(new dom.window.Event("scroll", { bubbles: true }));
+    await new Promise((r) => setTimeout(r, 60));
+  });
+
+  test("on a fresh page, scrolling by hand focuses the pair under the window", async () => {
+    // Nothing was ever focused (no step, no click, no memory) — the first
+    // scroll must still pick the pair in view, in Chrome as anywhere
+    const host = freshRoot();
+    const root = createRoot(host);
+    const two = thread([{ role: "user", content: "q0" }, { role: "assistant", content: "a1" }, { role: "user", content: "q2" }, { role: "assistant", content: "a3" }], "a1", "A");
+    act(() => { root.render(createElement(ExplainPanel, props([two], []))); });
+    const list = lay(host, { cardTop: 100, cardBottom: 900 });
+    layPairs(host, list, { "a1:0": [100, 400], "a1:2": [400, 900] });
+    assert.equal(focusedPair(host), null, "nothing focused before any scroll");
+    // Scrolled 500px in: the window's middle (content 800) is in the second pair
+    await scrollByHand(list, 500);
+    assert.equal(focusedPair(host), "a1:2");
+    assert.deepEqual(pressed(host), ["free"]);
+  });
+
+  test("a passage clicked in the paper reveals its conversation at its first pair, even when already in focus", async () => {
+    const host = freshRoot();
+    const root = createRoot(host);
+    const two = thread([{ role: "user", content: "q0" }, { role: "assistant", content: "a1" }, { role: "user", content: "q2" }, { role: "assistant", content: "a3" }], "a1", "A");
+    const handle = { current: null as PanelScroll | null };
+    if (!dom.window.HTMLElement.prototype.scrollIntoView) dom.window.HTMLElement.prototype.scrollIntoView = () => {};
+    // With a paper key the list restores on mount, which must not swallow
+    // the first click on a passage as if it were the return to the paper
+    const render = (activeId: string | null) => act(() => { root.render(createElement(ExplainPanel, { ...props([two], [], "paper-1"), activeId, scrollHandle: handle })); });
+    render(null);
+    const list = lay(host, { cardTop: 100, cardBottom: 900 });
+    layPairs(host, list, { "a1:0": [100, 400], "a1:2": [400, 900] });
+    await scrollByHand(list, 500);
+    assert.equal(focusedPair(host), "a1:2", "reading the second pair");
+    // The passage is clicked: the page makes the conversation active and asks for it
+    let scrolledTo: string | null = null;
+    (host.querySelector("[data-annotation-id]") as HTMLElement).scrollIntoView = () => { scrolledTo = "card"; };
+    act(() => { handle.current!.reveal("a1"); });
+    render("a1");
+    assert.equal(focusedPair(host), "a1:0", "the first pair is the focus again");
+    assert.equal(scrolledTo, "card");
+    // Clicked once more while already active and in focus: still its beginning
+    await scrollByHand(list, 500);
+    assert.equal(focusedPair(host), "a1:2");
+    scrolledTo = null;
+    act(() => { handle.current!.reveal("a1"); });
+    assert.equal(focusedPair(host), "a1:0");
+    assert.equal(scrolledTo, "card");
+  });
 
   test("the control offers the three, and a send starts on the question", () => {
     // (the first render below counts as an ask too — a conversation first seen

@@ -75,6 +75,9 @@ export type PanelScroll = {
   set: (top: number) => void;
   // Hold a passage of the paper for the next question, wherever it is asked
   quote: (text: string, page?: number) => void;
+  // Bring a conversation into view at its beginning and focus its first
+  // pair — a passage of the paper clicked, whether or not it is already active
+  reveal: (id: string) => void;
 };
 
 type MarkdownComponents = {
@@ -868,11 +871,19 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
     return turns.sort((x, y) => x - y).join(",");
   }, [annotations]);
 
+  // A reveal asked for from the paper: consumed by the landing below, which
+  // runs again for it even when the active conversation does not change
+  const pendingReveal = useRef<string | null>(null);
+  const [revealSeq, setRevealSeq] = useState(0);
   useImperativeHandle(
     scrollHandle,
     () => ({
       get: () => scrollRef.current?.scrollTop ?? 0,
       set: (top: number) => scrollRef.current?.scrollTo({ top, behavior: "smooth" }),
+      reveal: (id: string) => {
+        pendingReveal.current = id;
+        setRevealSeq((n) => n + 1);
+      },
       quote: (text: string, page?: number) => {
         const trimmed = text.trim();
         if (!trimmed) return;
@@ -1024,13 +1035,20 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
 
     if (!activeId) {
       lastActiveId.current = null;
+      // Nothing active as the list came back: the restore has nothing to
+      // hold off, and the next arrival is a real one (a passage clicked)
+      justRestored.current = null;
       return;
     }
     const card = annotationRefs.current[activeId];
     const active = annotations.find((a) => a.id === activeId);
-    const switched = lastActiveId.current !== activeId;
-    lastActiveId.current = activeId;
+    // The panel just opened for this conversation: its card mounts a render
+    // later, and the arrival is still owed then
     if (!card || !active) return;
+    const revealed = pendingReveal.current === activeId;
+    pendingReveal.current = null;
+    const switched = lastActiveId.current !== activeId || revealed;
+    lastActiveId.current = activeId;
 
     const asked = lastQuestion(active);
     // An ask is an ask even when it changes nothing visible — a question
@@ -1085,20 +1103,22 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
       // Coming back to a paper restores the list to where it was (and the
       // mode it was in); the conversation that happens to be active was not
       // clicked, and is not scrolled to
-      if (justRestored.current === positionKey) { justRestored.current = null; return; }
+      if (justRestored.current === positionKey) { justRestored.current = null; if (!revealed) return; }
       trace("scrollIntoView", { reason: "switched to a conversation", target: describeForTrace(card), block: "start" });
       smoothUntil.current = Date.now() + 700;
       card.scrollIntoView({ behavior: "smooth", block: "start" });
       // Arriving at a conversation — opened, or just made by an explain — is
       // leaving the followed one for it: its first pair is now the focus,
-      // followed by nothing, and where a follow-up goes
+      // followed by nothing, and where a follow-up goes. A passage clicked
+      // in the paper means its beginning even when the conversation was
+      // already the one in focus.
       const f = followRef.current;
-      if (f.id !== activeId) {
+      if (f.id !== activeId || revealed) {
         pinned.current = null;
-        setFollowing({ id: activeId, index: pairsOf(active)[0]?.start ?? 0, mode: "free" }, "switched");
+        setFollowing({ id: activeId, index: pairsOf(active)[0]?.start ?? 0, mode: "free" }, revealed ? "revealed" : "switched");
       }
     }
-  }, [activeId, annotations, annotationRefs, askSeq, captureAnchor, foldedQuotes, expandedText, landOn, setFollowing, positionKey]);
+  }, [activeId, annotations, annotationRefs, askSeq, captureAnchor, foldedQuotes, expandedText, landOn, setFollowing, positionKey, revealSeq]);
 
   // While the answer streams, the question rises with it: the list scrolls
   // down exactly as much as the answer has grown, until the question reaches
@@ -1406,7 +1426,9 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
       // re-anchor, a mode's glide) leaves it where it was.
       const f = followRef.current;
       const byHand = scrollbarDown.current || Date.now() - lastInputAt.current < 600;
-      if (nearest && f.mode === "free" && f.id && byHand && (f.id !== nearest.id || f.index !== nearest.index)) {
+      // Before anything has been focused at all (a fresh page), the first
+      // scroll by hand is what picks the first focus
+      if (nearest && f.mode === "free" && byHand && (f.id !== nearest.id || f.index !== nearest.index)) {
         setFollowing({ id: nearest.id, index: nearest.index, mode: "free" }, "scrolled");
       }
     };

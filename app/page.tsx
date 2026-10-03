@@ -549,6 +549,9 @@ export default function Home() {
     if (!annotationId || annotationId === "?") return;
     setExplainOpen(true);
     setActiveAnnotationId(annotationId);
+    // Already the active conversation, or already in focus: still go to its
+    // beginning — that is what clicking the passage means
+    panelScroll.current?.reveal(annotationId);
   }, []);
 
   const handleDelete = useCallback((id: string) => {
