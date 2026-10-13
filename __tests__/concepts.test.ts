@@ -24,7 +24,7 @@ let shown: number;
 let resummarized: string[];
 let edited: string[][];
 
-const mount = (concepts: ConceptEntry[], summarizing = new Set<string>()) => {
+const mount = (concepts: ConceptEntry[], summarizing = new Set<string>(), extra: Record<string, unknown> = {}) => {
   shown = 0;
   resummarized = [];
   edited = [];
@@ -45,6 +45,7 @@ const mount = (concepts: ConceptEntry[], summarizing = new Set<string>()) => {
         highlights: [], onRemoveHighlight: () => {}, onEditNote: () => {},
         zoteroNotes: [], zoteroAnnotations: [], onRemoveZoteroAnnotation: () => {},
         isOpen: true, onToggle: () => {},
+        ...extra,
       })
     );
   });
@@ -109,6 +110,43 @@ describe("the concepts list holds what was learned", () => {
     mount([]);
     openConcepts();
     assert.ok(host.textContent?.includes("summarised here"));
+  });
+});
+
+// The thread being read in the Ask panel has its concept lit here, so the
+// gist of the thread is at hand without leaving it.
+describe("the concept of the thread you are in", () => {
+  const SECOND: ConceptEntry = { annotationId: "a2", label: "bank conflicts", type: "text", takeaways: ["一行一个 bank"] };
+  const lit = () => Array.from(host.querySelectorAll("[data-concept-id][data-lit]")).map((el) => el.getAttribute("data-concept-id"));
+  // jsdom lays nothing out: record what the list would have brought into view
+  const scrolled: string[] = [];
+  dom.window.HTMLElement.prototype.scrollIntoView = function (this: HTMLElement) { scrolled.push(this.getAttribute("data-concept-id") ?? "?"); };
+  const frames = () => act(async () => { await new Promise((r) => setTimeout(r, 40)); });
+
+  test("is lit, and only it", () => {
+    mount([CONCEPT, SECOND], new Set(), { focusedConversation: "a2" });
+    openConcepts();
+    assert.deepEqual(lit(), ["a2"]);
+  });
+
+  test("nothing is lit while no thread is being read", () => {
+    mount([CONCEPT, SECOND]);
+    openConcepts();
+    assert.deepEqual(lit(), []);
+  });
+
+  test("comes into view when the tab is opened, and follows the reader to the next thread", async () => {
+    // Frames still pending from the mounts above fire now, not in the count
+    await frames();
+    scrolled.length = 0;
+    mount([CONCEPT, SECOND], new Set(), { focusedConversation: "a2" });
+    openConcepts();
+    await frames();
+    assert.deepEqual(scrolled, ["a2"]);
+    mount([CONCEPT, SECOND], new Set(), { focusedConversation: "a1" });
+    openConcepts();
+    await frames();
+    assert.deepEqual(scrolled, ["a2", "a1"]);
   });
 });
 

@@ -1330,6 +1330,26 @@ describe("following the question, the answer, or nothing", () => {
     assert.deepEqual(pressed(host), ["free"]);
   });
 
+  test("the host is told which conversation the reader is in, as that changes", async () => {
+    // The notebook lights the thread's concept: it needs to hear of the
+    // thread under the reader's scrolling, not only of clicks
+    const host = freshRoot();
+    const root = createRoot(host);
+    const a = thread([{ role: "user", content: "q0" }, { role: "assistant", content: "a1" }], "a1", "A");
+    const b = thread([{ role: "user", content: "q0" }, { role: "assistant", content: "a1" }], "a2", "B");
+    const told: (string | null)[] = [];
+    act(() => { root.render(createElement(ExplainPanel, { ...props([a, b], []), onFocusedChange: (id: string | null) => { told.push(id); } })); });
+    const list = lay(host, { cardTop: 100, cardBottom: 500 });
+    layPairs(host, list, { "a1:0": [100, 500], "a2:0": [500, 1000] });
+    assert.deepEqual(told, [null], "nothing is focused on a fresh page");
+    // The window's middle (content 400) is in the first thread
+    await scrollByHand(list, 100);
+    assert.equal(told[told.length - 1], "a1");
+    // Scrolled on: the middle (800) is in the second
+    await scrollByHand(list, 500);
+    assert.equal(told[told.length - 1], "a2");
+  });
+
   test("a passage clicked in the paper reveals its conversation at its first pair, even when already in focus", async () => {
     const host = freshRoot();
     const root = createRoot(host);

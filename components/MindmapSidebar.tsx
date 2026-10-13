@@ -45,6 +45,10 @@ type Props = {
   // brings its entry into view. The counter makes repeat clicks on the same
   // highlight register as new requests.
   focusNote?: { id: string; n: number } | null;
+  // The conversation the reader is in, in the Ask panel. Its concept is lit
+  // in the list and kept in view, so the gist of the thread is at hand
+  // while the thread itself is read.
+  focusedConversation?: string | null;
   zoteroNotes: { key: string; html: string }[];
   zoteroAnnotations: { key: string; text: string; comment: string; page?: number; type: string }[];
   onRemoveZoteroAnnotation: (key: string) => void;
@@ -93,12 +97,17 @@ function NoteBox({ initial, onSave, onCancel }: { initial: string; onSave: (note
 function ConceptCard({
   concept,
   busy,
+  lit,
+  cardRef,
   onSelect,
   onResummarize,
   onEdit,
 }: {
   concept: ConceptEntry;
   busy: boolean;
+  // The thread the reader is in: drawn as its card is in the Ask panel
+  lit: boolean;
+  cardRef?: (el: HTMLDivElement | null) => void;
   onSelect: () => void;
   onResummarize?: () => void;
   onEdit?: (takeaways: string[]) => void;
@@ -143,8 +152,15 @@ function ConceptCard({
 
   return (
     <div
+      ref={cardRef}
+      data-concept-id={concept.annotationId}
+      data-lit={lit ? "" : undefined}
       className="rounded px-2 py-1.5 transition-colors group/concept"
-      style={{ background: "rgba(230,237,243,0.03)", border: "1px solid var(--border-light)" }}
+      style={{
+        background: lit ? "rgba(232,120,76,0.07)" : "rgba(230,237,243,0.03)",
+        border: lit ? "1px solid var(--accent)" : "1px solid var(--border-light)",
+        boxShadow: lit ? "0 0 0 1px var(--accent)" : undefined,
+      }}
     >
       <div className="flex items-start gap-1.5">
         <span
@@ -397,6 +413,7 @@ export function MindmapSidebar({
   onRemoveHighlight,
   onEditNote,
   focusNote,
+  focusedConversation,
   zoteroNotes,
   zoteroAnnotations,
   onRemoveZoteroAnnotation,
@@ -453,6 +470,18 @@ export function MindmapSidebar({
       clearTimeout(timer);
     };
   }, [focusNote]);
+
+  // The lit concept stays in view as the reader moves through the Ask
+  // panel, and comes into view when the tab is opened. "nearest" leaves the
+  // list alone while the card is already on screen.
+  const conceptRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  useEffect(() => {
+    if (tab !== "concepts" || !focusedConversation) return;
+    const frame = requestAnimationFrame(() => {
+      conceptRefs.current[focusedConversation]?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [tab, focusedConversation]);
 
   if (!isOpen) {
     return (
@@ -803,6 +832,8 @@ export function MindmapSidebar({
               key={c.annotationId}
               concept={c}
               busy={summarizingIds?.has(c.annotationId) ?? false}
+              lit={c.annotationId === focusedConversation}
+              cardRef={(el) => { conceptRefs.current[c.annotationId] = el; }}
               onSelect={() => onSelectConcept(c.annotationId)}
               onResummarize={onResummarize ? () => onResummarize(c.annotationId) : undefined}
               onEdit={onEditTakeaways ? (lines) => onEditTakeaways(c.annotationId, lines) : undefined}

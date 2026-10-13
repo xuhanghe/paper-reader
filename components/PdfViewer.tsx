@@ -2751,7 +2751,7 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
     const distance = Math.hypot(target.top - from.top, target.left - from.left);
     const still = typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     const ms = still ? 0 : glideDuration(distance);
-    if (traceEnabled()) trace("glide", { ...what, from: Math.round(from.top), to: Math.round(target.top), px: Math.round(distance), ms });
+    if (traceEnabled()) trace("jump", { ...what, from: Math.round(from.top), to: Math.round(target.top), px: Math.round(distance), ms });
     if (ms === 0) {
       if (distance > 0) container.scrollTo({ ...target, behavior: "instant" });
       return Promise.resolve(true);

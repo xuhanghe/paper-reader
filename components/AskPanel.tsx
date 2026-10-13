@@ -30,6 +30,10 @@ type Props = {
   onDelete: (annotationId: string) => void;
   onReExplainImage: (annotationId: string) => void;
   onViewInPdf: (annotationId: string) => void;
+  // The conversation the reader is in — the one holding the focused pair,
+  // or the active one before anything is focused — whenever it changes, so
+  // the host can light what else belongs to it, such as its concept
+  onFocusedChange?: (annotationId: string | null) => void;
   // Land on a passage the model cited, by page and verbatim text. The third
   // argument is the conversation the citation was written in, so the passage
   // can be marked on the page as belonging to that answer.
@@ -351,7 +355,7 @@ const FONT_SIZES = [12, 13, 14, 15, 16, 17, 18, 20];
 const DEFAULT_FONT_IDX = 3; // 15px
 const COLLAPSE_CHARS = 300;
 
-export function ExplainPanel({ annotations, activeId, model, streamingIds, onFollowUp, onStop, onEditMessage, onAskGeneral, onDelete, onReExplainImage, onViewInPdf, onCitePaper, annotationRefs, scrollHandle, isOpen, onToggle, width = 460, modelControls, positionKey, askSeq }: Props) {
+export function ExplainPanel({ annotations, activeId, model, streamingIds, onFollowUp, onStop, onEditMessage, onAskGeneral, onDelete, onReExplainImage, onViewInPdf, onFocusedChange, onCitePaper, annotationRefs, scrollHandle, isOpen, onToggle, width = 460, modelControls, positionKey, askSeq }: Props) {
   // One composer for both kinds of question. What is typed is kept across
   // the switch, so flipping it never loses a draft.
   const [draft, setDraft] = useState("");
@@ -1253,6 +1257,11 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
   // or, before anything has been followed, the pair under the window's middle
   const focusedOn: { id: string; index: number } | null =
     follow.id && follow.index !== null ? { id: follow.id, index: follow.index } : viewPair;
+  // The card lit is the one holding the focused pair — the thread you are
+  // in — or, before anything is focused, the active one. The host hears of
+  // every change so the thread's concept can be lit alongside it.
+  const litId = focusedOn ? focusedOn.id : activeId;
+  useEffect(() => { onFocusedChange?.(litId); }, [litId, onFocusedChange]);
   // The reader's choice from the control applies to the focused pair
   const chooseFollow = useCallback((mode: FollowMode, inView: Annotation) => {
     const target = focusedPair(inView);
@@ -1881,10 +1890,7 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
 
       <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 space-y-4" style={{ fontSize }}>
         {annotations.map((annotation) => {
-          const isActive = annotation.id === activeId;
-          // The card lit is the one holding the focused pair — the thread you
-          // are in — or, before anything is focused, the active one
-          const lit = focusedOn ? focusedOn.id === annotation.id : isActive;
+          const lit = annotation.id === litId;
           const collapsed = collapsedIds.has(annotation.id);
           const replies = annotation.messages.filter((m) => m.role === "assistant" && m.content).length;
           return (

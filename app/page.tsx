@@ -526,6 +526,9 @@ export default function Home() {
   // Clicking a highlight in the paper reveals its entry in the Notes panel.
   // The counter distinguishes repeat clicks on the same highlight.
   const [focusNote, setFocusNote] = useState<{ id: string; n: number } | null>(null);
+  // The conversation the reader is in, as the Ask panel reports it: its
+  // concept is lit in the notebook
+  const [focusedAnnotationId, setFocusedAnnotationId] = useState<string | null>(null);
   const revealNote = useCallback((id: string) => {
     setSidebarOpen(true);
     setFocusNote((prev) => ({ id, n: (prev?.n ?? 0) + 1 }));
@@ -1637,6 +1640,7 @@ export default function Home() {
           onDelete={handleDelete}
           onReExplainImage={handleReExplainImage}
           onViewInPdf={handleViewInPdf}
+          onFocusedChange={setFocusedAnnotationId}
           onCitePaper={(page: number, quote: string, fromAnnotationId?: string) => {
             void followCitation(page, quote, fromAnnotationId);
           }}
@@ -1671,6 +1675,7 @@ export default function Home() {
           onRemoveHighlight={handleRemoveHighlight}
           onEditNote={handleEditNote}
           focusNote={focusNote}
+          focusedConversation={focusedAnnotationId}
           zoteroNotes={zoteroNotes}
           zoteroAnnotations={visibleZoteroAnnotations}
           onRemoveZoteroAnnotation={handleRemoveZoteroAnnotation}
