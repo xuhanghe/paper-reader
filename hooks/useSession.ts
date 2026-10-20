@@ -34,6 +34,11 @@ const lastSaved = new Map<string, string>();
 // in lib/session-id.ts; re-exported so callers keep importing it from here.
 export { sessionIdFor };
 
+// A saved conversation that cannot be fetched is asked for again before the
+// paper is given up on as new
+const RESTORE_ATTEMPTS = 3;
+const RESTORE_RETRY_MS = 1000;
+
 export function useSession() {
   const [session, setSession] = useState<SessionState>(DEFAULT_STATE);
   const [hydrated, setHydrated] = useState(false);
@@ -54,8 +59,15 @@ export function useSession() {
   // out of sight, and is what the reader sees when they come back.
   const parkedRef = useRef<Map<string, SessionState>>(new Map());
   const parkedSaves = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+  // Papers whose saved conversation is in hand — loaded, or known not to
+  // exist. Opening a paper starts from an empty session and fetches the
+  // saved one; until that answers, nothing is written for the paper. A flush
+  // on a quick tab switch, or the parked copy's save, would otherwise write
+  // the empty session over the saved conversation, and every card is gone.
+  const restoredRef = useRef<Set<string>>(new Set());
 
   const persist = useCallback((id: string, s: SessionState) => {
+    if (!restoredRef.current.has(id)) return Promise.resolve();
     const state = s.zoteroKey ? { ...s, pdfDataUrl: "" } : s;
     return fetch("/api/sessions", {
       method: "POST",
@@ -111,6 +123,7 @@ export function useSession() {
     const s = sessionRef.current;
     if (!s.pdfName || !s.pdfDataUrl) return;
     const id = sessionIdFor(s.pdfName, s.zoteroKey);
+    if (!restoredRef.current.has(id)) return;
     const state = s.zoteroKey ? { ...s, pdfDataUrl: "" } : s;
     try {
       localStorage.setItem(LAST_SESSION_KEY, id);
@@ -135,6 +148,7 @@ export function useSession() {
         // Back from the other surface: the state is still here, as left
         const kept = keptSessions.get(last);
         if (kept) {
+          restoredRef.current.add(last);
           activeIdRef.current = last;
           setSession(kept);
           return;
@@ -144,6 +158,7 @@ export function useSession() {
         const { state } = await res.json();
         if (!state?.pdfName) return;
         lastSaved.set(last, JSON.stringify({ id: last, state }));
+        restoredRef.current.add(last);
 
         if (!state.pdfDataUrl && state.zoteroKey) {
           // Already in memory from this browsing session (the other surface
@@ -195,6 +210,7 @@ export function useSession() {
   // state can never overwrite the saved one.
   useEffect(() => {
     if (!hydrated || restoring || !session.pdfName || !session.pdfDataUrl) return;
+    if (!restoredRef.current.has(sessionIdFor(session.pdfName, session.zoteroKey))) return;
     const id = sessionIdFor(session.pdfName, session.zoteroKey);
     const t = setTimeout(() => {
       try { localStorage.setItem(LAST_SESSION_KEY, id); } catch {}
@@ -242,33 +258,55 @@ export function useSession() {
       return;
     }
     setSession((s) => ({ ...s, pdfName: name, pdfDataUrl: dataUrl, docType, zoteroKey, zoteroAttachmentKey, sourceUrl, annotations: [], concepts: [], mindmap: null, highlights: [], providerSessions: {} }));
+    restoredRef.current.delete(id);
     setRestoring(true);
     (async () => {
       try {
-        // legacy = the id this name had under the old ASCII-only slug, so a
-        // session saved before other scripts counted migrates over
-        const res = await fetch(
-          `/api/sessions?id=${encodeURIComponent(sessionIdFor(name, zoteroKey))}&legacy=${encodeURIComponent(legacySessionIdFor(name))}&lean=1`
-        );
-        if (!res.ok) return;
-        const data = await res.json();
-        if (data?.state?.pdfName !== name) return;
-        // Keep the freshly loaded document bytes; only merge if the user
-        // hasn't switched to another paper in the meantime
-        setSession((s) =>
-          s.pdfName === name
-            ? {
-                ...data.state,
-                pdfDataUrl: s.pdfDataUrl,
-                docType: s.docType,
-                zoteroKey: s.zoteroKey ?? data.state.zoteroKey,
-                zoteroAttachmentKey: s.zoteroAttachmentKey ?? data.state.zoteroAttachmentKey,
-                sourceUrl: s.sourceUrl ?? data.state.sourceUrl,
-              }
-            : s
-        );
-      } catch {
-        // no saved conversation — keep the fresh session
+        for (let attempt = 0; attempt < RESTORE_ATTEMPTS; attempt++) {
+          if (attempt > 0) await new Promise((r) => setTimeout(r, RESTORE_RETRY_MS));
+          // Left, and not parked: nothing to restore into any more
+          if (activeIdRef.current !== id && !parkedRef.current.has(id)) return;
+          let res: Response;
+          try {
+            // legacy = the id this name had under the old ASCII-only slug, so a
+            // session saved before other scripts counted migrates over
+            res = await fetch(`/api/sessions?id=${encodeURIComponent(id)}&legacy=${encodeURIComponent(legacySessionIdFor(name))}&lean=1`);
+          } catch {
+            continue; // unreachable: try again, and write nothing meanwhile
+          }
+          if (!res.ok) {
+            if (res.status >= 500) continue; // the server's trouble, not a missing session
+            // Nothing saved under this id: the fresh session is the whole history
+            restoredRef.current.add(id);
+            return;
+          }
+          const saved = (await res.json())?.state as SessionState | undefined;
+          if (!saved?.pdfName) { restoredRef.current.add(id); return; }
+          // The saved conversation, under the document just loaded. Anything
+          // asked while the fetch was out stays, after what was saved.
+          const merge = (s: SessionState): SessionState => ({
+            ...saved,
+            pdfName: s.pdfName,
+            pdfDataUrl: s.pdfDataUrl,
+            docType: s.docType,
+            zoteroKey: s.zoteroKey ?? saved.zoteroKey,
+            zoteroAttachmentKey: s.zoteroAttachmentKey ?? saved.zoteroAttachmentKey,
+            sourceUrl: s.sourceUrl ?? saved.sourceUrl,
+            annotations: [...(saved.annotations ?? []), ...s.annotations.filter((a) => !saved.annotations?.some((b) => b.id === a.id))],
+            concepts: [...(saved.concepts ?? []), ...s.concepts.filter((c) => !saved.concepts?.some((d) => d.annotationId === c.annotationId))],
+            highlights: [...(saved.highlights ?? []), ...(s.highlights ?? [])],
+            providerSessions: { ...(s.providerSessions ?? {}), ...(saved.providerSessions ?? {}) },
+            mindmap: saved.mindmap ?? s.mindmap,
+          });
+          // Into the live session while this paper is open; into its parked
+          // copy if the reader moved on before the answer came — that copy
+          // started empty, and is what they come back to
+          const parked = parkedRef.current.get(id);
+          if (parked) parkedRef.current.set(id, merge(parked));
+          setSession((s) => (sessionIdFor(s.pdfName, s.zoteroKey) === id ? merge(s) : s));
+          restoredRef.current.add(id);
+          return;
+        }
       } finally {
         setRestoring(false);
       }
