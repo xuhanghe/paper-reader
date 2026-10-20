@@ -42,12 +42,12 @@ export async function POST(req: Request) {
   const paths = await selectedSkillPaths(body.skills);
   const files = (await listWorkspaceFiles(root)).filter((entry) => entry.kind === "file").slice(0, 160).map((entry) => entry.path);
   const context = typeof body.context === "string" ? body.context.slice(0, 16000) : "";
-  const capability = allowWrites
   // The papers attached to the workspace, with what was read and asked
   // about each in the Reader: folders for an agent with file tools, a
   // digest inline for one without
   const papers = parsePaperRefs(body.papers);
   const papersSection = await describeWorkspacePapers(papers, { agentic: provider === "claude" || provider === "codex" });
+  const capability = allowWrites
     ? "The user explicitly approved file writes for this turn. You may create or edit files, but only inside the working directory."
     : "This is a read-only turn. Do not create, edit, rename, or delete files. If a change would help, explain it and ask the user to approve a write turn.";
   const prompt = `You are the research agent inside Paper Reader's workspace.
@@ -78,10 +78,10 @@ User request: ${request}`;
   const isResume = typeof body.session_id === "string" && !!body.session_id;
   if (provider === "codex") {
     return streamResponse(codexStream(prompt, {
-      cwd: root,
-      writable: allowWrites,
       images: imageFile ? [imageFile] : undefined,
       onClose: cleanupImage,
+      cwd: root,
+      writable: allowWrites,
       effort: body.effort,
       resumeId: isResume ? body.session_id : undefined,
     }));
@@ -89,9 +89,9 @@ User request: ${request}`;
 
   if (provider === "opencode") {
     return streamResponse(opencodeStream(prompt, {
+      images: imageDataUrl ? [{ mime: "image/png", dataUrl: imageDataUrl }] : undefined,
       effort: body.effort,
       resumeId: isResume ? body.session_id : undefined,
-      images: imageDataUrl ? [{ mime: "image/png", dataUrl: imageDataUrl }] : undefined,
       webSearch: true,
       title: `workspace: ${root.split("/").pop()}`,
     }));
@@ -107,23 +107,23 @@ User request: ${request}`;
   }
 
   const model = typeof body.model === "string" && body.model.startsWith("claude") ? body.model : "claude-sonnet-4-6";
-  const args = [
-    "-p", ...(useStdin ? [] : [cleanPrompt]),
   const cleanPrompt = sanitizeSpawnArg(prompt);
   // An image can only go in through stdin, as a stream-json turn
   const useStdin = !!imageBase64;
+  const args = [
+    "-p", ...(useStdin ? [] : [cleanPrompt]),
     ...(isResume ? ["--resume", body.session_id] : []),
     "--model", model,
     ...effortArgs(body.effort),
     "--output-format", "stream-json",
     "--include-partial-messages",
+    ...(useStdin ? ["--input-format", "stream-json"] : []),
     "--verbose",
     "--permission-mode", allowWrites ? "acceptEdits" : "plan",
-    ...(useStdin ? ["--input-format", "stream-json"] : []),
-    ...claudeMcpArgs(),
-  ];
     // The papers' folders sit outside the workspace: the agent may read them
     ...(papers.length ? ["--add-dir", SESSIONS_ROOT] : []),
+    ...claudeMcpArgs(),
+  ];
   let child: ReturnType<typeof spawn> | null = null;
   const stop = () => { if (child && !child.killed) child.kill("SIGTERM"); };
   req.signal.addEventListener("abort", stop);
@@ -131,8 +131,6 @@ User request: ${request}`;
     start(controller) {
       const process = spawn(claudeBin(), args, { cwd: root });
       child = process;
-      process.stdin.end();
-      process.stdout.on("data", (chunk: Buffer) => controller.enqueue(chunk));
       if (useStdin) {
         process.stdin.write(JSON.stringify({
           type: "user",
@@ -142,6 +140,8 @@ User request: ${request}`;
           ] },
         }) + "\n");
       }
+      process.stdin.end();
+      process.stdout.on("data", (chunk: Buffer) => controller.enqueue(chunk));
       process.stdout.on("end", () => controller.close());
       process.stderr.on("data", (chunk: Buffer) => console.error("[workspace claude]", chunk.toString().slice(0, 400)));
       process.on("error", (error) => controller.error(error));
