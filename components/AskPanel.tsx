@@ -13,7 +13,7 @@ import { loadPanelScroll, savePanelScroll } from "@/lib/panel-scroll";
 import { trace, traceEnabled, describeForTrace } from "@/lib/panel-trace";
 import { withQuotes, quotePreview, quoteLabel, parseQuotes, addQuote as pushQuote, type Quote, type QuotedPassage } from "@/lib/quotes";
 import { clearMarks, markTextInContainer } from "@/lib/highlight-dom";
-import { parseCitation, citationLabel } from "@/lib/citations";
+import { parseCitation, citationLabel, unwrapCodedCitations } from "@/lib/citations";
 import { GrowingTextarea } from "./GrowingTextarea";
 
 type Props = {
@@ -284,7 +284,7 @@ const Answer = memo(function Answer({
   // faster than a render takes are skipped rather than each parsed in turn
   const deferred = useDeferredValue(content);
   const shown = streaming ? deferred : content;
-  const blocks = useMemo(() => splitMarkdownBlocks(normalizeMathDelimiters(shown)), [shown]);
+  const blocks = useMemo(() => splitMarkdownBlocks(normalizeMathDelimiters(unwrapCodedCitations(shown))), [shown]);
   return (
     <div className="prose-paper">
       {blocks.map((text, i) => (

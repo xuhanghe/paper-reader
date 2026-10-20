@@ -1,6 +1,7 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import { parseCitation, turnMarker, citationLabel } from "../lib/citations.js";
+import { unwrapCodedCitations } from "../lib/citations.js";
 
 // The model writes its references as markdown links in two private schemes.
 // Everything else it links to is an ordinary link and has to stay one — a
@@ -65,5 +66,30 @@ describe("citationLabel", () => {
 
   test("flattens a quote broken across lines onto one", () => {
     assert.equal(citationLabel("bandwidth\n  bound   kernel"), "bandwidth bound kernel");
+  });
+});
+
+// A citation the model put in backticks is a code span to markdown and
+// showed as the raw link — seen in an answer: 论文说 `[packet flows through
+// the OvS’s kernel data path](paper:3)`，指的就是第二种 software slow path.
+describe("a citation wrapped in backticks", () => {
+  test("loses the backticks and becomes the link it was meant to be", () => {
+    const text = "论文说 `[packet flows through the OvS’s kernel data path](paper:3)`，指的就是第二种 software slow path。";
+    assert.equal(unwrapCodedCitations(text), "论文说 [packet flows through the OvS’s kernel data path](paper:3)，指的就是第二种 software slow path。");
+  });
+
+  test("a turn citation too, and spaces inside the backticks are forgiven", () => {
+    assert.equal(unwrapCodedCitations("as settled ` [earlier](turn:7) `."), "as settled [earlier](turn:7).");
+  });
+
+  test("code that is code stays code", () => {
+    for (const text of ["call `MPI_Isend(buf, n)` here", "the pair `[a](b)` is not a citation", "`[x](paper:3) and more`"]) {
+      assert.equal(unwrapCodedCitations(text), text);
+    }
+  });
+
+  test("nothing inside a fenced block is touched", () => {
+    const text = "```text\n`[quoted](paper:2)`\n```\nthen `[quoted](paper:2)` outside";
+    assert.equal(unwrapCodedCitations(text), "```text\n`[quoted](paper:2)`\n```\nthen [quoted](paper:2) outside");
   });
 });

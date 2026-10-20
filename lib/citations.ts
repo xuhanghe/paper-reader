@@ -42,6 +42,21 @@ export function parseCitation(href: string | undefined): Citation | null {
   return null;
 }
 
+// A citation the model wrapped in backticks — `[words](paper:3)` — is a code
+// span to markdown, and showed as the raw link, unclickable. The backticks
+// come off a code span that holds exactly one citation and nothing else.
+// Fenced code is left alone, as is every other code span.
+const FENCED = /(```[\s\S]*?```|~~~[\s\S]*?~~~)/;
+const CODED_CITATION = /`\s*(\[[^\]\n]+\]\((?:paper(?::\d+)?|turn:\d+)\))\s*`/g;
+
+export function unwrapCodedCitations(markdown: string): string {
+  if (!markdown.includes("`")) return markdown;
+  return markdown
+    .split(FENCED)
+    .map((part, index) => (index % 2 === 1 ? part : part.replace(CODED_CITATION, "$1")))
+    .join("");
+}
+
 // How each of my messages is numbered for the model, so it can point back at
 // one. It rides on the message itself rather than in the bootstrap, because on
 // a resumed session the bootstrap is thousands of tokens behind.
