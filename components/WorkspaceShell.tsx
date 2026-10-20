@@ -21,6 +21,7 @@ import { DEFAULT_HIGHLIGHT_COLOR } from "@/lib/highlight-colors";
 import type { AskedPassage, PdfViewerHandle, SelectionSegment } from "@/components/PdfViewer";
 import type { SelectionIntent } from "@/lib/prompts";
 import { unwrapCodedCitations } from "@/lib/citations";
+import { loadDraft, saveDraft } from "@/lib/drafts";
 import { flattenZoteroCollections, zoteroCollectionBranch, zoteroPaperTab, type ZoteroCollection, type ZoteroPaper } from "@/lib/workspace-zotero";
 import type { Annotation, CustomApiConfig, Effort, Highlight, Model, PdfRects } from "@/types/session";
 import type { ResearchWorkspace, WorkspaceDocument } from "@/types/workspace";
@@ -452,7 +453,8 @@ export function WorkspaceShell() {
   const [model, setModel] = useState<Model>("claude-sonnet-4-6");
   const [effort, setEffort] = useState<Effort>("high");
   const [writeOnce, setWriteOnce] = useState(false);
-  const [question, setQuestion] = useState("");
+  // What is being typed for the agent, kept per workspace: see lib/drafts
+  const [question, setQuestion] = useState(() => loadDraft(activeWorkspaceId ? `workspace:${activeWorkspaceId}` : null)?.text ?? "");
   const [streaming, setStreaming] = useState(false);
   const initialChat = loadJson<{ messages: AgentMessage[]; session?: string }>(`paper-reader:workspace-chat:${activeWorkspaceId || "none"}`, { messages: [] });
   const [messages, setMessages] = useState<AgentMessage[]>(initialChat.messages || []);
@@ -501,9 +503,25 @@ export function WorkspaceShell() {
     try { localStorage.setItem(`paper-reader:workspace-chat:${activeWorkspace.id}`, JSON.stringify({ messages, session: providerSession })); } catch {}
   }, [messages, providerSession, activeWorkspace]);
 
+  // The draft is saved a moment after each change, for a refresh, and at
+  // once when the surface is left
+  const draftKey = activeWorkspace ? `workspace:${activeWorkspace.id}` : null;
+  const latestDraft = useRef<{ key: string | null; text: string }>({ key: null, text: "" });
+  useEffect(() => {
+    if (!draftKey) return;
+    latestDraft.current = { key: draftKey, text: question };
+    const timer = setTimeout(() => saveDraft(draftKey, { text: question }), 300);
+    return () => clearTimeout(timer);
+  }, [draftKey, question]);
+  useEffect(() => () => {
+    const last = latestDraft.current;
+    if (last.key) saveDraft(last.key, { text: last.text });
+  }, [draftKey]);
+
   const switchWorkspace = (id: string) => {
     const saved = loadJson<{ messages: AgentMessage[]; session?: string }>(`paper-reader:workspace-chat:${id}`, { messages: [] });
     setActiveWorkspaceId(id); setMessages(saved.messages || []); setProviderSession(saved.session);
+    setQuestion(loadDraft(`workspace:${id}`)?.text ?? "");
     setOpenDocs(docStore(id).load());
     setActiveDocId(null); setPdfData(""); setEditorContent(""); setFiles([]); setExpandedDirectories(new Set());
     try { localStorage.setItem(ACTIVE_WORKSPACE_KEY, JSON.stringify(id)); } catch {}
@@ -523,6 +541,7 @@ export function WorkspaceShell() {
     const next = workspaces.filter((item) => item.id !== workspace.id);
     persist(next);
     try { localStorage.removeItem(`paper-reader:workspace-chat:${workspace.id}`); } catch {}
+    saveDraft(`workspace:${workspace.id}`, { text: "" });
     setDeleteWorkspaceTarget(null);
     if (workspace.id === activeWorkspace?.id) {
       abortRef.current?.abort();

@@ -6,6 +6,7 @@ import remarkMath from "remark-math";
 import remarkCjkFriendly from "remark-cjk-friendly";
 import rehypeKatex from "rehype-katex";
 import { normalizeMathDelimiters } from "@/lib/math-delimiters";
+import { loadDraft, saveDraft } from "@/lib/drafts";
 import { splitMarkdownBlocks } from "@/lib/markdown-blocks";
 import { Annotation, Message, Model } from "@/types/session";
 import { isSubmitKey } from "@/lib/keys";
@@ -355,11 +356,18 @@ const FONT_SIZES = [12, 13, 14, 15, 16, 17, 18, 20];
 const DEFAULT_FONT_IDX = 3; // 15px
 const COLLAPSE_CHARS = 300;
 
+// An image attached to a draft, kept for the session: too large for the
+// drafts store, but it should still be there after a crossing to the
+// Workspace and back
+const composerImageMemory = new Map<string, string>();
+
 export function ExplainPanel({ annotations, activeId, model, streamingIds, onFollowUp, onStop, onEditMessage, onAskGeneral, onDelete, onReExplainImage, onViewInPdf, onFocusedChange, onCitePaper, annotationRefs, scrollHandle, isOpen, onToggle, width = 460, modelControls, positionKey, askSeq }: Props) {
   // One composer for both kinds of question. What is typed is kept across
   // the switch, so flipping it never loses a draft.
-  const [draft, setDraft] = useState("");
-  const [composerImage, setComposerImage] = useState<string | null>(null);
+  // What is being typed, kept per paper: see lib/drafts
+  const draftKey = positionKey ? `reader:${positionKey}` : null;
+  const [draft, setDraft] = useState(() => loadDraft(draftKey)?.text ?? "");
+  const [composerImage, setComposerImage] = useState<string | null>(() => (draftKey ? composerImageMemory.get(draftKey) ?? null : null));
   // Where the next question goes: into the conversation you are on, or a
   // new one about the paper. Follow up is the default whenever there is a
   // conversation to follow up on; with none, the box can only ask anew.
@@ -453,7 +461,35 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
   const [editDraft, setEditDraft] = useState("");
   // Passages lifted out of the conversations, waiting to be quoted into the
   // next question — wherever it is asked
-  const [quotes, setQuotes] = useState<Quote[]>([]);
+  const [quotes, setQuotes] = useState<Quote[]>(() => loadDraft(draftKey)?.quotes ?? []);
+  // Another paper: its own draft replaces this one's in the box. The one
+  // being left is saved by the effect below, whose cleanup still sees it.
+  const [draftFor, setDraftFor] = useState(draftKey);
+  if (draftFor !== draftKey) {
+    setDraftFor(draftKey);
+    const stored = loadDraft(draftKey);
+    setDraft(stored?.text ?? "");
+    setQuotes(stored?.quotes ?? []);
+    setComposerImage(draftKey ? composerImageMemory.get(draftKey) ?? null : null);
+  }
+  // Saved a moment after each change, for a refresh; and at once when the
+  // paper or the surface is left, from what the last change committed
+  const latestDraft = useRef<{ key: string | null; text: string; quotes: Quote[] }>({ key: null, text: "", quotes: [] });
+  useEffect(() => {
+    if (!draftKey) return;
+    latestDraft.current = { key: draftKey, text: draft, quotes };
+    const timer = setTimeout(() => saveDraft(draftKey, { text: draft, quotes }), 300);
+    return () => clearTimeout(timer);
+  }, [draftKey, draft, quotes]);
+  useEffect(() => () => {
+    const last = latestDraft.current;
+    if (last.key) saveDraft(last.key, { text: last.text, quotes: last.quotes });
+  }, [draftKey]);
+  useEffect(() => {
+    if (!draftKey) return;
+    if (composerImage) composerImageMemory.set(draftKey, composerImage);
+    else composerImageMemory.delete(draftKey);
+  }, [draftKey, composerImage]);
   const [pendingQuote, setPendingQuote] = useState<{ text: string; source?: string; top: number; left: number } | null>(null);
   // The box last typed in, so clicking a quote drops its label at the cursor
   // rather than making the reader remember which number was which

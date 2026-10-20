@@ -1588,3 +1588,68 @@ describe("following the question, the answer, or nothing", () => {
     assert.equal(focusedPair(host), "c3:0");
   });
 });
+
+// What is typed and not yet sent stays with its paper: still there after a
+// switch to another paper and back, and after the panel is remounted — a
+// crossing to the Workspace and back, or a refresh.
+describe("a draft stays with its paper", () => {
+  const card = thread([{ role: "user", content: "q" }, { role: "assistant", content: "a" }], "d1", "D");
+  const render = (root: Root, positionKey: string) => act(() => {
+    root.render(createElement(ExplainPanel, {
+      annotations: [card], activeId: null, model: "m", streamingIds: new Set<string>(),
+      onFollowUp: () => {}, onAskGeneral: () => {}, onDelete: () => {}, onReExplainImage: () => {}, onViewInPdf: () => {},
+      annotationRefs: { current: {} }, isOpen: true, onToggle: () => {}, positionKey,
+    }));
+  });
+  const box = (host: HTMLElement) => host.querySelector("textarea[data-composer]") as HTMLTextAreaElement;
+  const type = (host: HTMLElement, text: string) => act(() => {
+    const el = box(host);
+    Object.getOwnPropertyDescriptor(dom.window.HTMLTextAreaElement.prototype, "value")!.set!.call(el, text);
+    el.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+  });
+  const settle = () => act(async () => { await new Promise((r) => setTimeout(r, 350)); });
+
+  test("across a switch to another paper and back", async () => {
+    dom.window.localStorage.clear();
+    const host = freshRoot();
+    const root = createRoot(host);
+    render(root, "paper-1");
+    type(host, "half a thought");
+    render(root, "paper-2");
+    assert.equal(box(host).value, "", "the other paper's box starts empty");
+    type(host, "something else");
+    render(root, "paper-1");
+    assert.equal(box(host).value, "half a thought");
+    render(root, "paper-2");
+    assert.equal(box(host).value, "something else");
+    act(() => root.unmount());
+  });
+
+  test("across a remount of the panel, as a refresh or a surface switch is", async () => {
+    dom.window.localStorage.clear();
+    const first = freshRoot();
+    const root = createRoot(first);
+    render(root, "paper-1");
+    type(first, "half a thought");
+    await settle();
+    act(() => root.unmount());
+    const again = freshRoot();
+    render(createRoot(again), "paper-1");
+    assert.equal(box(again).value, "half a thought");
+  });
+
+  test("sending clears the draft for good", async () => {
+    dom.window.localStorage.clear();
+    const host = freshRoot();
+    const root = createRoot(host);
+    render(root, "paper-1");
+    type(host, "a question");
+    await settle();
+    act(() => { box(host).dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Enter", bubbles: true })); });
+    await settle();
+    act(() => root.unmount());
+    const again = freshRoot();
+    render(createRoot(again), "paper-1");
+    assert.equal(box(again).value, "");
+  });
+});
