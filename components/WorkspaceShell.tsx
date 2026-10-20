@@ -2,7 +2,7 @@
 import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactNode } from "react";
 import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import rehypeHighlight from "rehype-highlight";
 import rehypeKatex from "rehype-katex";
@@ -18,8 +18,11 @@ import { CollapsedRail, ResizeHandle, usePanelWidth } from "@/components/Resizab
 import { useAgentSkills } from "@/hooks/useAgentSkills";
 import { createZoteroHighlight } from "@/lib/zotero-highlight-api";
 import { DEFAULT_HIGHLIGHT_COLOR } from "@/lib/highlight-colors";
+import type { AskedPassage, PdfViewerHandle, SelectionSegment } from "@/components/PdfViewer";
+import type { SelectionIntent } from "@/lib/prompts";
+import { unwrapCodedCitations } from "@/lib/citations";
 import { flattenZoteroCollections, zoteroCollectionBranch, zoteroPaperTab, type ZoteroCollection, type ZoteroPaper } from "@/lib/workspace-zotero";
-import type { CustomApiConfig, Effort, Highlight, Model } from "@/types/session";
+import type { Annotation, CustomApiConfig, Effort, Highlight, Model, PdfRects } from "@/types/session";
 import type { ResearchWorkspace, WorkspaceDocument } from "@/types/workspace";
 import styles from "./workspace-shell.module.css";
 
@@ -49,7 +52,24 @@ const useIsClient = () => useSyncExternalStore(NO_SUBSCRIBE, () => true, () => f
 
 type WorkspaceFile = { path: string; name: string; kind: "file" | "directory"; extension?: string; size?: number };
 type AgentTool = { name: string; detail: string; status?: string };
-type AgentMessage = { id: string; role: "user" | "assistant"; content: string; tools?: AgentTool[] };
+type AgentMessage = { id: string; role: "user" | "assistant"; content: string; tools?: AgentTool[]; imageDataUrl?: string };
+// A question for the agent: typed, or asked straight from the page the way
+// the Reader asks — a passage to explain or define, a question about one, a
+// captured figure
+type AgentAsk = { question?: string; kind?: SelectionIntent | "question" | "figure"; selectedText?: string; pageNumber?: number; imageDataUrl?: string };
+
+// What the Reader knows about a paper, shown and kept here too: its
+// highlights (the reader's own, and Zotero's), and the passages with a
+// conversation attached. One paper, one set of marks, whichever surface.
+type ZoteroAnnotation = { key: string; text: string; comment: string; page?: number; position?: PdfRects; type: string; color?: string };
+type PaperMarks = { sessionId: string | null; highlights: Highlight[]; zotero: ZoteroAnnotation[]; asked: AskedPassage[] };
+const NO_MARKS: PaperMarks = { sessionId: null, highlights: [], zotero: [], asked: [] };
+
+// A `paper:N` link in an answer names a passage of the paper, as in the
+// Reader; its text is the quote. `turn:N` has no meaning in this chat.
+const citationUrl = (url: string) => (/^(paper|turn):/.test(url) ? url : defaultUrlTransform(url));
+const textOf = (children: ReactNode): string =>
+  Array.isArray(children) ? children.map(textOf).join("") : typeof children === "string" || typeof children === "number" ? String(children) : "";
 
 function uid() {
   return typeof crypto !== "undefined" ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`;
@@ -415,10 +435,16 @@ export function WorkspaceShell() {
     () => docStore(activeWorkspaceId || "none").load()
   );
   const [activeDocId, setActiveDocId] = useState<string | null>(null);
+  const activeDocRef = useRef<string | null>(null);
+  useEffect(() => { activeDocRef.current = activeDocId; }, [activeDocId]);
   const [pdfData, setPdfData] = useState("");
   const [pdfAttachmentKey, setPdfAttachmentKey] = useState<string | undefined>();
   const [pdfError, setPdfError] = useState("");
-  const [pdfHighlights, setPdfHighlights] = useState<Highlight[]>([]);
+  const [marks, setMarks] = useState<PaperMarks>(NO_MARKS);
+  const marksRef = useRef(marks);
+  useEffect(() => { marksRef.current = marks; }, [marks]);
+  const pdfViewerRef = useRef<PdfViewerHandle>(null);
+  const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const [editorContent, setEditorContent] = useState("");
   const [savedContent, setSavedContent] = useState("");
   const [preview, setPreview] = useState(false);
@@ -522,15 +548,37 @@ export function WorkspaceShell() {
     try { localStorage.setItem(`${WORKSPACE_ACTIVE_DOC_KEY}:${activeWorkspaceId}`, JSON.stringify(activeDocId)); } catch {}
   }, [activeDocId, activeWorkspaceId]);
 
+  // The Reader's marks on this paper — its session's highlights and the
+  // passages it has conversations about, and Zotero's annotations — so the
+  // page looks the same here as there
+  const loadMarks = useCallback(async (paper: MaterialTab) => {
+    const [session, notes] = await Promise.all([
+      fetch(`/api/sessions?id=${encodeURIComponent(paper.id)}&lean=1`).then((r) => (r.ok ? r.json() : null)).catch(() => null),
+      paper.zoteroKey ? fetch(`/api/zotero/notes?key=${encodeURIComponent(paper.zoteroKey)}`).then((r) => (r.ok ? r.json() : null)).catch(() => null) : null,
+    ]);
+    // The paper may have changed under the fetch
+    if (activeDocRef.current !== `paper:${paper.id}`) return;
+    const state = (session?.state ?? null) as { highlights?: Highlight[]; annotations?: Annotation[] } | null;
+    setMarks({
+      sessionId: paper.id,
+      highlights: state?.highlights ?? [],
+      zotero: ((notes?.annotations ?? []) as ZoteroAnnotation[]).filter((a) => a.text?.trim()),
+      asked: (state?.annotations ?? [])
+        .filter((a) => a.type === "text" && a.selectedText?.trim())
+        .map((a): AskedPassage => ({ id: a.id, text: a.selectedText!, pageNumber: a.pageNumber, label: a.label, kind: "asked", occurrence: a.occurrence, position: a.position, positions: a.positions })),
+    });
+  }, []);
+
   const openDocument = useCallback(async (document: WorkspaceDocument) => {
     setOpenDocs((current) => current.some((item) => item.id === document.id) ? current : [...current, document]);
     setActiveDocId(document.id); setPreview(false); setNotice("");
     if (document.kind === "paper" || document.kind === "workspacePdf") {
-      setPdfData(""); setPdfError(""); setPdfHighlights([]);
+      setPdfData(""); setPdfError(""); setMarks(NO_MARKS);
       try {
         if (document.kind === "paper") {
           const loaded = await loadPaperData(document.paper);
           setPdfData(loaded.data); setPdfAttachmentKey(loaded.attachmentKey);
+          void loadMarks(document.paper);
         } else {
           if (!activeWorkspace) return;
           const cachedPdf = getCachedDocument(document.id);
@@ -551,7 +599,7 @@ export function WorkspaceShell() {
       if (!response.ok) throw new Error(data.error);
       setEditorContent(data.content); setSavedContent(data.content);
     } catch (reason) { setNotice(reason instanceof Error ? reason.message : "Could not open this file."); }
-  }, [activeWorkspace]);
+  }, [activeWorkspace, loadMarks]);
 
   // Coming back to this surface, reopen what was last being read: the tab
   // list alone would show the paper while the stage sat empty.
@@ -581,7 +629,7 @@ export function WorkspaceShell() {
       const neighbour = next[Math.max(0, index - 1)] || next[0];
       if (neighbour) { void openDocument(neighbour); return; }
       setActiveDocId(null);
-      setPdfData(""); setPdfError(""); setPdfHighlights([]); setEditorContent(""); setSavedContent("");
+      setPdfData(""); setPdfError(""); setMarks(NO_MARKS); setEditorContent(""); setSavedContent("");
       try { localStorage.removeItem(`${WORKSPACE_ACTIVE_DOC_KEY}:${activeWorkspaceId}`); } catch {}
     }
   };
@@ -683,34 +731,152 @@ export function WorkspaceShell() {
     setNotice(`Detached “${paper.name.replace(/\.pdf$/i, "")}” from this workspace. Zotero was not changed.`);
   };
 
+  // Highlights live in the paper's own session, where the Reader keeps
+  // them, and in Zotero when the paper is there. A PDF from the workspace
+  // folder is not a paper: its marks stay here for as long as it is open.
+  // Zotero's own annotations are painted alongside, except those this app
+  // wrote, whose local copy already carries colour and note.
+  const allHighlights = useMemo<Highlight[]>(() => {
+    const mirrored = new Set(marks.highlights.map((h) => h.zoteroKey).filter(Boolean));
+    return [
+      ...marks.highlights,
+      ...marks.zotero
+        .filter((a) => !mirrored.has(a.key))
+        .map((a): Highlight => ({ id: `zotero-${a.key}`, text: a.text, pageNumber: a.page, position: a.position, note: a.comment || undefined, source: "zotero", color: a.color, createdAt: 0 })),
+    ];
+  }, [marks]);
+
+  const persistHighlights = useCallback((sessionId: string, highlights: Highlight[]) => {
+    const paper = activeDoc?.kind === "paper" ? activeDoc.paper : undefined;
+    const seed = paper ? { pdfName: paper.name, zoteroKey: paper.zoteroKey, zoteroAttachmentKey: pdfAttachmentKey } : undefined;
+    const failed = () => setNotice("The highlight shows here, but could not be saved for the Reader.");
+    fetch("/api/sessions", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: sessionId, highlights, seed }) })
+      .then((response) => { if (!response.ok) failed(); })
+      .catch(failed);
+  }, [activeDoc, pdfAttachmentKey]);
+
+  // One way to change the paper's highlights: the ref keeps two changes in
+  // one tick consistent, and every change reaches the session
+  const updateHighlights = useCallback((update: (current: Highlight[]) => Highlight[]) => {
+    const next = update(marksRef.current.highlights);
+    marksRef.current = { ...marksRef.current, highlights: next };
+    setMarks((current) => ({ ...current, highlights: next }));
+    if (marksRef.current.sessionId) persistHighlights(marksRef.current.sessionId, next);
+  }, [persistHighlights]);
+
+  const patchZoteroAnnotation = (key: string, patch: { color?: string; comment?: string }) => {
+    fetch("/api/zotero/annotations", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key, ...patch }) }).catch(() => {});
+  };
+  const deleteZoteroAnnotation = (key: string) => {
+    fetch(`/api/zotero/annotations?key=${encodeURIComponent(key)}`, { method: "DELETE" }).catch(() => {});
+  };
+
+  const makeHighlight = async (text: string, pageNumber?: number, position?: PdfRects, color = DEFAULT_HIGHLIGHT_COLOR, note?: string, occurrence = 0, segments?: SelectionSegment[]) => {
+    // A selection across pages becomes one highlight per page, as in the
+    // Reader; the note goes on the first
+    const shares = segments && segments.length > 1
+      ? segments.map((s, index) => ({ text: s.text, note: index === 0 ? note : undefined, pageNumber: s.pageIndex + 1, position: { pageIndex: s.pageIndex, rects: s.rects }, occurrence: 0 }))
+      : [{ text, note, pageNumber, position, occurrence }];
+    for (const share of shares) {
+      const id = uid();
+      updateHighlights((current) => [...current, { id, text: share.text, pageNumber: share.pageNumber, position: share.position, color, note: share.note, occurrence: share.occurrence, createdAt: Date.now() }]);
+      if (!pdfAttachmentKey || !share.position) continue;
+      try {
+        const created = await createZoteroHighlight(pdfAttachmentKey, { text: share.text, pageIndex: share.position.pageIndex, rects: share.position.rects }, { color, comment: share.note });
+        updateHighlights((current) => current.map((h) => (h.id === id ? { ...h, zoteroKey: created.key } : h)));
+      } catch { setNotice("The highlight is visible here, but could not sync to Zotero."); }
+    }
+  };
+
+  // Highlights read from Zotero carry a "zotero-<key>" id; ones made here a
+  // plain id plus, once the write lands, the key of their Zotero copy
   const removeHighlight = (id: string) => {
-    const item = pdfHighlights.find((highlight) => highlight.id === id);
-    setPdfHighlights((current) => current.filter((highlight) => highlight.id !== id));
-    if (item?.zoteroKey) fetch(`/api/zotero/annotations?key=${encodeURIComponent(item.zoteroKey)}`, { method: "DELETE" }).catch(() => {});
+    if (id.startsWith("zotero-")) {
+      const key = id.slice(7);
+      setMarks((current) => ({ ...current, zotero: current.zotero.filter((a) => a.key !== key) }));
+      deleteZoteroAnnotation(key);
+      return;
+    }
+    const item = marksRef.current.highlights.find((h) => h.id === id);
+    updateHighlights((current) => current.filter((h) => h.id !== id));
+    if (item?.zoteroKey) deleteZoteroAnnotation(item.zoteroKey);
   };
 
-  const makeHighlight = async (text: string, pageNumber?: number, position?: { pageIndex: number; rects: number[][] }, color = DEFAULT_HIGHLIGHT_COLOR, note?: string, occurrence = 0) => {
-    const id = uid();
-    setPdfHighlights((current) => [...current, { id, text, pageNumber, position, color, note, occurrence, createdAt: Date.now() }]);
-    if (!pdfAttachmentKey || !position) return;
-    try {
-      const created = await createZoteroHighlight(pdfAttachmentKey, { text, pageIndex: position.pageIndex, rects: position.rects }, { color, comment: note });
-      setPdfHighlights((current) => current.map((highlight) => highlight.id === id ? { ...highlight, zoteroKey: created.key } : highlight));
-    } catch { setNotice("The highlight is visible here, but could not sync to Zotero."); }
+  const recolorHighlight = (id: string, color: string) => {
+    if (id.startsWith("zotero-")) {
+      const key = id.slice(7);
+      setMarks((current) => ({ ...current, zotero: current.zotero.map((a) => (a.key === key ? { ...a, color } : a)) }));
+      patchZoteroAnnotation(key, { color });
+      return;
+    }
+    const item = marksRef.current.highlights.find((h) => h.id === id);
+    updateHighlights((current) => current.map((h) => (h.id === id ? { ...h, color } : h)));
+    if (item?.zoteroKey) patchZoteroAnnotation(item.zoteroKey, { color });
   };
 
-  const askAgent = async () => {
-    if (!activeWorkspace || !question.trim() || streaming) return;
-    const userText = question.trim();
+  // An empty note clears it, as in Zotero
+  const editHighlightNote = (id: string, note: string) => {
+    if (id.startsWith("zotero-")) {
+      const key = id.slice(7);
+      setMarks((current) => ({ ...current, zotero: current.zotero.map((a) => (a.key === key ? { ...a, comment: note } : a)) }));
+      patchZoteroAnnotation(key, { comment: note });
+      return;
+    }
+    const item = marksRef.current.highlights.find((h) => h.id === id);
+    updateHighlights((current) => current.map((h) => (h.id === id ? { ...h, note: note || undefined } : h)));
+    if (item?.zoteroKey) patchZoteroAnnotation(item.zoteroKey, { comment: note });
+  };
+
+  // A passage held for the next question, as the Reader's Quote does
+  const quoteIntoComposer = (text: string, page?: number, remark?: string) => {
+    const quote = `“${text.replace(/\s+/g, " ").trim()}”${page ? ` (p. ${page})` : ""}${remark ? `\n${remark}` : ""}`;
+    setQuestion((current) => (current.trim() ? `${current.trimEnd()}\n\n${quote}\n\n` : `${quote}\n\n`));
+    composerRef.current?.focus();
+  };
+  // A passage the Reader has a conversation about: quoted, with a word that
+  // there is one — the agent can read it from the paper's folder
+  const quoteAskedPassage = (id: string) => {
+    const passage = marks.asked.find((p) => p.id === id);
+    if (passage) quoteIntoComposer(passage.text, passage.pageNumber, "(I have a conversation about this passage in the Reader.)");
+  };
+  // A citation in an answer goes to the passage in the open paper, as in the Reader
+  const followCitation = (page: number, quote: string) => {
+    if (!pdfData) { setNotice("Open the paper to follow this citation."); return; }
+    void pdfViewerRef.current?.highlightText(page, quote);
+  };
+
+  // Every question goes to the one workspace agent — typed in the composer,
+  // or asked from the page as the Reader asks: a passage to explain or
+  // define, a question about it, a captured figure
+  const askAgent = async (ask: AgentAsk = {}) => {
+    if (!activeWorkspace) return;
+    if (streaming) { setNotice("The agent is still answering."); return; }
+    const fromPage = ask.kind !== undefined;
+    const typed = (fromPage ? ask.question ?? "" : question).trim();
+    if (!typed && !ask.selectedText && !ask.imageDataUrl) return;
+    const passage = ask.selectedText?.replace(/\s+/g, " ").trim();
+    const page = ask.pageNumber ? ` (p. ${ask.pageNumber})` : "";
+    const shown = ask.kind === "explain" ? `Explain${page}:\n\n> ${passage}`
+      : ask.kind === "define" ? `Define${page}:\n\n> ${passage}`
+      : ask.kind === "figure" ? (typed || `Explain this figure${page}.`)
+      : passage ? `${typed}\n\n> ${passage}${page}` : typed;
     const assistantId = uid();
-    setMessages((current) => [...current, { id: uid(), role: "user", content: userText }, { id: assistantId, role: "assistant", content: "", tools: [] }]);
-    setQuestion(""); setStreaming(true);
+    setMessages((current) => [...current, { id: uid(), role: "user", content: shown, imageDataUrl: ask.imageDataUrl }, { id: assistantId, role: "assistant", content: "", tools: [] }]);
+    // A question asked from the page leaves whatever is being typed alone
+    if (!fromPage) setQuestion("");
+    setStreaming(true);
     const approved = writeOnce; setWriteOnce(false);
     const controller = new AbortController(); abortRef.current = controller;
     const context = activeDoc?.kind === "file" ? `Open file: ${activeDoc.path}\n\n${editorContent}` : activeDoc?.kind === "paper" ? `Open paper: ${activeDoc.paper.name}\nZotero key: ${activeDoc.paper.zoteroKey || "local reader paper"}` : activeDoc?.kind === "workspacePdf" ? `Open workspace PDF: ${activeDoc.path}` : "No document is open.";
     try {
       const custom = loadJson<CustomApiConfig | null>(CUSTOM_API_KEY, null);
-      const response = await fetch("/api/workspaces/ask", { method: "POST", signal: controller.signal, headers: { "Content-Type": "application/json" }, body: JSON.stringify({ root: activeWorkspace.root, question: userText, context, model, effort, custom, session_id: providerSession, allow_writes: approved, skills: activeSkillIds }) });
+      const response = await fetch("/api/workspaces/ask", { method: "POST", signal: controller.signal, headers: { "Content-Type": "application/json" }, body: JSON.stringify({
+        root: activeWorkspace.root, question: typed, kind: ask.kind, selected_text: passage, page_number: ask.pageNumber, image_base64: ask.imageDataUrl,
+        // The attached papers, so the agent can draw on what was read and
+        // asked about each of them in the Reader
+        papers: activeWorkspace.papers.map((paper) => ({ id: paper.id, name: paper.name, zoteroKey: paper.zoteroKey })),
+        context, model, effort, custom, session_id: providerSession, allow_writes: approved, skills: activeSkillIds,
+      }) });
       if (!response.ok || !response.body) throw new Error(await response.text());
       const reader = response.body.getReader(); const decoder = new TextDecoder(); let carry = ""; let text = "";
       while (true) {
@@ -874,7 +1040,26 @@ export function WorkspaceShell() {
             rememberAs="workspace"
           />
           {!activeDoc && <div className={styles.emptyDocument}><span>⌘</span><h2>Open a paper or workspace file</h2><p>Read papers, edit project files, and work with the agent without leaving this workspace.</p>{activeWorkspace && <button onClick={() => setPaperPickerOpen(true)}>Add papers</button>}</div>}
-          {(activeDoc?.kind === "paper" || activeDoc?.kind === "workspacePdf") && <div className={styles.pdfStage}>{pdfError ? <div className={styles.emptyDocument}><h2>Paper unavailable</h2><p>{pdfError}</p></div> : pdfData ? <PdfViewer pdfDataUrl={pdfData} onTextSelected={(text, page) => setQuestion(`Explain this passage from page ${page || "?"}:\n\n“${text}”`)} onAskAboutSelection={(text, prompt, page) => setQuestion(`${prompt}\n\nPassage from page ${page || "?"}:\n“${text}”`)} onRegionCaptured={() => {}} onHighlight={(text, page, position, color, occurrence) => void makeHighlight(text, page, position, color, undefined, occurrence)} onNote={(text, note, page, position, color, occurrence) => void makeHighlight(text, page, position, color, note, occurrence)} onRemoveHighlight={removeHighlight} highlights={pdfHighlights} zoteroKey={activeDoc.kind === "paper" ? activeDoc.paper.zoteroKey : undefined} positionKey={activeDoc.kind === "paper" ? activeDoc.paper.id : activeDoc.path} /> : <div className={styles.emptyDocument}><p>Loading PDF…</p></div>}</div>}
+          {(activeDoc?.kind === "paper" || activeDoc?.kind === "workspacePdf") && <div className={styles.pdfStage}>{pdfError ? <div className={styles.emptyDocument}><h2>Paper unavailable</h2><p>{pdfError}</p></div> : pdfData ? <PdfViewer
+                ref={pdfViewerRef}
+                pdfDataUrl={pdfData}
+                onTextSelected={(text, page, _occurrence, _position, intent) => void askAgent({ kind: intent ?? "explain", selectedText: text, pageNumber: page })}
+                onAskAboutSelection={(text, prompt, page) => void askAgent({ kind: "question", question: prompt, selectedText: text, pageNumber: page })}
+                onQuoteSelection={(text, page) => quoteIntoComposer(text, page)}
+                onRegionCaptured={(result) => void askAgent({ kind: "figure", imageDataUrl: result.imageDataUrl })}
+                onHighlight={(text, page, position, color, occurrence, segments) => void makeHighlight(text, page, position, color, undefined, occurrence, segments)}
+                onNote={(text, note, page, position, color, occurrence, segments) => void makeHighlight(text, page, position, color, note, occurrence, segments)}
+                onRemoveHighlight={removeHighlight}
+                onRecolorHighlight={recolorHighlight}
+                onEditHighlightNote={editHighlightNote}
+                highlights={allHighlights}
+                askedPassages={marks.asked}
+                onAskedClick={quoteAskedPassage}
+                zoteroKey={activeDoc.kind === "paper" ? activeDoc.paper.zoteroKey : undefined}
+                // Its own place in the paper, apart from the Reader's: the two
+                // surfaces read the same paper for different ends
+                positionKey={`workspace:${activeDoc.kind === "paper" ? activeDoc.paper.id : activeDoc.path}`}
+              /> : <div className={styles.emptyDocument}><p>Loading PDF…</p></div>}</div>}
           {activeDoc?.kind === "file" && <><header className={styles.editorToolbar}><div><strong>{activeDoc.path}</strong><small>{activeDoc.extension === "md" ? "Markdown" : "Text"} · editable workspace file</small></div>{activeDoc.extension === "md" && <span><button className={!preview ? styles.selected : ""} onClick={() => setPreview(false)}>Edit</button><button className={preview ? styles.selected : ""} onClick={() => setPreview(true)}>Preview</button></span>}<p><small className={editorContent === savedContent ? "" : styles.unsaved}>{editorContent === savedContent ? "Saved" : "Unsaved"}</small><button onClick={saveFile}>Save ⌘S</button></p></header><div className={styles.editorStage}>{preview && activeDoc.extension === "md" ? <article className={styles.markdown}><ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex, [rehypeHighlight, { detect: true }]]} urlTransform={(url, key) => key === "src" && activeWorkspace ? workspaceMarkdownAssetUrl(activeWorkspace.root, activeDoc.path, url) : defaultUrlTransform(url)}>{editorContent}</ReactMarkdown></article> : <textarea value={editorContent} onChange={(event) => setEditorContent(event.target.value)} spellCheck={false} />}</div></>}
         </section>
 
@@ -883,8 +1068,8 @@ export function WorkspaceShell() {
         {agentOpen && (
         <aside className={styles.agentPanel} style={{ width: agentWidth }}>
           <header><button className={styles.collapsePanel} onClick={() => setAgentOpen(false)} title="Hide the workspace agent" aria-label="Hide the workspace agent">›</button><div><span>✦</span><p><strong>Workspace Agent</strong><small>{activeDoc ? `Working with ${activeDoc.kind === "paper" ? activeDoc.paper.name : activeDoc.path}` : "Workspace context"}</small></p></div><ModelPicker model={model} effort={effort} onModelChange={setModel} onEffortChange={setEffort} onConfigureCustom={() => setNotice("Configure custom models from Reader.")} /></header>
-          <div className={styles.messages}>{!messages.length && <div className={styles.agentWelcome}><span>✦</span><h2>Start with the decision you need to make</h2><p>I can read the open document, inspect workspace files, use your active skills, and turn an idea into an experiment handoff.</p><button onClick={() => setQuestion("Evaluate whether this idea is novel, feasible, and worth a small experiment.")}>Evaluate an idea</button><button onClick={() => setQuestion("Search for the latest related work and identify the strongest novelty risk.")}>Check latest related work</button></div>}{messages.map((message) => <article key={message.id} className={message.role === "user" ? styles.userMessage : styles.agentMessage}>{message.role === "assistant" && <span>✦</span>}<div>{message.tools && message.tools.length > 0 && <details className={styles.tools}><summary>✓ Used {message.tools.length} tool{message.tools.length === 1 ? "" : "s"}</summary>{message.tools.map((tool, index) => <p key={`${tool.name}-${index}`}><strong>{tool.name}</strong><small>{tool.detail}</small></p>)}</details>}<ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content || (streaming ? "Working…" : "")}</ReactMarkdown></div></article>)}</div>
-          <footer className={styles.composerArea}><div className={styles.composer}><textarea value={question} onChange={(event) => setQuestion(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void askAgent(); } }} placeholder="Ask about the open document or workspace…" /><div><span><button onClick={() => setSkillsOpen(true)}>◆ {activeSkillIds.length} skills</button><button className={writeOnce ? styles.writeApproved : ""} onClick={() => setWriteOnce((value) => !value)} title="Approve file writes for only the next message">{writeOnce ? "✓ Write once" : "⌘ Read only"}</button></span>{streaming ? <button className={styles.send} onClick={() => abortRef.current?.abort()}>■</button> : <button className={styles.send} disabled={!question.trim() || !activeWorkspace} onClick={() => void askAgent()}>↑</button>}</div></div><small>{writeOnce ? "Next message may edit files inside the fixed directory" : "Current document + workspace attached · writes require approval"}</small></footer>
+          <div className={styles.messages}>{!messages.length && <div className={styles.agentWelcome}><span>✦</span><h2>Start with the decision you need to make</h2><p>I can read the open document, inspect workspace files, use your active skills, and turn an idea into an experiment handoff.</p><button onClick={() => setQuestion("Evaluate whether this idea is novel, feasible, and worth a small experiment.")}>Evaluate an idea</button><button onClick={() => setQuestion("Search for the latest related work and identify the strongest novelty risk.")}>Check latest related work</button></div>}{messages.map((message) => <article key={message.id} className={message.role === "user" ? styles.userMessage : styles.agentMessage}>{message.role === "assistant" && <span>✦</span>}<div>{message.tools && message.tools.length > 0 && <details className={styles.tools}><summary>✓ Used {message.tools.length} tool{message.tools.length === 1 ? "" : "s"}</summary>{message.tools.map((tool, index) => <p key={`${tool.name}-${index}`}><strong>{tool.name}</strong><small>{tool.detail}</small></p>)}</details>}{message.imageDataUrl && <img src={message.imageDataUrl} alt="captured figure" style={{ display: "block", maxWidth: "100%", maxHeight: 160, borderRadius: 4, marginBottom: 6 }} />}<ReactMarkdown remarkPlugins={[remarkGfm]} urlTransform={citationUrl} components={{ a: ({ href, children }) => { const cite = /^paper:(\d+)$/.exec(href ?? ""); if (cite) return <a href="#" title={`Page ${cite[1]} of the open paper`} onClick={(event) => { event.preventDefault(); followCitation(Number(cite[1]), textOf(children)); }}>{children}</a>; if (/^turn:/.test(href ?? "")) return <span>{children}</span>; return <a href={href} target="_blank" rel="noreferrer">{children}</a>; } }}>{unwrapCodedCitations(message.content) || (streaming ? "Working…" : "")}</ReactMarkdown></div></article>)}</div>
+          <footer className={styles.composerArea}><div className={styles.composer}><textarea ref={composerRef} value={question} onChange={(event) => setQuestion(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void askAgent(); } }} placeholder="Ask about the open document or workspace…" /><div><span><button onClick={() => setSkillsOpen(true)}>◆ {activeSkillIds.length} skills</button><button className={writeOnce ? styles.writeApproved : ""} onClick={() => setWriteOnce((value) => !value)} title="Approve file writes for only the next message">{writeOnce ? "✓ Write once" : "⌘ Read only"}</button></span>{streaming ? <button className={styles.send} onClick={() => abortRef.current?.abort()}>■</button> : <button className={styles.send} disabled={!question.trim() || !activeWorkspace} onClick={() => void askAgent()}>↑</button>}</div></div><small>{writeOnce ? "Next message may edit files inside the fixed directory" : "Open document, workspace files and the papers' Reader conversations attached · writes require approval"}</small></footer>
         </aside>
         )}
         {!agentOpen && <CollapsedRail label="Agent" side="right" onExpand={() => setAgentOpen(true)} title="Show the workspace agent" />}

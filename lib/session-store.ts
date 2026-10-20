@@ -75,6 +75,36 @@ export async function writeState(id: string, state: unknown) {
   await writeFile(path.join(dirFor(id), "state.json"), JSON.stringify(state));
 }
 
+// The Workspace marks the same paper the Reader does, and keeps the marks
+// where the Reader will find them: in the paper's state.json. A paper with no
+// state yet — attached from Zotero, never opened in the Reader — gets the
+// minimal one the Reader can open (it fetches the PDF by Zotero key). A local
+// paper with no state cannot be seeded: its PDF bytes live only in its state.
+export async function patchSessionHighlights(
+  id: string,
+  highlights: unknown[],
+  seed?: { pdfName?: string; zoteroKey?: string; zoteroAttachmentKey?: string }
+): Promise<"updated" | "created" | "missing"> {
+  const state = await readState(id);
+  if (state) {
+    await writeState(id, { ...state, highlights });
+    return "updated";
+  }
+  if (!seed?.zoteroKey) return "missing";
+  await writeState(id, {
+    pdfName: seed.pdfName || `${seed.zoteroKey}.pdf`,
+    pdfDataUrl: "",
+    docType: "pdf",
+    zoteroKey: seed.zoteroKey,
+    zoteroAttachmentKey: seed.zoteroAttachmentKey,
+    annotations: [],
+    concepts: [],
+    highlights,
+    model: "claude-sonnet-4-6",
+  });
+  return "created";
+}
+
 export async function deleteSession(id: string) {
   await rm(dirFor(id), { recursive: true, force: true }).catch(() => {});
 }

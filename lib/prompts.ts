@@ -240,6 +240,17 @@ export function buildAskMessage(opts: {
   return `${rewrite}${body}${reading}${CITATION_DIRECTIVE}`;
 }
 
+// The same ask for the Workspace agent, whose chat spans a project rather
+// than one paper and has no numbered turns: the body, and paper links only.
+// The agent is not reading along with me there, so no reading directive.
+export const WORKSPACE_CITATION_DIRECTIVE =
+  "\n\nWhere you draw on the paper, link the words themselves: the link text is the quote, copied off the page character for character, e.g. [shared load bank conflicts = 20,666,167](paper:12) — never a description like [verbatim excerpt](paper:12), and never the quote sitting next to the link instead of inside it. Only where it genuinely helps.";
+
+export function buildWorkspaceAskMessage(opts: { kind: AskKind; selectedText?: string; question?: string; pageNumber?: number }): string {
+  const body = askBody(opts);
+  return body.trim() ? `${body}${WORKSPACE_CITATION_DIRECTIVE}` : body;
+}
+
 // The shape of a definition: the idea on its own terms, the paper left out.
 // Short by design — the reader is stuck on a word and wants to get back to
 // the page, not to read a second paper about it.

@@ -4,9 +4,10 @@
 // Workspace — should put you back on the paragraph you were reading at the
 // size you were reading it, not at the top of page 1 at the default zoom.
 //
-// Keyed by paper, because the position belongs to the document rather than to
-// the surface showing it: the same paper opened on either side resumes in the
-// same place.
+// Keyed by paper in the Reader and by "workspace:<paper>" in the Workspace.
+// The same paper is read for different ends on the two surfaces — closely in
+// the Reader, dipped into beside project files in the Workspace — so each
+// keeps its own place in it, and crossing over never loses either.
 
 export type ReadingPosition = {
   scrollTop: number;
