@@ -22,6 +22,8 @@ import type { AskedPassage, PdfViewerHandle, SelectionSegment } from "@/componen
 import type { SelectionIntent } from "@/lib/prompts";
 import { unwrapCodedCitations } from "@/lib/citations";
 import { loadDraft, saveDraft } from "@/lib/drafts";
+import { parseAgentMode, type AgentMode } from "@/lib/workspace-modes";
+import { defaultExportPath } from "@/lib/conversation-export";
 import { flattenZoteroCollections, zoteroCollectionBranch, zoteroPaperTab, type ZoteroCollection, type ZoteroPaper } from "@/lib/workspace-zotero";
 import type { Annotation, CustomApiConfig, Effort, Highlight, Model, PdfRects } from "@/types/session";
 import type { ResearchWorkspace, WorkspaceDocument } from "@/types/workspace";
@@ -45,6 +47,9 @@ const docStore = (workspaceId: string) =>
     }
   );
 const WORKSPACE_ACTIVE_DOC_KEY = "paper-reader:workspace-active-doc:v1";
+// How the agent is run in each workspace: a discussion, or implementing
+const WORKSPACE_MODE_KEY = "paper-reader:workspace-mode:v1";
+const loadMode = (workspaceId: string | null) => parseAgentMode(workspaceId ? loadJson<string | null>(`${WORKSPACE_MODE_KEY}:${workspaceId}`, null) : null);
 
 const CUSTOM_API_KEY = "paper-reader:custom-api";
 const WORKSPACE_LAYOUT_KEY = "paper-reader:workspace-layout:v1";
@@ -365,6 +370,66 @@ function PaperPicker({ open, papers, existing, onClose, onAdd }: { open: boolean
   );
 }
 
+// The conversation written out as Markdown, to carry to another agent or
+// machine: a note to whoever reads it next, and a choice of where it goes
+function ExportDialog({ open, workspace, messages, model, onClose, onExported }: {
+  open: boolean;
+  workspace: ResearchWorkspace;
+  messages: AgentMessage[];
+  model: Model;
+  onClose: () => void;
+  onExported: (result: { path: string; inside: boolean }) => void;
+}) {
+  const [notes, setNotes] = useState("");
+  const [target, setTarget] = useState(() => defaultExportPath(new Date()));
+  const [choosing, setChoosing] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  if (!open) return null;
+  const close = () => { setError(""); onClose(); };
+  const choose = async () => {
+    setChoosing(true); setError("");
+    try {
+      const response = await fetch("/api/workspaces/select-file", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ defaultName: target.split("/").pop(), location: workspace.root }) });
+      if (response.status === 499) return;
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Could not open the save dialog.");
+      if (data.path) setTarget(String(data.path));
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not open the save dialog."); }
+    finally { setChoosing(false); }
+  };
+  const save = async () => {
+    setSaving(true); setError("");
+    try {
+      const response = await fetch("/api/workspaces/export", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({
+        root: workspace.root, name: workspace.name, path: target, notes, model,
+        papers: workspace.papers.map((paper) => ({ id: paper.id, name: paper.name, zoteroKey: paper.zoteroKey })),
+        messages: messages.map((message) => ({ role: message.role, content: message.content, tools: message.tools, hasImage: !!message.imageDataUrl })),
+      }) });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Could not export the conversation.");
+      onExported({ path: String(data.path), inside: !!data.inside });
+      setNotes(""); setTarget(defaultExportPath(new Date()));
+      close();
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not export the conversation."); }
+    finally { setSaving(false); }
+  };
+  const turns = messages.filter((message) => message.role === "user").length;
+  return (
+    <div className={styles.modalBackdrop} role="presentation">
+      <section className={styles.modal} role="dialog" aria-modal="true" aria-labelledby="export-conversation-title">
+        <header><div><small>EXPORT CONVERSATION</small><h2 id="export-conversation-title">Carry this conversation elsewhere</h2></div><button onClick={close} aria-label="Close">×</button></header>
+        <p className={styles.zeroPaperNote}>{turns} {turns === 1 ? "turn" : "turns"} with the agent, the papers attached, and your notes below go into one Markdown file for another agent or machine to pick up.</p>
+        <label><span>NOTES FOR WHOEVER READS IT NEXT</span><textarea autoFocus value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="What to know first, what is still open, what to do with it…" rows={5} data-export-notes="" /></label>
+        <label><span>SAVE AS</span><div className={styles.pathInput}><input value={target} onChange={(event) => setTarget(event.target.value)} spellCheck={false} data-export-path="" /><button type="button" onClick={choose} disabled={choosing}>{choosing ? "Opening…" : "Choose…"}</button></div></label>
+        <p className={styles.nativePickerNote}>A relative path goes inside this workspace; Choose… opens the macOS save dialog for anywhere else.</p>
+        {error && <p className={styles.error}>{error}</p>}
+        <footer><button onClick={close} disabled={saving}>Cancel</button><button className={styles.primary} onClick={save} disabled={saving || !target.trim()}>{saving ? "Exporting…" : "Export"}</button></footer>
+      </section>
+    </div>
+  );
+}
+
 function CopyPapersDialog({ open, workspace, onClose, onCopied }: { open: boolean; workspace: ResearchWorkspace; onClose: () => void; onCopied: () => void }) {
   const [selected, setSelected] = useState<string[]>([]);
   const [copying, setCopying] = useState(false);
@@ -452,7 +517,8 @@ export function WorkspaceShell() {
   const [notice, setNotice] = useState("");
   const [model, setModel] = useState<Model>("claude-sonnet-4-6");
   const [effort, setEffort] = useState<Effort>("high");
-  const [writeOnce, setWriteOnce] = useState(false);
+  const [mode, setMode] = useState<AgentMode>(() => loadMode(activeWorkspaceId));
+  const [exportOpen, setExportOpen] = useState(false);
   // What is being typed for the agent, kept per workspace: see lib/drafts
   const [question, setQuestion] = useState(() => loadDraft(activeWorkspaceId ? `workspace:${activeWorkspaceId}` : null)?.text ?? "");
   const [streaming, setStreaming] = useState(false);
@@ -505,6 +571,11 @@ export function WorkspaceShell() {
 
   // The draft is saved a moment after each change, for a refresh, and at
   // once when the surface is left
+  useEffect(() => {
+    if (!activeWorkspace) return;
+    try { localStorage.setItem(`${WORKSPACE_MODE_KEY}:${activeWorkspace.id}`, JSON.stringify(mode)); } catch {}
+  }, [mode, activeWorkspace]);
+
   const draftKey = activeWorkspace ? `workspace:${activeWorkspace.id}` : null;
   const latestDraft = useRef<{ key: string | null; text: string }>({ key: null, text: "" });
   useEffect(() => {
@@ -522,6 +593,7 @@ export function WorkspaceShell() {
     const saved = loadJson<{ messages: AgentMessage[]; session?: string }>(`paper-reader:workspace-chat:${id}`, { messages: [] });
     setActiveWorkspaceId(id); setMessages(saved.messages || []); setProviderSession(saved.session);
     setQuestion(loadDraft(`workspace:${id}`)?.text ?? "");
+    setMode(loadMode(id));
     setOpenDocs(docStore(id).load());
     setActiveDocId(null); setPdfData(""); setEditorContent(""); setFiles([]); setExpandedDirectories(new Set());
     try { localStorage.setItem(ACTIVE_WORKSPACE_KEY, JSON.stringify(id)); } catch {}
@@ -884,7 +956,6 @@ export function WorkspaceShell() {
     // A question asked from the page leaves whatever is being typed alone
     if (!fromPage) setQuestion("");
     setStreaming(true);
-    const approved = writeOnce; setWriteOnce(false);
     const controller = new AbortController(); abortRef.current = controller;
     const context = activeDoc?.kind === "file" ? `Open file: ${activeDoc.path}\n\n${editorContent}` : activeDoc?.kind === "paper" ? `Open paper: ${activeDoc.paper.name}\nZotero key: ${activeDoc.paper.zoteroKey || "local reader paper"}` : activeDoc?.kind === "workspacePdf" ? `Open workspace PDF: ${activeDoc.path}` : "No document is open.";
     try {
@@ -894,7 +965,7 @@ export function WorkspaceShell() {
         // The attached papers, so the agent can draw on what was read and
         // asked about each of them in the Reader
         papers: activeWorkspace.papers.map((paper) => ({ id: paper.id, name: paper.name, zoteroKey: paper.zoteroKey })),
-        context, model, effort, custom, session_id: providerSession, allow_writes: approved, skills: activeSkillIds,
+        context, model, effort, custom, session_id: providerSession, mode, skills: activeSkillIds,
       }) });
       if (!response.ok || !response.body) throw new Error(await response.text());
       const reader = response.body.getReader(); const decoder = new TextDecoder(); let carry = ""; let text = "";
@@ -920,7 +991,8 @@ export function WorkspaceShell() {
           } catch {}
         }
       }
-      if (approved) void refreshFiles();
+      // Either mode may have written something — notes in a discussion
+      void refreshFiles();
     } catch (reason) {
       if (!(reason instanceof DOMException && reason.name === "AbortError")) setMessages((current) => current.map((message) => message.id === assistantId ? { ...message, content: `Error: ${reason instanceof Error ? reason.message : "Could not reach the agent."}` } : message));
     } finally { abortRef.current = null; setStreaming(false); }
@@ -1086,9 +1158,9 @@ export function WorkspaceShell() {
 
         {agentOpen && (
         <aside className={styles.agentPanel} style={{ width: agentWidth }}>
-          <header><button className={styles.collapsePanel} onClick={() => setAgentOpen(false)} title="Hide the workspace agent" aria-label="Hide the workspace agent">›</button><div><span>✦</span><p><strong>Workspace Agent</strong><small>{activeDoc ? `Working with ${activeDoc.kind === "paper" ? activeDoc.paper.name : activeDoc.path}` : "Workspace context"}</small></p></div><ModelPicker model={model} effort={effort} onModelChange={setModel} onEffortChange={setEffort} onConfigureCustom={() => setNotice("Configure custom models from Reader.")} /></header>
+          <header><button className={styles.collapsePanel} onClick={() => setAgentOpen(false)} title="Hide the workspace agent" aria-label="Hide the workspace agent">›</button><div><span>✦</span><p><strong>Workspace Agent</strong><small>{activeDoc ? `Working with ${activeDoc.kind === "paper" ? activeDoc.paper.name : activeDoc.path}` : "Workspace context"}</small></p></div><span className={styles.headerTools}><button type="button" className={styles.exportButton} onClick={() => setExportOpen(true)} disabled={!activeWorkspace || !messages.length} title="Export this conversation as a Markdown file, to carry to another agent or machine">⇪ Export</button><ModelPicker model={model} effort={effort} onModelChange={setModel} onEffortChange={setEffort} onConfigureCustom={() => setNotice("Configure custom models from Reader.")} /></span></header>
           <div className={styles.messages}>{!messages.length && <div className={styles.agentWelcome}><span>✦</span><h2>Start with the decision you need to make</h2><p>I can read the open document, inspect workspace files, use your active skills, and turn an idea into an experiment handoff.</p><button onClick={() => setQuestion("Evaluate whether this idea is novel, feasible, and worth a small experiment.")}>Evaluate an idea</button><button onClick={() => setQuestion("Search for the latest related work and identify the strongest novelty risk.")}>Check latest related work</button></div>}{messages.map((message) => <article key={message.id} className={message.role === "user" ? styles.userMessage : styles.agentMessage}>{message.role === "assistant" && <span>✦</span>}<div>{message.tools && message.tools.length > 0 && <details className={styles.tools}><summary>✓ Used {message.tools.length} tool{message.tools.length === 1 ? "" : "s"}</summary>{message.tools.map((tool, index) => <p key={`${tool.name}-${index}`}><strong>{tool.name}</strong><small>{tool.detail}</small></p>)}</details>}{message.imageDataUrl && <img src={message.imageDataUrl} alt="captured figure" style={{ display: "block", maxWidth: "100%", maxHeight: 160, borderRadius: 4, marginBottom: 6 }} />}<ReactMarkdown remarkPlugins={[remarkGfm]} urlTransform={citationUrl} components={{ a: ({ href, children }) => { const cite = /^paper:(\d+)$/.exec(href ?? ""); if (cite) return <a href="#" title={`Page ${cite[1]} of the open paper`} onClick={(event) => { event.preventDefault(); followCitation(Number(cite[1]), textOf(children)); }}>{children}</a>; if (/^turn:/.test(href ?? "")) return <span>{children}</span>; return <a href={href} target="_blank" rel="noreferrer">{children}</a>; } }}>{unwrapCodedCitations(message.content) || (streaming ? "Working…" : "")}</ReactMarkdown></div></article>)}</div>
-          <footer className={styles.composerArea}><div className={styles.composer}><textarea ref={composerRef} value={question} onChange={(event) => setQuestion(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void askAgent(); } }} placeholder="Ask about the open document or workspace…" /><div><span><button onClick={() => setSkillsOpen(true)}>◆ {activeSkillIds.length} skills</button><button className={writeOnce ? styles.writeApproved : ""} onClick={() => setWriteOnce((value) => !value)} title="Approve file writes for only the next message">{writeOnce ? "✓ Write once" : "⌘ Read only"}</button></span>{streaming ? <button className={styles.send} onClick={() => abortRef.current?.abort()}>■</button> : <button className={styles.send} disabled={!question.trim() || !activeWorkspace} onClick={() => void askAgent()}>↑</button>}</div></div><small>{writeOnce ? "Next message may edit files inside the fixed directory" : "Open document, workspace files and the papers' Reader conversations attached · writes require approval"}</small></footer>
+          <footer className={styles.composerArea}><div className={styles.composer}><textarea ref={composerRef} value={question} onChange={(event) => setQuestion(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void askAgent(); } }} placeholder="Ask about the open document or workspace…" /><div><span><button onClick={() => setSkillsOpen(true)}>◆ {activeSkillIds.length} skills</button><span role="group" aria-label="Agent mode" className={styles.modeSwitch}>{([["discussion", "Discussion", "Think it through together: the conversation is the point; files are read, and at most noted in"], ["auto", "Auto", "Implement: the agent reads, edits and runs what it needs inside the workspace, as Claude Code's auto mode does"]] as [AgentMode, string, string][]).map(([value, label, hint]) => <button key={value} type="button" className={mode === value ? styles.modeOn : ""} aria-pressed={mode === value} onClick={() => setMode(value)} title={hint}>{label}</button>)}</span></span>{streaming ? <button className={styles.send} onClick={() => abortRef.current?.abort()}>■</button> : <button className={styles.send} disabled={!question.trim() || !activeWorkspace} onClick={() => void askAgent()}>↑</button>}</div></div><small>{mode === "auto" ? "Auto: the agent implements on its own inside this workspace — edits, commands, tests" : "Discussion: brainstorming with the open document, the files and the papers' Reader conversations at hand · notes may be written, nothing is built"}</small></footer>
         </aside>
         )}
         {!agentOpen && <CollapsedRail label="Agent" side="right" onExpand={() => setAgentOpen(true)} title="Show the workspace agent" />}
@@ -1099,6 +1171,11 @@ export function WorkspaceShell() {
       <CreateWorkspaceDialog open={createOpen} onClose={() => { if (workspaces.length) setCreateOpen(false); else router.replace("/"); }} onCreated={(workspace) => { const next = [...workspaces, workspace]; persist(next); switchWorkspace(workspace.id); setCreateOpen(false); }} />
       {deleteWorkspaceTarget && <DeleteWorkspaceDialog workspace={deleteWorkspaceTarget} onClose={() => setDeleteWorkspaceTarget(null)} onDelete={(deleteDirectory) => deleteWorkspace(deleteWorkspaceTarget, deleteDirectory)} />}
       {activeWorkspace && <PaperPicker open={paperPickerOpen} papers={readerTabs} existing={activeWorkspace.papers} onClose={() => setPaperPickerOpen(false)} onAdd={addPapers} />}
+      {activeWorkspace && <ExportDialog open={exportOpen} workspace={activeWorkspace} messages={messages} model={model} onClose={() => setExportOpen(false)} onExported={({ path, inside }) => {
+        // Opening the file clears the notice, so the notice comes after
+        if (inside) { void refreshFiles(); void openDocument({ id: `file:${path}`, kind: "file", path, name: path.split("/").pop() || path, extension: "md" }); }
+        setNotice(`Exported the conversation to ${path}`);
+      }} />}
       {activeWorkspace && <CopyPapersDialog open={copyOpen} workspace={activeWorkspace} onClose={() => setCopyOpen(false)} onCopied={() => { setNotice("Selected PDFs copied into this workspace."); void refreshFiles(); }} />}
     </div>
   );

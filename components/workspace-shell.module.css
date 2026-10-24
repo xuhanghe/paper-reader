@@ -147,6 +147,12 @@
 .agentPanel header strong, .agentPanel header small { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .agentPanel header strong { font-size: 13px; }
 .agentPanel header small { color: #84909a; font-size: 10px; }
+.headerTools { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
+.exportButton { height: 31px; border: 1px solid #3d4852; border-radius: 7px; background: #10151a; padding: 0 9px; color: #aeb7bf; font-size: 11px; white-space: nowrap; }
+.exportButton:hover:not(:disabled) { color: var(--ink); border-color: #55616b; }
+.exportButton:disabled { opacity: .4; }
+.modal > label textarea { border: 1px solid #3d4852; border-radius: 9px; outline: 0; background: #101519; padding: 12px; color: var(--ink); font-size: 13px; line-height: 1.5; resize: vertical; font-family: inherit; }
+.modal > label textarea:focus { border-color: var(--accent); }
 .agentPanel > header > span select { min-height: 31px; max-width: 145px !important; padding: 5px 7px !important; border-color: #3d4852 !important; border-radius: 7px !important; background: #10151a !important; font-size: 11px !important; }
 .messages { overflow-y: auto; padding: 22px 16px 32px; }
 .agentWelcome { max-width: 390px; margin: 22px auto 0; padding: 22px 10px; text-align: center; }
@@ -174,7 +180,10 @@
 .composer > div { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
 .composer > div > span { min-width: 0; display: flex; gap: 4px; }
 .composer button:not(.send) { height: 30px; border: 1px solid #3b4650; border-radius: 7px; background: #151a1f; padding: 0 8px; color: #aeb7bf; font-size: 10px; white-space: nowrap; }
-.composer button.writeApproved { border-color: #604c2d; background: #1e1911; color: var(--accent); }
+.modeSwitch { display: inline-flex; overflow: hidden; border: 1px solid #3b4650; border-radius: 7px; }
+.composer .modeSwitch button { height: 28px; border: 0; border-radius: 0; background: transparent; color: #8f99a2; }
+.composer .modeSwitch button + button { border-left: 1px solid #3b4650; }
+.composer .modeSwitch button.modeOn { background: #1e1911; color: var(--accent); }
 .composer button.send { width: 34px; height: 34px; flex: 0 0 auto; border: 1px solid var(--accent-bright); border-radius: 8px; background: var(--accent); color: #201a0d; font-size: 18px; }
 .composer button.send:disabled { opacity: .35; }
 .composerArea > small { display: block; margin-top: 7px; color: #74808a; font-size: 10px; text-align: center; }

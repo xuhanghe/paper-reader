@@ -10,6 +10,7 @@ import { codexStream, customStream, opencodeStream, parseCustomConfig, resolvePr
 import { buildWorkspaceAskMessage, type AskKind } from "@/lib/prompts";
 import { SESSIONS_ROOT } from "@/lib/session-store";
 import { describeWorkspacePapers, parsePaperRefs } from "@/lib/workspace-papers";
+import { claudePermissionMode, modeDirective, parseAgentMode } from "@/lib/workspace-modes";
 import { selectedSkillPaths } from "@/lib/skills";
 import { listWorkspaceFiles, validateWorkspaceRoot } from "@/lib/workspace-files";
 
@@ -38,7 +39,8 @@ export async function POST(req: Request) {
   }
 
   const provider = resolveProvider(body.model);
-  const allowWrites = body.allow_writes === true;
+  // A discussion or an implementation: see lib/workspace-modes
+  const mode = parseAgentMode(body.mode);
   const paths = await selectedSkillPaths(body.skills);
   const files = (await listWorkspaceFiles(root)).filter((entry) => entry.kind === "file").slice(0, 160).map((entry) => entry.path);
   const context = typeof body.context === "string" ? body.context.slice(0, 16000) : "";
@@ -47,9 +49,7 @@ export async function POST(req: Request) {
   // digest inline for one without
   const papers = parsePaperRefs(body.papers);
   const papersSection = await describeWorkspacePapers(papers, { agentic: provider === "claude" || provider === "codex" });
-  const capability = allowWrites
-    ? "The user explicitly approved file writes for this turn. You may create or edit files, but only inside the working directory."
-    : "This is a read-only turn. Do not create, edit, rename, or delete files. If a change would help, explain it and ask the user to approve a write turn.";
+  const capability = `${modeDirective(mode)} Files you create or edit stay inside the working directory.`;
   const prompt = `You are the research agent inside Paper Reader's workspace.
 
 Working directory (fixed for this workspace): ${root}
@@ -81,7 +81,7 @@ User request: ${request}`;
       images: imageFile ? [imageFile] : undefined,
       onClose: cleanupImage,
       cwd: root,
-      writable: allowWrites,
+      writable: true,
       effort: body.effort,
       resumeId: isResume ? body.session_id : undefined,
     }));
@@ -119,7 +119,7 @@ User request: ${request}`;
     "--include-partial-messages",
     ...(useStdin ? ["--input-format", "stream-json"] : []),
     "--verbose",
-    "--permission-mode", allowWrites ? "acceptEdits" : "plan",
+    "--permission-mode", claudePermissionMode(mode),
     // The papers' folders sit outside the workspace: the agent may read them
     ...(papers.length ? ["--add-dir", SESSIONS_ROOT] : []),
     ...claudeMcpArgs(),
