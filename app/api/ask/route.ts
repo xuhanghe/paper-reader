@@ -25,6 +25,7 @@ import { claudeBin } from "@/lib/bin";
 import { unwrapPartials } from "@/lib/claude-stream";
 import { turnMarker } from "@/lib/citations";
 import { selectedSkillPaths } from "@/lib/skills";
+import { earlierConversation, earlierConversationSection, freshStartOnLostSession, LOST_SESSION } from "@/lib/session-recovery";
 
 export const runtime = "nodejs";
 
@@ -158,14 +159,17 @@ export async function POST(req: Request) {
 
   const isResume = provider !== "custom" && typeof session_id === "string" && !!session_id;
 
-  // First message of a provider session carries the bootstrap header
-  let prompt = message;
-  if (!isResume && provider !== "custom") {
+  // The first message of a provider session carries the bootstrap header —
+  // and, when this paper has been talked about before, the record of that
+  // conversation, so a provider whose own memory of it is gone (Claude Code
+  // drops transcripts after 30 days; an id was lost; this is another
+  // provider) goes on from the app's record. See lib/session-recovery.
+  // opencode runs without file tools, so it can't open paper.md itself the
+  // way the CLIs do — it gets the text inline instead, and the recent part
+  // of the record rather than a pointer to its file.
+  const agentic = provider !== "opencode";
+  const freshPrompt = async (): Promise<string> => {
     const mindmap = await readMindmapFile(paper_id);
-    // opencode runs without file tools, so it can't open paper.md itself the
-    // way the CLIs do — it gets the text inline instead. It still resumes
-    // natively, so unlike the custom provider there's no thread replay.
-    const agentic = provider !== "opencode";
     const pagesCount = agentic ? await countPageImages(paper_id) : 0;
     const header = buildSessionBootstrap({
       title: typeof paper_title === "string" ? paper_title : "the paper",
@@ -177,8 +181,12 @@ export async function POST(req: Request) {
       agentic,
       paperTextInline: agentic ? undefined : ((await readPaperText(paper_id)) || "").slice(0, 24000),
     });
-    prompt = `${header}\n\n---\n\n${message}`;
-  }
+    const earlier = await earlierConversation(paper_id, { beforeTurn: turn });
+    const record = earlier ? `\n\n${earlierConversationSection(earlier, { agentic })}` : "";
+    return `${header}${record}\n\n---\n\n${message}`;
+  };
+  let prompt = message;
+  if (!isResume && provider !== "custom") prompt = await freshPrompt();
 
   const teeOpts: TeeOpts = { paperId: paper_id, annotationId: annotation_id, kind, turn };
   const base64Data = image_base64 ? String(image_base64).replace(/^data:image\/\w+;base64,/, "") : null;
@@ -192,24 +200,27 @@ export async function POST(req: Request) {
       images = [tmpPath];
       cleanup = () => { try { unlinkSync(tmpPath); } catch {} };
     }
+    // A session Codex no longer has is started again, seeded from the record
+    const resumed = codexStream(prompt, { images, effort, resumeId: isResume ? session_id : undefined });
     return streamResponse(
       teeToThread(
-        codexStream(prompt, { images, effort, resumeId: isResume ? session_id : undefined, onClose: cleanup }),
+        freshStartOnLostSession(resumed, async () => codexStream(await freshPrompt(), { images, effort }), LOST_SESSION.codex, cleanup),
         teeOpts
       )
     );
   }
 
   if (provider === "opencode") {
+    const opencodeOpts = {
+      images: image_base64 ? [{ mime: "image/png", dataUrl: String(image_base64) }] : undefined,
+      effort,
+      webSearch: true,
+      title: typeof paper_title === "string" ? paper_title : undefined,
+    };
+    const resumed = opencodeStream(prompt, { ...opencodeOpts, resumeId: isResume ? session_id : undefined });
     return streamResponse(
       teeToThread(
-        opencodeStream(prompt, {
-          images: image_base64 ? [{ mime: "image/png", dataUrl: String(image_base64) }] : undefined,
-          effort,
-          resumeId: isResume ? session_id : undefined,
-          webSearch: true,
-          title: typeof paper_title === "string" ? paper_title : undefined,
-        }),
+        freshStartOnLostSession(resumed, async () => opencodeStream(await freshPrompt(), opencodeOpts), LOST_SESSION.opencode),
         teeOpts
       )
     );
@@ -258,23 +269,7 @@ export async function POST(req: Request) {
 
   // claude CLI
   const modelFlag = typeof model === "string" && model.startsWith("claude") ? model : "claude-sonnet-4-6";
-  const cleanPrompt = sanitizeSpawnArg(prompt);
   const useStdin = !!base64Data;
-  const args = [
-    "-p", ...(useStdin ? [] : [cleanPrompt]),
-    ...(isResume ? ["--resume", session_id] : []),
-    "--model", modelFlag,
-    ...effortArgs(effort),
-    "--output-format", "stream-json",
-    // Without this the CLI only reports whole messages, so an answer appears
-    // in one lump at the end — and stopping it leaves an empty bubble even
-    // though the model had already written most of the reply
-    "--include-partial-messages",
-    ...(useStdin ? ["--input-format", "stream-json"] : []),
-    "--verbose",
-    "--dangerously-skip-permissions",
-    ...claudeMcpArgs(), // Zotero library access
-  ];
   let child: ReturnType<typeof spawn> | null = null;
   const stopChild = () => {
     if (!child || child.killed) return;
@@ -286,33 +281,57 @@ export async function POST(req: Request) {
   };
   req.signal.addEventListener("abort", stopChild);
 
-  const stream = new ReadableStream({
-    start(controller) {
-      const proc = spawn(claudeBin(), args);
-      child = proc;
-      if (useStdin) {
-        proc.stdin.write(
-          JSON.stringify({
-            type: "user",
-            message: {
-              role: "user",
-              content: [
-                { type: "image", source: { type: "base64", media_type: "image/png", data: base64Data } },
-                { type: "text", text: cleanPrompt },
-              ],
-            },
-          }) + "\n"
-        );
-      }
-      proc.stdin.end();
-      proc.stdout.on("data", (c: Buffer) => controller.enqueue(c));
-      proc.stdout.on("end", () => controller.close());
-      proc.stderr.on("data", (d: Buffer) => console.error("[claude stderr]", d.toString().slice(0, 400)));
-      proc.on("error", (err) => { console.error("[claude spawn error]", err); controller.error(err); });
-    },
-    cancel() {
-      stopChild();
-    },
-  });
+  // One run of the CLI: resuming the paper's session, or starting a fresh one
+  const spawnClaude = (text: string, resume: boolean, onStderr?: (chunk: string) => void): ReadableStream => {
+    const cleanPrompt = sanitizeSpawnArg(text);
+    const args = [
+      "-p", ...(useStdin ? [] : [cleanPrompt]),
+      ...(resume ? ["--resume", session_id] : []),
+      "--model", modelFlag,
+      ...effortArgs(effort),
+      "--output-format", "stream-json",
+      // Without this the CLI only reports whole messages, so an answer appears
+      // in one lump at the end — and stopping it leaves an empty bubble even
+      // though the model had already written most of the reply
+      "--include-partial-messages",
+      ...(useStdin ? ["--input-format", "stream-json"] : []),
+      "--verbose",
+      "--dangerously-skip-permissions",
+      ...claudeMcpArgs(), // Zotero library access
+    ];
+    return new ReadableStream({
+      start(controller) {
+        const proc = spawn(claudeBin(), args);
+        child = proc;
+        if (useStdin) {
+          proc.stdin.write(
+            JSON.stringify({
+              type: "user",
+              message: {
+                role: "user",
+                content: [
+                  { type: "image", source: { type: "base64", media_type: "image/png", data: base64Data } },
+                  { type: "text", text: cleanPrompt },
+                ],
+              },
+            }) + "\n"
+          );
+        }
+        proc.stdin.end();
+        proc.stdout.on("data", (c: Buffer) => controller.enqueue(c));
+        proc.stdout.on("end", () => controller.close());
+        proc.stderr.on("data", (d: Buffer) => { const chunk = d.toString(); onStderr?.(chunk); console.error("[claude stderr]", chunk.slice(0, 400)); });
+        proc.on("error", (err) => { console.error("[claude spawn error]", err); controller.error(err); });
+      },
+      cancel() {
+        stopChild();
+      },
+    });
+  };
+  // A session the CLI no longer has — its transcript cleaned up, the id stale
+  // — is started again, seeded from the record; the failed start is never shown
+  let stderr = "";
+  const resumed = spawnClaude(prompt, isResume, (chunk) => { stderr = (stderr + chunk).slice(-2000); });
+  const stream = freshStartOnLostSession(resumed, async () => spawnClaude(await freshPrompt(), false), (output) => LOST_SESSION.claude(output, stderr));
   return streamResponse(teeToThread(unwrapPartials(stream), teeOpts));
 }

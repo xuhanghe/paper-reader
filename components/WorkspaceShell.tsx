@@ -965,6 +965,9 @@ export function WorkspaceShell() {
         // The attached papers, so the agent can draw on what was read and
         // asked about each of them in the Reader
         papers: activeWorkspace.papers.map((paper) => ({ id: paper.id, name: paper.name, zoteroKey: paper.zoteroKey })),
+        // The chat so far, so a session the provider has lost can start again
+        // from the record (used only then)
+        history: messages.filter((message) => message.content.trim()).slice(-30).map((message) => ({ role: message.role, content: message.content.slice(0, 1500) })),
         context, model, effort, custom, session_id: providerSession, mode, skills: activeSkillIds,
       }) });
       if (!response.ok || !response.body) throw new Error(await response.text());

@@ -11,6 +11,7 @@ import { buildWorkspaceAskMessage, type AskKind } from "@/lib/prompts";
 import { SESSIONS_ROOT } from "@/lib/session-store";
 import { describeWorkspacePapers, parsePaperRefs } from "@/lib/workspace-papers";
 import { claudePermissionMode, modeDirective, parseAgentMode } from "@/lib/workspace-modes";
+import { chatHistorySection, freshStartOnLostSession, LOST_SESSION, parseChatHistory } from "@/lib/session-recovery";
 import { selectedSkillPaths } from "@/lib/skills";
 import { listWorkspaceFiles, validateWorkspaceRoot } from "@/lib/workspace-files";
 
@@ -76,25 +77,28 @@ User request: ${request}`;
   }
 
   const isResume = typeof body.session_id === "string" && !!body.session_id;
+  // A session the provider no longer has is started again, seeded with the
+  // chat so far, which the client keeps; the failed start is never shown
+  const history = chatHistorySection(parseChatHistory(body.history));
+  const freshPrompt = () => (history ? prompt.replace("\n\nUser request: ", `\n\n${history}\n\nUser request: `) : prompt);
   if (provider === "codex") {
-    return streamResponse(codexStream(prompt, {
-      images: imageFile ? [imageFile] : undefined,
-      onClose: cleanupImage,
-      cwd: root,
-      writable: true,
-      effort: body.effort,
+    const codexOpts = { images: imageFile ? [imageFile] : undefined, cwd: root, writable: true, effort: body.effort };
+    const resumed = codexStream(prompt, {
+      ...codexOpts,
       resumeId: isResume ? body.session_id : undefined,
-    }));
+    });
+    return streamResponse(freshStartOnLostSession(resumed, async () => codexStream(freshPrompt(), codexOpts), LOST_SESSION.codex, cleanupImage));
   }
 
   if (provider === "opencode") {
-    return streamResponse(opencodeStream(prompt, {
+    const opencodeOpts = {
       images: imageDataUrl ? [{ mime: "image/png", dataUrl: imageDataUrl }] : undefined,
       effort: body.effort,
-      resumeId: isResume ? body.session_id : undefined,
       webSearch: true,
       title: `workspace: ${root.split("/").pop()}`,
-    }));
+    };
+    const resumed = opencodeStream(prompt, { ...opencodeOpts, resumeId: isResume ? body.session_id : undefined });
+    return streamResponse(freshStartOnLostSession(resumed, async () => opencodeStream(freshPrompt(), opencodeOpts), LOST_SESSION.opencode));
   }
 
   if (provider === "custom") {
@@ -107,46 +111,52 @@ User request: ${request}`;
   }
 
   const model = typeof body.model === "string" && body.model.startsWith("claude") ? body.model : "claude-sonnet-4-6";
-  const cleanPrompt = sanitizeSpawnArg(prompt);
   // An image can only go in through stdin, as a stream-json turn
   const useStdin = !!imageBase64;
-  const args = [
-    "-p", ...(useStdin ? [] : [cleanPrompt]),
-    ...(isResume ? ["--resume", body.session_id] : []),
-    "--model", model,
-    ...effortArgs(body.effort),
-    "--output-format", "stream-json",
-    "--include-partial-messages",
-    ...(useStdin ? ["--input-format", "stream-json"] : []),
-    "--verbose",
-    "--permission-mode", claudePermissionMode(mode),
-    // The papers' folders sit outside the workspace: the agent may read them
-    ...(papers.length ? ["--add-dir", SESSIONS_ROOT] : []),
-    ...claudeMcpArgs(),
-  ];
   let child: ReturnType<typeof spawn> | null = null;
   const stop = () => { if (child && !child.killed) child.kill("SIGTERM"); };
   req.signal.addEventListener("abort", stop);
-  const stream = new ReadableStream({
-    start(controller) {
-      const process = spawn(claudeBin(), args, { cwd: root });
-      child = process;
-      if (useStdin) {
-        process.stdin.write(JSON.stringify({
-          type: "user",
-          message: { role: "user", content: [
-            { type: "image", source: { type: "base64", media_type: "image/png", data: imageBase64 } },
-            { type: "text", text: cleanPrompt },
-          ] },
-        }) + "\n");
-      }
-      process.stdin.end();
-      process.stdout.on("data", (chunk: Buffer) => controller.enqueue(chunk));
-      process.stdout.on("end", () => controller.close());
-      process.stderr.on("data", (chunk: Buffer) => console.error("[workspace claude]", chunk.toString().slice(0, 400)));
-      process.on("error", (error) => controller.error(error));
-    },
-    cancel: stop,
-  });
+  // One run of the CLI: resuming the workspace's session, or starting afresh
+  const spawnClaude = (text: string, resume: boolean, onStderr?: (chunk: string) => void): ReadableStream => {
+    const cleanPrompt = sanitizeSpawnArg(text);
+    const args = [
+      "-p", ...(useStdin ? [] : [cleanPrompt]),
+      ...(resume ? ["--resume", body.session_id] : []),
+      "--model", model,
+      ...effortArgs(body.effort),
+      "--output-format", "stream-json",
+      "--include-partial-messages",
+      ...(useStdin ? ["--input-format", "stream-json"] : []),
+      "--verbose",
+      "--permission-mode", claudePermissionMode(mode),
+      // The papers' folders sit outside the workspace: the agent may read them
+      ...(papers.length ? ["--add-dir", SESSIONS_ROOT] : []),
+      ...claudeMcpArgs(),
+    ];
+    return new ReadableStream({
+      start(controller) {
+        const process = spawn(claudeBin(), args, { cwd: root });
+        child = process;
+        if (useStdin) {
+          process.stdin.write(JSON.stringify({
+            type: "user",
+            message: { role: "user", content: [
+              { type: "image", source: { type: "base64", media_type: "image/png", data: imageBase64 } },
+              { type: "text", text: cleanPrompt },
+            ] },
+          }) + "\n");
+        }
+        process.stdin.end();
+        process.stdout.on("data", (chunk: Buffer) => controller.enqueue(chunk));
+        process.stdout.on("end", () => controller.close());
+        process.stderr.on("data", (chunk: Buffer) => { const text = chunk.toString(); onStderr?.(text); console.error("[workspace claude]", text.slice(0, 400)); });
+        process.on("error", (error) => controller.error(error));
+      },
+      cancel: stop,
+    });
+  };
+  let stderr = "";
+  const resumed = spawnClaude(prompt, isResume, (chunk) => { stderr = (stderr + chunk).slice(-2000); });
+  const stream = freshStartOnLostSession(resumed, async () => spawnClaude(freshPrompt(), false), (output) => LOST_SESSION.claude(output, stderr));
   return streamResponse(unwrapPartials(stream));
 }
