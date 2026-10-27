@@ -2,8 +2,8 @@
 import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactNode } from "react";
-import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties } from "react";
+import ReactMarkdown, { defaultUrlTransform, type Options as MarkdownOptions } from "react-markdown";
 import rehypeHighlight from "rehype-highlight";
 import rehypeKatex from "rehype-katex";
 import remarkGfm from "remark-gfm";
@@ -11,21 +11,20 @@ import remarkMath from "remark-math";
 import { MaterialTabs, type MaterialTab } from "@/components/MaterialTabs";
 import { loadOpenTabs } from "@/lib/open-tabs";
 import { createTabStore } from "@/lib/tab-store";
-import { cacheDocument, getCachedDocument } from "@/lib/document-cache";
+import { loadPaperData, loadWorkspacePdf } from "@/lib/paper-data";
 import { SkillsDrawer } from "@/components/SkillsDrawer";
-import { ModelPicker } from "@/components/ModelPicker";
+import { WorkspaceAgent, type AgentAsk, type WorkspaceAgentHandle } from "@/components/WorkspaceAgent";
+import { CopyPapersDialog, CreateWorkspaceDialog, DeleteWorkspaceDialog, PaperPicker } from "@/components/WorkspaceDialogs";
 import { CollapsedRail, ResizeHandle, usePanelWidth } from "@/components/ResizablePanel";
 import { useAgentSkills } from "@/hooks/useAgentSkills";
+import { useWorkspaceFiles } from "@/hooks/useWorkspaceFiles";
 import { createZoteroHighlight } from "@/lib/zotero-highlight-api";
 import { DEFAULT_HIGHLIGHT_COLOR } from "@/lib/highlight-colors";
 import type { AskedPassage, PdfViewerHandle, SelectionSegment } from "@/components/PdfViewer";
-import type { SelectionIntent } from "@/lib/prompts";
-import { unwrapCodedCitations } from "@/lib/citations";
-import { loadDraft, saveDraft } from "@/lib/drafts";
-import { parseAgentMode, type AgentMode } from "@/lib/workspace-modes";
-import { defaultExportPath } from "@/lib/conversation-export";
-import { flattenZoteroCollections, zoteroCollectionBranch, zoteroPaperTab, type ZoteroCollection, type ZoteroPaper } from "@/lib/workspace-zotero";
-import type { Annotation, CustomApiConfig, Effort, Highlight, Model, PdfRects } from "@/types/session";
+import { saveDraft } from "@/lib/drafts";
+import { uid } from "@/lib/uid";
+import { forgetChat } from "@/lib/workspace-chat";
+import type { Annotation, Highlight, PdfRects } from "@/types/session";
 import type { ResearchWorkspace, WorkspaceDocument } from "@/types/workspace";
 import styles from "./workspace-shell.module.css";
 
@@ -47,22 +46,10 @@ const docStore = (workspaceId: string) =>
     }
   );
 const WORKSPACE_ACTIVE_DOC_KEY = "paper-reader:workspace-active-doc:v1";
-// How the agent is run in each workspace: a discussion, or implementing
-const WORKSPACE_MODE_KEY = "paper-reader:workspace-mode:v1";
-const loadMode = (workspaceId: string | null) => parseAgentMode(workspaceId ? loadJson<string | null>(`${WORKSPACE_MODE_KEY}:${workspaceId}`, null) : null);
-
-const CUSTOM_API_KEY = "paper-reader:custom-api";
 const WORKSPACE_LAYOUT_KEY = "paper-reader:workspace-layout:v1";
 const NO_SUBSCRIBE = () => () => {};
 const useIsClient = () => useSyncExternalStore(NO_SUBSCRIBE, () => true, () => false);
 
-type WorkspaceFile = { path: string; name: string; kind: "file" | "directory"; extension?: string; size?: number };
-type AgentTool = { name: string; detail: string; status?: string };
-type AgentMessage = { id: string; role: "user" | "assistant"; content: string; tools?: AgentTool[]; imageDataUrl?: string };
-// A question for the agent: typed, or asked straight from the page the way
-// the Reader asks — a passage to explain or define, a question about one, a
-// captured figure
-type AgentAsk = { question?: string; kind?: SelectionIntent | "question" | "figure"; selectedText?: string; pageNumber?: number; imageDataUrl?: string };
 
 // What the Reader knows about a paper, shown and kept here too: its
 // highlights (the reader's own, and Zotero's), and the passages with a
@@ -70,16 +57,6 @@ type AgentAsk = { question?: string; kind?: SelectionIntent | "question" | "figu
 type ZoteroAnnotation = { key: string; text: string; comment: string; page?: number; position?: PdfRects; type: string; color?: string };
 type PaperMarks = { sessionId: string | null; highlights: Highlight[]; zotero: ZoteroAnnotation[]; asked: AskedPassage[] };
 const NO_MARKS: PaperMarks = { sessionId: null, highlights: [], zotero: [], asked: [] };
-
-// A `paper:N` link in an answer names a passage of the paper, as in the
-// Reader; its text is the quote. `turn:N` has no meaning in this chat.
-const citationUrl = (url: string) => (/^(paper|turn):/.test(url) ? url : defaultUrlTransform(url));
-const textOf = (children: ReactNode): string =>
-  Array.isArray(children) ? children.map(textOf).join("") : typeof children === "string" || typeof children === "number" ? String(children) : "";
-
-function uid() {
-  return typeof crypto !== "undefined" ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`;
-}
 
 function loadJson<T>(key: string, fallback: T): T {
   if (typeof window === "undefined") return fallback;
@@ -90,13 +67,31 @@ function saveWorkspaces(workspaces: ResearchWorkspace[]) {
   try { localStorage.setItem(WORKSPACES_KEY, JSON.stringify(workspaces)); } catch {}
 }
 
-function initials(name: string) {
-  return name.split(/\s+/).filter(Boolean).slice(0, 2).map((part) => part[0]).join("").toUpperCase() || "RW";
+// The document that was being read in a workspace, if it is still open there
+function savedActiveDoc(workspaceId: string | null, docs: WorkspaceDocument[]): string | null {
+  if (!workspaceId) return null;
+  const id = loadJson<string | null>(`${WORKSPACE_ACTIVE_DOC_KEY}:${workspaceId}`, null);
+  return id && docs.some((doc) => doc.id === id) ? id : null;
 }
 
-function safePdfName(name: string) {
-  const stem = name.replace(/\.pdf$/i, "").replace(/[\\/:*?"<>|]+/g, "-").trim() || "paper";
-  return `${stem}.pdf`;
+// A document's content, wherever it lives: a paper's PDF (Zotero, or a
+// Reader session), a PDF in the workspace folder, or a file's text
+type DocumentContent = { pdf: string; attachmentKey?: string } | { text: string };
+async function readDocument(document: WorkspaceDocument, root: string | undefined): Promise<DocumentContent> {
+  if (document.kind === "paper") {
+    const loaded = await loadPaperData(document.paper);
+    return { pdf: loaded.data, attachmentKey: loaded.attachmentKey };
+  }
+  if (!root) throw new Error("No workspace is open.");
+  if (document.kind === "workspacePdf") return { pdf: await loadWorkspacePdf(root, document.path, document.id) };
+  const response = await fetch(`/api/workspaces/files?root=${encodeURIComponent(root)}&path=${encodeURIComponent(document.path)}`);
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || "Could not open this file.");
+  return { text: data.content };
+}
+
+function initials(name: string) {
+  return name.split(/\s+/).filter(Boolean).slice(0, 2).map((part) => part[0]).join("").toUpperCase() || "RW";
 }
 
 // One document shape, tinted per type — the tint is the identity, the way a
@@ -119,6 +114,36 @@ function FileGlyph({ extension }: { extension?: string }) {
     </svg>
   );
 }
+
+function FolderGlyph({ open }: { open: boolean }) {
+  return (
+    <svg className={`${styles.fileGlyph} ${styles.folderGlyph}`} viewBox="0 0 16 16" width={15} height={15} aria-hidden="true">
+      {open
+        ? <path d="M1.75 12.25v-8.5h4.3l1.5 1.9h5.2v1.6M1.75 12.25l1.6-5h11l-1.6 5z" fill="none" stroke="currentColor" strokeWidth="1.15" strokeLinejoin="round" />
+        : <path d="M1.75 3.75h4.3l1.5 1.9h6.7v6.6h-12.5z" fill="none" stroke="currentColor" strokeWidth="1.15" strokeLinejoin="round" />}
+    </svg>
+  );
+}
+
+// The end of a long path, which is the part that tells folders apart
+function shortPath(path: string) {
+  const parts = path.split("/").filter(Boolean);
+  return parts.length > 2 ? `…/${parts.slice(-2).join("/")}` : path;
+}
+
+// A Markdown file as it reads. Memoised on its text: highlighting guesses each
+// code block's language, which is too slow to redo whenever anything else on
+// the page changes.
+const PREVIEW_REMARK = [remarkGfm, remarkMath];
+const PREVIEW_REHYPE = [rehypeKatex, [rehypeHighlight, { detect: true }]] as MarkdownOptions["rehypePlugins"];
+const MarkdownPreview = memo(function MarkdownPreview({ root, path, content }: { root: string; path: string; content: string }) {
+  const transform = useCallback((url: string, key: string) => (key === "src" ? workspaceMarkdownAssetUrl(root, path, url) : defaultUrlTransform(url)), [root, path]);
+  return (
+    <article className={styles.markdown}>
+      <ReactMarkdown remarkPlugins={PREVIEW_REMARK} rehypePlugins={PREVIEW_REHYPE} urlTransform={transform}>{content}</ReactMarkdown>
+    </article>
+  );
+});
 
 function workspacePathDepth(path: string) {
   return Math.max(0, path.split("/").filter(Boolean).length - 1);
@@ -149,319 +174,6 @@ function workspaceMarkdownAssetUrl(root: string, documentPath: string, url: stri
   return `/api/workspaces/files?${params}${suffix}`;
 }
 
-async function responseAsDataUrl(response: Response): Promise<string> {
-  const blob = await response.blob();
-  return await new Promise<string>((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result));
-    reader.onerror = () => reject(new Error("Could not read the PDF."));
-    reader.readAsDataURL(blob);
-  });
-}
-
-async function loadPaperData(paper: MaterialTab): Promise<{ data: string; attachmentKey?: string }> {
-  // Shared with the Reader, so crossing surfaces reuses the bytes already
-  // fetched rather than pulling the whole PDF from Zotero again
-  const cached = getCachedDocument(paper.id);
-  if (cached) return { data: cached, attachmentKey: paper.attachmentKey };
-  if (paper.zoteroKey) {
-    const response = await fetch(`/api/zotero/file?key=${encodeURIComponent(paper.zoteroKey)}`);
-    if (!response.ok) throw new Error("Could not load this paper from Zotero.");
-    const data = await responseAsDataUrl(response);
-    cacheDocument(paper.id, data);
-    return { data, attachmentKey: response.headers.get("X-Attachment-Key") || paper.attachmentKey };
-  }
-  const response = await fetch(`/api/sessions?id=${encodeURIComponent(paper.id)}`);
-  if (!response.ok) throw new Error("This local paper is no longer available.");
-  const payload = await response.json();
-  if (!payload.state?.pdfDataUrl) throw new Error("This local paper has no saved document data.");
-  cacheDocument(paper.id, payload.state.pdfDataUrl);
-  return { data: payload.state.pdfDataUrl, attachmentKey: paper.attachmentKey };
-}
-
-function CreateWorkspaceDialog({ open, onClose, onCreated }: { open: boolean; onClose: () => void; onCreated: (workspace: ResearchWorkspace) => void }) {
-  const [name, setName] = useState("");
-  const [root, setRoot] = useState("");
-  const [error, setError] = useState("");
-  const [creating, setCreating] = useState(false);
-  const [browsing, setBrowsing] = useState(false);
-
-  if (!open) return null;
-  const submit = async () => {
-    if (!name.trim() || !root.trim()) { setError("Choose a name and directory."); return; }
-    setCreating(true); setError("");
-    try {
-      const response = await fetch("/api/workspaces", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ root, create: false }) });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || "Could not create the workspace.");
-      onCreated({ id: uid(), name: name.trim(), root: data.root, createdAt: Date.now(), papers: [] });
-      setName(""); setRoot("");
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Could not create the workspace.");
-    } finally { setCreating(false); }
-  };
-  const browse = async () => {
-    setBrowsing(true); setError("");
-    try {
-      const response = await fetch("/api/workspaces/select-directory", {
-        method: "POST",
-      });
-      const data = await response.json();
-      if (response.status === 499) return;
-      if (!response.ok) throw new Error(data.error || "Could not open the folder picker.");
-      setRoot(data.root || "");
-      if (!name.trim() && data.root) setName(String(data.root).split("/").filter(Boolean).pop()?.replace(/[-_]+/g, " ") || "Research workspace");
-    } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not choose that folder."); }
-    finally { setBrowsing(false); }
-  };
-  return (
-    <div className={styles.modalBackdrop} role="presentation">
-      <section className={styles.modal} role="dialog" aria-modal="true" aria-labelledby="create-workspace-title">
-        <header><div><small>NEW WORKSPACE</small><h2 id="create-workspace-title">Choose or create its directory</h2></div><button onClick={onClose} aria-label="Close">×</button></header>
-        <label><span>NAME</span><input autoFocus value={name} onChange={(event) => setName(event.target.value)} placeholder="e.g. Efficient inference evaluation" /></label>
-        <label><span>WORKING DIRECTORY</span><div className={styles.pathInput}><input value={root} readOnly placeholder="Choose with the macOS folder picker" /><button type="button" onClick={browse} disabled={browsing}>{browsing ? "Opening…" : "Choose / create…"}</button></div></label>
-        <p className={styles.nativePickerNote}>Select an existing repository, or use New Folder in the macOS dialog.</p>
-        <div className={styles.lockNote}><span>⌘</span><p><strong>This directory is fixed after creation.</strong><small>Create another workspace if you later need a different project root.</small></p></div>
-        <p className={styles.zeroPaperNote}>The directory is attached in place. The workspace starts with 0 linked papers; add them later with <strong>＋P</strong>.</p>
-        {error && <p className={styles.error}>{error}</p>}
-        <footer><button onClick={onClose}>Cancel</button><button className={styles.primary} onClick={submit} disabled={creating}>{creating ? "Creating…" : "Create workspace"}</button></footer>
-      </section>
-    </div>
-  );
-}
-
-function DeleteWorkspaceDialog({ workspace, onClose, onDelete }: { workspace: ResearchWorkspace; onClose: () => void; onDelete: (deleteDirectory: boolean) => Promise<void> }) {
-  const [confirmation, setConfirmation] = useState("");
-  const [deleting, setDeleting] = useState<"record" | "directory" | null>(null);
-  const [error, setError] = useState("");
-  const remove = async (deleteDirectory: boolean) => {
-    setDeleting(deleteDirectory ? "directory" : "record"); setError("");
-    try { await onDelete(deleteDirectory); }
-    catch (reason) { setError(reason instanceof Error ? reason.message : "Could not remove this workspace."); setDeleting(null); }
-  };
-  return (
-    <div className={styles.modalBackdrop} role="presentation">
-      <section className={`${styles.modal} ${styles.deleteWorkspaceModal}`} role="dialog" aria-modal="true" aria-labelledby="delete-workspace-title">
-        <header><div><small>REMOVE WORKSPACE</small><h2 id="delete-workspace-title">What should happen to its folder?</h2></div><button onClick={onClose} disabled={!!deleting} aria-label="Close">×</button></header>
-        <div className={styles.deleteChoices}>
-          <article>
-            <span>01</span><div><h3>Remove from Paper Reader only</h3><p>The workspace, paper links, and conversation disappear from this app. The directory and every file inside it stay untouched.</p></div>
-            <button onClick={() => void remove(false)} disabled={!!deleting}>{deleting === "record" ? "Removing…" : "Keep folder and remove workspace"}</button>
-          </article>
-          <article className={styles.deleteDirectoryChoice}>
-            <span>02</span><div><h3>Remove workspace and folder</h3><p>The workspace is removed from Paper Reader and its directory is moved to macOS Trash, where it can still be recovered.</p><code title={workspace.root}>{workspace.root}</code></div>
-            <label><small>TYPE <strong>{workspace.name}</strong> TO CONFIRM</small><input value={confirmation} onChange={(event) => setConfirmation(event.target.value)} autoComplete="off" spellCheck={false} /></label>
-            <button onClick={() => void remove(true)} disabled={!!deleting || confirmation !== workspace.name}>{deleting === "directory" ? "Moving to Trash…" : "Move folder to Trash"}</button>
-          </article>
-        </div>
-        {error && <p className={styles.error}>{error}</p>}
-        <footer><button onClick={onClose} disabled={!!deleting}>Cancel</button></footer>
-      </section>
-    </div>
-  );
-}
-
-type PaperChoice = { tab: MaterialTab; detail: string };
-
-function PaperPicker({ open, papers, existing, onClose, onAdd }: { open: boolean; papers: MaterialTab[]; existing: MaterialTab[]; onClose: () => void; onAdd: (papers: MaterialTab[]) => void }) {
-  const [source, setSource] = useState("__all__");
-  const [query, setQuery] = useState("");
-  const [collections, setCollections] = useState<ZoteroCollection[]>([]);
-  const [zoteroPapers, setZoteroPapers] = useState<ZoteroPaper[]>([]);
-  const [selected, setSelected] = useState<Record<string, MaterialTab>>({});
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
-  const [visibleCount, setVisibleCount] = useState(100);
-  const collectionOptions = useMemo(() => flattenZoteroCollections(collections), [collections]);
-
-  useEffect(() => {
-    if (!open) return;
-    let cancelled = false;
-    fetch("/api/zotero/collections").then(async (response) => {
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || "Could not load Zotero collections.");
-      if (!cancelled) setCollections(data.collections || []);
-    }).catch((reason) => { if (!cancelled) setError(reason instanceof Error ? reason.message : "Could not load Zotero collections."); });
-    return () => { cancelled = true; };
-  }, [open]);
-
-  useEffect(() => {
-    if (!open) return;
-    if (source === "__reader__") return;
-    const controller = new AbortController();
-    const timer = window.setTimeout(async () => {
-      setLoading(true); setError("");
-      try {
-        const keys = source === "__all__" ? [""] : zoteroCollectionBranch(collections, source);
-        const pages = await Promise.all(keys.map(async (collectionKey) => {
-          const params = new URLSearchParams();
-          if (collectionKey) params.set("collection", collectionKey);
-          if (query.trim()) params.set("q", query.trim());
-          const response = await fetch(`/api/zotero/items?${params}`, { signal: controller.signal });
-          const data = await response.json();
-          if (!response.ok) throw new Error(data.error || "Could not load Zotero papers.");
-          return (data.items || []) as ZoteroPaper[];
-        }));
-        const unique = new Map<string, ZoteroPaper>();
-        pages.flat().forEach((paper) => unique.set(paper.key, paper));
-        setZoteroPapers([...unique.values()]);
-      } catch (reason) {
-        if (!(reason instanceof DOMException && reason.name === "AbortError")) setError(reason instanceof Error ? reason.message : "Could not load Zotero papers.");
-      } finally { if (!controller.signal.aborted) setLoading(false); }
-    }, query ? 250 : 0);
-    return () => { window.clearTimeout(timer); controller.abort(); };
-  }, [open, source, query, collections]);
-
-  const existingIds = useMemo(() => new Set(existing.flatMap((paper) => [paper.id, paper.zoteroKey].filter(Boolean) as string[])), [existing]);
-  const choices = useMemo<PaperChoice[]>(() => {
-    if (source === "__reader__") {
-      const normalized = query.trim().toLowerCase();
-      return papers.filter((paper) => paper.docType === "pdf" && !existingIds.has(paper.id) && !existingIds.has(paper.zoteroKey || ""))
-        .filter((paper) => !normalized || paper.name.toLowerCase().includes(normalized))
-        .map((tab) => ({ tab, detail: tab.zoteroKey ? "Open Zotero tab · zero copy" : "Open Reader tab · zero copy" }));
-    }
-    return zoteroPapers.filter((paper) => !existingIds.has(paper.key)).map((paper) => ({
-      tab: zoteroPaperTab(paper),
-      detail: [paper.creators, paper.year, "Zotero link · zero copy"].filter(Boolean).join(" · "),
-    }));
-  }, [source, query, papers, zoteroPapers, existingIds]);
-
-  const close = () => { setSelected({}); setQuery(""); setSource("__all__"); setVisibleCount(100); setError(""); onClose(); };
-  const toggle = (choice: PaperChoice) => setSelected((current) => {
-    const next = { ...current };
-    if (next[choice.tab.id]) delete next[choice.tab.id]; else next[choice.tab.id] = choice.tab;
-    return next;
-  });
-
-  if (!open) return null;
-  const selectedCount = Object.keys(selected).length;
-  const allShownSelected = choices.length > 0 && choices.every((choice) => !!selected[choice.tab.id]);
-  const toggleSelectAll = () => setSelected((current) => {
-    const next = { ...current };
-    if (allShownSelected) choices.forEach((choice) => delete next[choice.tab.id]);
-    else choices.forEach((choice) => { next[choice.tab.id] = choice.tab; });
-    return next;
-  });
-  return (
-    <div className={styles.modalBackdrop}>
-      <section className={`${styles.modal} ${styles.paperModal}`} role="dialog" aria-modal="true" aria-labelledby="add-papers-title">
-        <header><div><small>ZOTERO LIBRARY</small><h2 id="add-papers-title">Attach papers</h2></div><button onClick={close} aria-label="Close">×</button></header>
-        <div className={styles.paperPickerToolbar}>
-          <select value={source} onChange={(event) => { setSource(event.target.value); setQuery(""); setVisibleCount(100); if (event.target.value === "__reader__") setLoading(false); }} aria-label="Paper source">
-            <option value="__all__">All Zotero papers</option>
-            {collectionOptions.map((collection) => <option key={collection.key} value={collection.key}>{`${"\u00a0\u00a0".repeat(collection.depth)}${collection.name} (${collection.numItems})`}</option>)}
-            <option value="__reader__">Open Reader tabs</option>
-          </select>
-          <input value={query} onChange={(event) => { setQuery(event.target.value); setVisibleCount(100); }} placeholder={source === "__reader__" ? "Search open tabs…" : "Search Zotero by title, creator, or year…"} autoFocus />
-        </div>
-        <div className={styles.paperPickerSummary}>
-          <p><strong>{loading ? "Searching…" : `${choices.length} available`}</strong><small>{selectedCount ? `${selectedCount} selected` : "PDFs remain linked to Zotero"}</small></p>
-          <button onClick={toggleSelectAll} disabled={loading || !choices.length}>{allShownSelected ? "Clear all shown" : `Select all ${choices.length || ""}`}</button>
-        </div>
-        <div className={styles.paperPicker}>
-          {!loading && choices.length === 0 && <p className={styles.empty}>{error || (query ? "No matching papers." : "No unattached papers in this source.")}</p>}
-          {choices.slice(0, visibleCount).map((choice) => <label key={choice.tab.id}><input type="checkbox" checked={!!selected[choice.tab.id]} onChange={() => toggle(choice)} /><span className={styles.kindPdf}>PDF</span><p><strong>{choice.tab.name.replace(/\.pdf$/i, "")}</strong><small>{choice.detail}</small></p></label>)}
-          {choices.length > visibleCount && <button className={styles.loadMore} onClick={() => setVisibleCount((count) => count + 100)}>Show 100 more <small>{choices.length - visibleCount} remaining</small></button>}
-        </div>
-        {error && choices.length > 0 && <p className={styles.error}>{error}</p>}
-        <footer><button onClick={close}>Cancel</button><button className={styles.primary} disabled={!selectedCount} onClick={() => { const tabs = Object.values(selected); setSelected({}); onAdd(tabs); }}>Attach {selectedCount || ""} paper{selectedCount === 1 ? "" : "s"}</button></footer>
-      </section>
-    </div>
-  );
-}
-
-// The conversation written out as Markdown, to carry to another agent or
-// machine: a note to whoever reads it next, and a choice of where it goes
-function ExportDialog({ open, workspace, messages, model, onClose, onExported }: {
-  open: boolean;
-  workspace: ResearchWorkspace;
-  messages: AgentMessage[];
-  model: Model;
-  onClose: () => void;
-  onExported: (result: { path: string; inside: boolean }) => void;
-}) {
-  const [notes, setNotes] = useState("");
-  const [target, setTarget] = useState(() => defaultExportPath(new Date()));
-  const [choosing, setChoosing] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState("");
-  if (!open) return null;
-  const close = () => { setError(""); onClose(); };
-  const choose = async () => {
-    setChoosing(true); setError("");
-    try {
-      const response = await fetch("/api/workspaces/select-file", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ defaultName: target.split("/").pop(), location: workspace.root }) });
-      if (response.status === 499) return;
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || "Could not open the save dialog.");
-      if (data.path) setTarget(String(data.path));
-    } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not open the save dialog."); }
-    finally { setChoosing(false); }
-  };
-  const save = async () => {
-    setSaving(true); setError("");
-    try {
-      const response = await fetch("/api/workspaces/export", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({
-        root: workspace.root, name: workspace.name, path: target, notes, model,
-        papers: workspace.papers.map((paper) => ({ id: paper.id, name: paper.name, zoteroKey: paper.zoteroKey })),
-        messages: messages.map((message) => ({ role: message.role, content: message.content, tools: message.tools, hasImage: !!message.imageDataUrl })),
-      }) });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || "Could not export the conversation.");
-      onExported({ path: String(data.path), inside: !!data.inside });
-      setNotes(""); setTarget(defaultExportPath(new Date()));
-      close();
-    } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not export the conversation."); }
-    finally { setSaving(false); }
-  };
-  const turns = messages.filter((message) => message.role === "user").length;
-  return (
-    <div className={styles.modalBackdrop} role="presentation">
-      <section className={styles.modal} role="dialog" aria-modal="true" aria-labelledby="export-conversation-title">
-        <header><div><small>EXPORT CONVERSATION</small><h2 id="export-conversation-title">Carry this conversation elsewhere</h2></div><button onClick={close} aria-label="Close">×</button></header>
-        <p className={styles.zeroPaperNote}>{turns} {turns === 1 ? "turn" : "turns"} with the agent, the papers attached, and your notes below go into one Markdown file for another agent or machine to pick up.</p>
-        <label><span>NOTES FOR WHOEVER READS IT NEXT</span><textarea autoFocus value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="What to know first, what is still open, what to do with it…" rows={5} data-export-notes="" /></label>
-        <label><span>SAVE AS</span><div className={styles.pathInput}><input value={target} onChange={(event) => setTarget(event.target.value)} spellCheck={false} data-export-path="" /><button type="button" onClick={choose} disabled={choosing}>{choosing ? "Opening…" : "Choose…"}</button></div></label>
-        <p className={styles.nativePickerNote}>A relative path goes inside this workspace; Choose… opens the macOS save dialog for anywhere else.</p>
-        {error && <p className={styles.error}>{error}</p>}
-        <footer><button onClick={close} disabled={saving}>Cancel</button><button className={styles.primary} onClick={save} disabled={saving || !target.trim()}>{saving ? "Exporting…" : "Export"}</button></footer>
-      </section>
-    </div>
-  );
-}
-
-function CopyPapersDialog({ open, workspace, onClose, onCopied }: { open: boolean; workspace: ResearchWorkspace; onClose: () => void; onCopied: () => void }) {
-  const [selected, setSelected] = useState<string[]>([]);
-  const [copying, setCopying] = useState(false);
-  const [error, setError] = useState("");
-  if (!open) return null;
-  const close = () => { setSelected([]); setError(""); onClose(); };
-  const copy = async () => {
-    setCopying(true); setError("");
-    try {
-      for (const paper of workspace.papers.filter((item) => selected.includes(item.id))) {
-        const loaded = await loadPaperData(paper);
-        const response = await fetch("/api/workspaces/files", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ root: workspace.root, path: `papers/${safePdfName(paper.name)}`, dataUrl: loaded.data }) });
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.error || `Could not copy ${paper.name}.`);
-      }
-      onCopied(); close();
-    } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not copy the selected PDFs."); }
-    finally { setCopying(false); }
-  };
-  return (
-    <div className={styles.modalBackdrop}>
-      <section className={styles.modal} role="dialog" aria-modal="true">
-        <header><div><small>EXPLICIT FILE COPY</small><h2>Choose PDFs to copy</h2></div><button onClick={close}>×</button></header>
-        <div className={styles.destination}><span>⌘</span><p><strong>Destination</strong><code>{workspace.root}/papers</code></p></div>
-        <div className={styles.paperPicker}>{workspace.papers.map((paper) => <label key={paper.id}><input type="checkbox" checked={selected.includes(paper.id)} onChange={() => setSelected((current) => current.includes(paper.id) ? current.filter((id) => id !== paper.id) : [...current, paper.id])} /><span className={styles.kindPdf}>PDF</span><p><strong>{paper.name.replace(/\.pdf$/i, "")}</strong><small>Linked source remains unchanged</small></p></label>)}</div>
-        {error && <p className={styles.error}>{error}</p>}
-        <footer><button onClick={close}>Cancel</button><button className={styles.primary} onClick={copy} disabled={!selected.length || copying}>{copying ? "Copying…" : `Copy ${selected.length || "selected"} PDF${selected.length === 1 ? "" : "s"}`}</button></footer>
-      </section>
-    </div>
-  );
-}
-
 export function WorkspaceShell() {
   const router = useRouter();
   const isClient = useIsClient();
@@ -473,8 +185,6 @@ export function WorkspaceShell() {
   const [skillsOpen, setSkillsOpen] = useState(false);
   const [deleteWorkspaceTarget, setDeleteWorkspaceTarget] = useState<ResearchWorkspace | null>(null);
   const [readerTabs] = useState<MaterialTab[]>(loadOpenTabs);
-  const [files, setFiles] = useState<WorkspaceFile[]>([]);
-  const [filesLoading, setFilesLoading] = useState(false);
   const [expandedDirectories, setExpandedDirectories] = useState<Set<string>>(() => new Set());
   const [draggedFilePath, setDraggedFilePath] = useState<string | null>(null);
   const [dropTarget, setDropTarget] = useState<string | null>(null);
@@ -500,8 +210,9 @@ export function WorkspaceShell() {
   const [openDocs, setOpenDocs] = useState<WorkspaceDocument[]>(
     () => docStore(activeWorkspaceId || "none").load()
   );
-  const [activeDocId, setActiveDocId] = useState<string | null>(null);
-  const activeDocRef = useRef<string | null>(null);
+  // And the one being read when the workspace was left is open again
+  const [activeDocId, setActiveDocId] = useState<string | null>(() => savedActiveDoc(activeWorkspaceId, openDocs));
+  const activeDocRef = useRef(activeDocId);
   useEffect(() => { activeDocRef.current = activeDocId; }, [activeDocId]);
   const [pdfData, setPdfData] = useState("");
   const [pdfAttachmentKey, setPdfAttachmentKey] = useState<string | undefined>();
@@ -510,23 +221,12 @@ export function WorkspaceShell() {
   const marksRef = useRef(marks);
   useEffect(() => { marksRef.current = marks; }, [marks]);
   const pdfViewerRef = useRef<PdfViewerHandle>(null);
-  const composerRef = useRef<HTMLTextAreaElement | null>(null);
+  const agentRef = useRef<WorkspaceAgentHandle>(null);
   const [editorContent, setEditorContent] = useState("");
   const [savedContent, setSavedContent] = useState("");
   const [preview, setPreview] = useState(false);
   const [notice, setNotice] = useState("");
-  const [model, setModel] = useState<Model>("claude-sonnet-4-6");
-  const [effort, setEffort] = useState<Effort>("high");
-  const [mode, setMode] = useState<AgentMode>(() => loadMode(activeWorkspaceId));
-  const [exportOpen, setExportOpen] = useState(false);
-  // What is being typed for the agent, kept per workspace: see lib/drafts
-  const [question, setQuestion] = useState(() => loadDraft(activeWorkspaceId ? `workspace:${activeWorkspaceId}` : null)?.text ?? "");
-  const [streaming, setStreaming] = useState(false);
-  const initialChat = loadJson<{ messages: AgentMessage[]; session?: string }>(`paper-reader:workspace-chat:${activeWorkspaceId || "none"}`, { messages: [] });
-  const [messages, setMessages] = useState<AgentMessage[]>(initialChat.messages || []);
-  const [providerSession, setProviderSession] = useState<string | undefined>(initialChat.session);
   const { skills, activeSkillIds, toggleSkill, loading: skillsLoading } = useAgentSkills();
-  const abortRef = useRef<AbortController | null>(null);
   const activeWorkspace = workspaces.find((workspace) => workspace.id === activeWorkspaceId) || workspaces[0] || null;
   const activeDoc = openDocs.find((document) => document.id === activeDocId) || null;
   const docTabs = useMemo<MaterialTab[]>(
@@ -546,56 +246,19 @@ export function WorkspaceShell() {
 
   const persist = useCallback((next: ResearchWorkspace[]) => { setWorkspaces(next); saveWorkspaces(next); }, []);
 
-  const refreshFiles = useCallback(async () => {
-    if (!activeWorkspace) return;
-    setFilesLoading(true);
-    try {
-      const response = await fetch(`/api/workspaces/files?root=${encodeURIComponent(activeWorkspace.root)}`);
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error);
-      setFiles(data.files || []);
-    } catch (reason) { setNotice(reason instanceof Error ? reason.message : "Could not read workspace files."); }
-    finally { setFilesLoading(false); }
-  }, [activeWorkspace]);
-
-  useEffect(() => { void refreshFiles(); }, [refreshFiles]);
+  const { files, loading: filesLoading, refresh: refreshFiles } = useWorkspaceFiles(activeWorkspace?.root ?? null, setNotice);
 
   useEffect(() => {
     try { localStorage.setItem(WORKSPACE_LAYOUT_KEY, JSON.stringify({ projectWidth, agentWidth, projectOpen, agentOpen, papersOpen, filesOpen })); } catch {}
   }, [projectWidth, agentWidth, projectOpen, agentOpen, papersOpen, filesOpen]);
 
-  useEffect(() => {
-    if (!activeWorkspace) return;
-    try { localStorage.setItem(`paper-reader:workspace-chat:${activeWorkspace.id}`, JSON.stringify({ messages, session: providerSession })); } catch {}
-  }, [messages, providerSession, activeWorkspace]);
-
-  // The draft is saved a moment after each change, for a refresh, and at
-  // once when the surface is left
-  useEffect(() => {
-    if (!activeWorkspace) return;
-    try { localStorage.setItem(`${WORKSPACE_MODE_KEY}:${activeWorkspace.id}`, JSON.stringify(mode)); } catch {}
-  }, [mode, activeWorkspace]);
-
-  const draftKey = activeWorkspace ? `workspace:${activeWorkspace.id}` : null;
-  const latestDraft = useRef<{ key: string | null; text: string }>({ key: null, text: "" });
-  useEffect(() => {
-    if (!draftKey) return;
-    latestDraft.current = { key: draftKey, text: question };
-    const timer = setTimeout(() => saveDraft(draftKey, { text: question }), 300);
-    return () => clearTimeout(timer);
-  }, [draftKey, question]);
-  useEffect(() => () => {
-    const last = latestDraft.current;
-    if (last.key) saveDraft(last.key, { text: last.text });
-  }, [draftKey]);
-
+  // The agent's conversation, draft, mode and model are its own (see
+  // WorkspaceAgent): it is remounted for each workspace and loads them itself
   const switchWorkspace = (id: string) => {
-    const saved = loadJson<{ messages: AgentMessage[]; session?: string }>(`paper-reader:workspace-chat:${id}`, { messages: [] });
-    setActiveWorkspaceId(id); setMessages(saved.messages || []); setProviderSession(saved.session);
-    setQuestion(loadDraft(`workspace:${id}`)?.text ?? "");
-    setMode(loadMode(id));
-    setOpenDocs(docStore(id).load());
-    setActiveDocId(null); setPdfData(""); setEditorContent(""); setFiles([]); setExpandedDirectories(new Set());
+    const docs = docStore(id).load();
+    setActiveWorkspaceId(id);
+    setOpenDocs(docs);
+    setActiveDocId(savedActiveDoc(id, docs)); setPdfData(""); setPdfError(""); setMarks(NO_MARKS); setEditorContent(""); setSavedContent(""); setExpandedDirectories(new Set());
     try { localStorage.setItem(ACTIVE_WORKSPACE_KEY, JSON.stringify(id)); } catch {}
   };
 
@@ -612,14 +275,14 @@ export function WorkspaceShell() {
 
     const next = workspaces.filter((item) => item.id !== workspace.id);
     persist(next);
-    try { localStorage.removeItem(`paper-reader:workspace-chat:${workspace.id}`); } catch {}
+    // Its answer, if one is streaming, stops with it
+    forgetChat(workspace.id);
     saveDraft(`workspace:${workspace.id}`, { text: "" });
     setDeleteWorkspaceTarget(null);
     if (workspace.id === activeWorkspace?.id) {
-      abortRef.current?.abort();
       if (next[0]) switchWorkspace(next[0].id);
       else {
-        setActiveWorkspaceId(null); setMessages([]); setProviderSession(undefined); setOpenDocs([]); setActiveDocId(null); setPdfData(""); setEditorContent(""); setFiles([]);
+        setActiveWorkspaceId(null); setOpenDocs([]); setActiveDocId(null); setPdfData(""); setEditorContent("");
         try { localStorage.removeItem(ACTIVE_WORKSPACE_KEY); } catch {}
         setCreateOpen(true);
       }
@@ -660,57 +323,43 @@ export function WorkspaceShell() {
     });
   }, []);
 
-  const openDocument = useCallback(async (document: WorkspaceDocument) => {
-    setOpenDocs((current) => current.some((item) => item.id === document.id) ? current : [...current, document]);
-    setActiveDocId(document.id); setPreview(false); setNotice("");
-    if (document.kind === "paper" || document.kind === "workspacePdf") {
-      setPdfData(""); setPdfError(""); setMarks(NO_MARKS);
-      try {
-        if (document.kind === "paper") {
-          const loaded = await loadPaperData(document.paper);
-          setPdfData(loaded.data); setPdfAttachmentKey(loaded.attachmentKey);
-          void loadMarks(document.paper);
-        } else {
-          if (!activeWorkspace) return;
-          const cachedPdf = getCachedDocument(document.id);
-          if (cachedPdf) { setPdfData(cachedPdf); setPdfAttachmentKey(undefined); return; }
-          const response = await fetch(`/api/workspaces/files?root=${encodeURIComponent(activeWorkspace.root)}&path=${encodeURIComponent(document.path)}&raw=1`);
-          if (!response.ok) throw new Error("Could not read this workspace PDF.");
-          const data = await responseAsDataUrl(response);
-          cacheDocument(document.id, data);
-          setPdfData(data); setPdfAttachmentKey(undefined);
-        }
-      } catch (reason) { setPdfError(reason instanceof Error ? reason.message : "Could not load this paper."); }
-      return;
-    }
-    if (!activeWorkspace) return;
-    try {
-      const response = await fetch(`/api/workspaces/files?root=${encodeURIComponent(activeWorkspace.root)}&path=${encodeURIComponent(document.path)}`);
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error);
-      setEditorContent(data.content); setSavedContent(data.content);
-    } catch (reason) { setNotice(reason instanceof Error ? reason.message : "Could not open this file."); }
+  // The open document's content, onto the stage: a PDF and the marks on it,
+  // or a file's text — unless another document was opened in the meantime
+  const loadDocument = useCallback((document: WorkspaceDocument) => {
+    const current = () => activeDocRef.current === document.id;
+    readDocument(document, activeWorkspace?.root).then(
+      (content) => {
+        if (!current()) return;
+        if ("text" in content) { setEditorContent(content.text); setSavedContent(content.text); return; }
+        setPdfData(content.pdf); setPdfAttachmentKey(content.attachmentKey);
+        if (document.kind === "paper") void loadMarks(document.paper);
+      },
+      (reason) => {
+        const message = reason instanceof Error ? reason.message : "";
+        if (document.kind === "file") setNotice(message || "Could not open this file.");
+        else if (current()) setPdfError(message || "Could not load this paper.");
+      }
+    );
   }, [activeWorkspace, loadMarks]);
 
-  // Coming back to this surface, reopen what was last being read: the tab
-  // list alone would show the paper while the stage sat empty.
+  const openDocument = useCallback((document: WorkspaceDocument) => {
+    setOpenDocs((current) => current.some((item) => item.id === document.id) ? current : [...current, document]);
+    activeDocRef.current = document.id;
+    setActiveDocId(document.id); setPreview(false); setNotice("");
+    if (document.kind === "paper" || document.kind === "workspacePdf") { setPdfData(""); setPdfError(""); setMarks(NO_MARKS); }
+    loadDocument(document);
+  }, [loadDocument]);
+
+  // Coming back to this surface, or to this workspace, the document last read
+  // is the active one already (see activeDocId); its content is loaded once
+  // per visit — not again when the last tab is closed, which would reopen it
   const restoredFor = useRef<string | null>(null);
   useEffect(() => {
     if (!activeWorkspaceId || restoredFor.current === activeWorkspaceId) return;
-    // Once anything is open, this workspace has nothing left to restore.
-    // Without this the effect would re-fire when you CLOSE the last tab —
-    // reopening the document you just closed, and churning the PDF viewer
-    // through an unmount/remount that pdf.js reports as "pdfPage is not
-    // loaded".
-    if (activeDocId) { restoredFor.current = activeWorkspaceId; return; }
-    // openDocs fills in as storage loads; waiting for it beats giving up on
-    // the first pass and leaving the stage blank behind a populated tab bar
-    if (!openDocs.length) return;
     restoredFor.current = activeWorkspaceId;
-    const savedId = loadJson<string | null>(`${WORKSPACE_ACTIVE_DOC_KEY}:${activeWorkspaceId}`, null);
-    const document = savedId ? openDocs.find((entry) => entry.id === savedId) : null;
-    if (document) void openDocument(document);
-  }, [activeWorkspaceId, activeDocId, openDocs, openDocument]);
+    const document = openDocs.find((entry) => entry.id === activeDocId);
+    if (document) loadDocument(document);
+  }, [activeWorkspaceId, activeDocId, openDocs, loadDocument]);
 
   const closeDocument = (id: string) => {
     const index = openDocs.findIndex((document) => document.id === id);
@@ -730,7 +379,7 @@ export function WorkspaceShell() {
     const response = await fetch("/api/workspaces/files", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ root: activeWorkspace.root, path: activeDoc.path, content: editorContent }) });
     const data = await response.json();
     if (!response.ok) { setNotice(data.error || "Could not save the file."); return; }
-    setSavedContent(editorContent); setNotice(`Saved ${activeDoc.path}`); void refreshFiles();
+    setSavedContent(editorContent); setNotice(`Saved ${activeDoc.path}`); refreshFiles();
   };
 
   const createFile = async () => {
@@ -741,7 +390,7 @@ export function WorkspaceShell() {
     const response = await fetch("/api/workspaces/files", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ root: activeWorkspace.root, path: relative, content: `# ${relative.split("/").pop()?.replace(/\.[^.]+$/, "") || "New note"}\n\n` }) });
     const data = await response.json();
     if (!response.ok) { setNotice(data.error || "Could not create the file."); return; }
-    await refreshFiles();
+    refreshFiles();
     setExpandedDirectories((current) => {
       const next = new Set(current);
       parentWorkspacePaths(relative).forEach((path) => next.add(path));
@@ -768,7 +417,7 @@ export function WorkspaceShell() {
         next.add(relative);
         return next;
       });
-      await refreshFiles();
+      refreshFiles();
       setNotice(`Created folder ${relative}.`);
     } catch (reason) {
       setNotice(reason instanceof Error ? reason.message : "Could not create the folder.");
@@ -799,7 +448,7 @@ export function WorkspaceShell() {
       }));
       setActiveDocId((current) => current === oldId ? newId : current);
       if (toDirectory) setExpandedDirectories((current) => new Set(current).add(toDirectory));
-      await refreshFiles();
+      refreshFiles();
       setNotice(`Moved ${name} ${toDirectory ? `into ${toDirectory}` : "to the workspace root"}.`);
     } catch (reason) {
       setNotice(reason instanceof Error ? reason.message : "Could not move the file.");
@@ -918,11 +567,11 @@ export function WorkspaceShell() {
     if (item?.zoteroKey) patchZoteroAnnotation(item.zoteroKey, { comment: note });
   };
 
-  // A passage held for the next question, as the Reader's Quote does
+  // A passage held for the next question, as the Reader's Quote does; the
+  // composer is the agent's, which opens to show it
   const quoteIntoComposer = (text: string, page?: number, remark?: string) => {
-    const quote = `“${text.replace(/\s+/g, " ").trim()}”${page ? ` (p. ${page})` : ""}${remark ? `\n${remark}` : ""}`;
-    setQuestion((current) => (current.trim() ? `${current.trimEnd()}\n\n${quote}\n\n` : `${quote}\n\n`));
-    composerRef.current?.focus();
+    setAgentOpen(true);
+    agentRef.current?.quote(text, page, remark);
   };
   // A passage the Reader has a conversation about: quoted, with a word that
   // there is one — the agent can read it from the paper's folder
@@ -930,76 +579,39 @@ export function WorkspaceShell() {
     const passage = marks.asked.find((p) => p.id === id);
     if (passage) quoteIntoComposer(passage.text, passage.pageNumber, "(I have a conversation about this passage in the Reader.)");
   };
-  // A citation in an answer goes to the passage in the open paper, as in the Reader
-  const followCitation = (page: number, quote: string) => {
-    if (!pdfData) { setNotice("Open the paper to follow this citation."); return; }
-    void pdfViewerRef.current?.highlightText(page, quote);
+  // Asked from the page, as the Reader asks: a passage to explain or define,
+  // a question about it, a captured figure. The answer is wanted in sight.
+  const askFromPage = (ask: AgentAsk) => {
+    setAgentOpen(true);
+    agentRef.current?.ask(ask);
   };
 
-  // Every question goes to the one workspace agent — typed in the composer,
-  // or asked from the page as the Reader asks: a passage to explain or
-  // define, a question about it, a captured figure
-  const askAgent = async (ask: AgentAsk = {}) => {
-    if (!activeWorkspace) return;
-    if (streaming) { setNotice("The agent is still answering."); return; }
-    const fromPage = ask.kind !== undefined;
-    const typed = (fromPage ? ask.question ?? "" : question).trim();
-    if (!typed && !ask.selectedText && !ask.imageDataUrl) return;
-    const passage = ask.selectedText?.replace(/\s+/g, " ").trim();
-    const page = ask.pageNumber ? ` (p. ${ask.pageNumber})` : "";
-    const shown = ask.kind === "explain" ? `Explain${page}:\n\n> ${passage}`
-      : ask.kind === "define" ? `Define${page}:\n\n> ${passage}`
-      : ask.kind === "figure" ? (typed || `Explain this figure${page}.`)
-      : passage ? `${typed}\n\n> ${passage}${page}` : typed;
-    const assistantId = uid();
-    setMessages((current) => [...current, { id: uid(), role: "user", content: shown, imageDataUrl: ask.imageDataUrl }, { id: assistantId, role: "assistant", content: "", tools: [] }]);
-    // A question asked from the page leaves whatever is being typed alone
-    if (!fromPage) setQuestion("");
-    setStreaming(true);
-    const controller = new AbortController(); abortRef.current = controller;
-    const context = activeDoc?.kind === "file" ? `Open file: ${activeDoc.path}\n\n${editorContent}` : activeDoc?.kind === "paper" ? `Open paper: ${activeDoc.paper.name}\nZotero key: ${activeDoc.paper.zoteroKey || "local reader paper"}` : activeDoc?.kind === "workspacePdf" ? `Open workspace PDF: ${activeDoc.path}` : "No document is open.";
-    try {
-      const custom = loadJson<CustomApiConfig | null>(CUSTOM_API_KEY, null);
-      const response = await fetch("/api/workspaces/ask", { method: "POST", signal: controller.signal, headers: { "Content-Type": "application/json" }, body: JSON.stringify({
-        root: activeWorkspace.root, question: typed, kind: ask.kind, selected_text: passage, page_number: ask.pageNumber, image_base64: ask.imageDataUrl,
-        // The attached papers, so the agent can draw on what was read and
-        // asked about each of them in the Reader
-        papers: activeWorkspace.papers.map((paper) => ({ id: paper.id, name: paper.name, zoteroKey: paper.zoteroKey })),
-        // The chat so far, so a session the provider has lost can start again
-        // from the record (used only then)
-        history: messages.filter((message) => message.content.trim()).slice(-30).map((message) => ({ role: message.role, content: message.content.slice(0, 1500) })),
-        context, model, effort, custom, session_id: providerSession, mode, skills: activeSkillIds,
-      }) });
-      if (!response.ok || !response.body) throw new Error(await response.text());
-      const reader = response.body.getReader(); const decoder = new TextDecoder(); let carry = ""; let text = "";
-      while (true) {
-        const { done, value } = await reader.read(); if (done) break;
-        carry += decoder.decode(value, { stream: true }); const lines = carry.split("\n"); carry = lines.pop() || "";
-        for (const line of lines) {
-          if (!line.trim()) continue;
-          try {
-            const event = JSON.parse(line);
-            if (event.type === "system" && event.session_id) setProviderSession(event.session_id);
-            if (event.type === "content_block_delta" && event.delta?.type === "text_delta") text += event.delta.text;
-            if (event.type === "result" && typeof event.result === "string" && !text) text = event.result;
-            const tools: AgentTool[] = [];
-            if (event.type === "tool") tools.push({ name: event.name, detail: event.detail, status: event.status });
-            if (event.type === "assistant" && Array.isArray(event.message?.content)) {
-              for (const block of event.message.content) {
-                if (block.type === "text" && typeof block.text === "string") text += block.text;
-                if (block.type === "tool_use") tools.push({ name: block.name || "tool", detail: JSON.stringify(block.input || {}).slice(0, 180), status: "requested" });
-              }
-            }
-            setMessages((current) => current.map((message) => message.id === assistantId ? { ...message, content: text, tools: tools.length ? [...(message.tools || []), ...tools] : message.tools } : message));
-          } catch {}
-        }
-      }
-      // Either mode may have written something — notes in a discussion
-      void refreshFiles();
-    } catch (reason) {
-      if (!(reason instanceof DOMException && reason.name === "AbortError")) setMessages((current) => current.map((message) => message.id === assistantId ? { ...message, content: `Error: ${reason instanceof Error ? reason.message : "Could not reach the agent."}` } : message));
-    } finally { abortRef.current = null; setStreaming(false); }
-  };
+  // What the agent is handed, and the handlers it calls back: stable, so the
+  // agent panel re-renders for its own changes and not for every one here
+  const desk = useRef<{ doc: WorkspaceDocument | null; content: string; pdf: boolean }>({ doc: null, content: "", pdf: false });
+  useEffect(() => {
+    desk.current = { doc: activeDoc, content: editorContent, pdf: !!pdfData };
+  });
+  const getContext = useCallback(() => {
+    const { doc, content } = desk.current;
+    return doc?.kind === "file" ? `Open file: ${doc.path}\n\n${content}`
+      : doc?.kind === "paper" ? `Open paper: ${doc.paper.name}\nZotero key: ${doc.paper.zoteroKey || "local reader paper"}`
+      : doc?.kind === "workspacePdf" ? `Open workspace PDF: ${doc.path}`
+      : "No document is open.";
+  }, []);
+  // A citation in an answer goes to the passage in the open paper, as in the Reader
+  const followCitation = useCallback((page: number, quote: string) => {
+    if (!desk.current.pdf) { setNotice("Open the paper to follow this citation."); return; }
+    void pdfViewerRef.current?.highlightText(page, quote);
+  }, []);
+  const collapseAgent = useCallback(() => setAgentOpen(false), []);
+  const openSkills = useCallback(() => setSkillsOpen(true), []);
+  const exported = useCallback(({ path, inside }: { path: string; inside: boolean }) => {
+    // Opening the file clears the notice, so the notice comes after
+    if (inside) { refreshFiles(); void openDocument({ id: `file:${path}`, kind: "file", path, name: path.split("/").pop() || path, extension: "md" }); }
+    setNotice(`Exported the conversation to ${path}`);
+  }, [refreshFiles, openDocument]);
+  const documentLabel = activeDoc ? (activeDoc.kind === "paper" ? activeDoc.paper.name : activeDoc.path) : null;
 
   const fileRows = useMemo(() => files.filter((file) => file.kind === "file"), [files]);
   const visibleWorkspaceEntries = useMemo(() => files.filter((entry) => parentWorkspacePaths(entry.path).every((path) => expandedDirectories.has(path))), [files, expandedDirectories]);
@@ -1021,13 +633,20 @@ export function WorkspaceShell() {
 
       <main className={styles.shell}>
         <nav className={styles.rail} aria-label="Research workspaces">
-          {workspaces.map((workspace) => <button key={workspace.id} className={workspace.id === activeWorkspace?.id ? styles.active : ""} onClick={() => switchWorkspace(workspace.id)} title={workspace.name}><b>{initials(workspace.name)}</b><span>{workspace.name}</span></button>)}
+          {workspaces.map((workspace) => {
+            const active = workspace.id === activeWorkspace?.id;
+            return (
+              <button key={workspace.id} type="button" className={active ? styles.active : ""} onClick={() => switchWorkspace(workspace.id)} aria-label={workspace.name} aria-current={active ? "true" : undefined}>
+                <b>{initials(workspace.name)}</b><span aria-hidden="true">{workspace.name}</span>
+              </button>
+            );
+          })}
           <div className={styles.railActions}>
-            <button className={styles.newWorkspaceButton} onClick={() => setCreateOpen(true)} title="New workspace" aria-label="New workspace">
-              <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M3.5 7.5h6l2-2h9v13h-17z" /><path d="M12 10v6M9 13h6" /></svg><small>New</small><span>New workspace</span>
+            <button type="button" className={styles.newWorkspaceButton} onClick={() => setCreateOpen(true)} aria-label="New workspace">
+              <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M3.5 7.5h6l2-2h9v13h-17z" /><path d="M12 10v6M9 13h6" /></svg><span aria-hidden="true">New workspace</span>
             </button>
-            <button className={styles.removeWorkspaceButton} disabled={!activeWorkspace} onClick={() => activeWorkspace && setDeleteWorkspaceTarget(activeWorkspace)} title="Remove current workspace" aria-label="Remove current workspace">
-              <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M5.5 7.5h13M9 7.5v-2h6v2M7.5 7.5l1 11h7l1-11M10.5 10.5v5M13.5 10.5v5" /></svg><small>Remove</small><span>Remove current workspace</span>
+            <button type="button" className={styles.removeWorkspaceButton} disabled={!activeWorkspace} onClick={() => activeWorkspace && setDeleteWorkspaceTarget(activeWorkspace)} aria-label="Remove current workspace">
+              <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M5.5 7.5h13M9 7.5v-2h6v2M7.5 7.5l1 11h7l1-11M10.5 10.5v5M13.5 10.5v5" /></svg><span aria-hidden="true">Remove current workspace</span>
             </button>
           </div>
         </nav>
@@ -1036,13 +655,17 @@ export function WorkspaceShell() {
         {projectOpen && (
         <aside className={styles.projectSidebar} style={{ width: projectWidth }}>
           <header>
-            <div><span>WORKSPACE</span><small>{activeWorkspace ? `${activeWorkspace.papers.length} papers · ${fileRows.length} files` : "No workspace"}</small></div>
+            <div>
+              <strong title={activeWorkspace?.name}>{activeWorkspace?.name ?? "No workspace"}</strong>
+              <small title={activeWorkspace?.root}>{activeWorkspace ? shortPath(activeWorkspace.root) : "Create one to begin"}</small>
+            </div>
             <button className={styles.collapsePanel} onClick={() => setProjectOpen(false)} title="Hide the workspace panel" aria-label="Hide the workspace panel">‹</button>
           </header>
           <div className={styles.tree}>
             <section>
               <h3><button type="button" className={styles.sectionChevron} onClick={() => setPapersOpen((open) => !open)} aria-expanded={papersOpen} title={papersOpen ? "Collapse source papers" : "Expand source papers"}>{papersOpen ? "⌄" : "›"}</button><strong className={styles.sectionTitle} onClick={() => setPapersOpen((open) => !open)}>SOURCE PAPERS <small>{activeWorkspace?.papers.length || 0}</small></strong><span className={styles.headerActions}>
-                <button onClick={() => setPaperPickerOpen(true)} disabled={!activeWorkspace} title="Add papers from Zotero" aria-label="Add papers from Zotero">＋</button>
+                <button onClick={() => setCopyOpen(true)} disabled={!activeWorkspace?.papers.length} title="Copy PDFs into the workspace folder…" aria-label="Copy PDFs into the workspace folder"><svg viewBox="0 0 16 16" width={15} height={15} aria-hidden="true"><path d="M8 2.5v7.5M5 7.2 8 10.2l3-3M3 11.5v2h10v-2" /></svg></button>
+                <button onClick={() => setPaperPickerOpen(true)} disabled={!activeWorkspace} title="Add papers from Zotero" aria-label="Add papers from Zotero"><svg viewBox="0 0 16 16" width={15} height={15} aria-hidden="true"><path d="M8 3v10M3 8h10" /></svg></button>
               </span></h3>
               {papersOpen && activeWorkspace?.papers.map((paper) => {
                 const documentId = `paper:${paper.id}`;
@@ -1053,7 +676,12 @@ export function WorkspaceShell() {
                   <button className={styles.detachPaper} onClick={() => detachPaper(paper)} title="Detach from workspace" aria-label={`Detach ${paper.name.replace(/\.pdf$/i, "")} from this workspace`}>×</button>
                 </div>;
               })}
-              {papersOpen && activeWorkspace && !activeWorkspace.papers.length && <p className={styles.treeEmpty}>Use Add papers to search Zotero or select a collection.</p>}
+              {papersOpen && activeWorkspace && !activeWorkspace.papers.length && (
+                <div className={styles.treeEmpty}>
+                  <p>Link papers from Zotero or the Reader — nothing is copied.</p>
+                  <button type="button" onClick={() => setPaperPickerOpen(true)}>＋ Add papers</button>
+                </div>
+              )}
             </section>
             <section>
               <h3
@@ -1064,10 +692,15 @@ export function WorkspaceShell() {
               ><button type="button" className={styles.sectionChevron} onClick={() => setFilesOpen((open) => !open)} aria-expanded={filesOpen} title={filesOpen ? "Collapse working files" : "Expand working files"}>{filesOpen ? "⌄" : "›"}</button><strong className={styles.sectionTitle} onClick={() => setFilesOpen((open) => !open)}>WORKING FILES <small>{fileRows.length}</small></strong><span className={styles.headerActions}>
                 <button onClick={createFile} disabled={!activeWorkspace} title="New file" aria-label="New file"><svg viewBox="0 0 16 16" width={15} height={15} aria-hidden="true"><path d="M4 1.75h5.2l2.8 2.8v9.7H4z" /><path d="M9.2 1.75v2.8H12" /><path d="M6.2 9h3.6M8 7.2v3.6" /></svg></button>
                 <button onClick={createDirectory} disabled={!activeWorkspace} title="New folder" aria-label="New folder"><svg viewBox="0 0 16 16" width={15} height={15} aria-hidden="true"><path d="M1.75 3.75h4.3l1.5 1.9h6.7v6.6h-12.5z" /><path d="M6.2 8.7h3.6M8 6.9v3.6" /></svg></button>
-                <button onClick={() => void refreshFiles()} disabled={!activeWorkspace || filesLoading} title="Refresh" aria-label="Refresh working files">↻</button>
+                <button onClick={refreshFiles} disabled={!activeWorkspace || filesLoading} title="Refresh" aria-label="Refresh working files"><svg viewBox="0 0 16 16" width={15} height={15} aria-hidden="true"><path d="M13 8a5 5 0 1 1-1.5-3.6M13 2.8v2.9h-2.9" /></svg></button>
               </span></h3>
-              {filesOpen && filesLoading && <p className={styles.treeEmpty}>Reading directory…</p>}
-              {filesOpen && !filesLoading && activeWorkspace && !files.length && <p className={styles.treeEmpty}>No files yet. Create a note or copy selected PDFs.</p>}
+              {filesOpen && filesLoading && !files.length && <p className={styles.treeNote}>Reading the folder…</p>}
+              {filesOpen && !filesLoading && activeWorkspace && !files.length && (
+                <div className={styles.treeEmpty}>
+                  <p>The folder is empty. Start a note, or copy linked PDFs in.</p>
+                  <button type="button" onClick={createFile}>＋ New note</button>
+                </div>
+              )}
               {filesOpen && <div className={styles.fileExplorer} role="tree" aria-label="Workspace files">
                 {visibleWorkspaceEntries.map((entry) => {
                   const depth = workspacePathDepth(entry.path);
@@ -1089,6 +722,7 @@ export function WorkspaceShell() {
                     >
                       <span className={styles.indentGuides} aria-hidden="true">{Array.from({ length: depth }, (_, index) => <i key={index} />)}</span>
                       <span className={styles.explorerChevron} aria-hidden="true">{expanded ? "⌄" : "›"}</span>
+                      <FolderGlyph open={expanded} />
                       <strong>{entry.name}</strong>
                     </button>;
                   }
@@ -1115,7 +749,6 @@ export function WorkspaceShell() {
               </div>}
             </section>
           </div>
-          {activeWorkspace && <footer><button onClick={() => setCopyOpen(true)} disabled={!activeWorkspace.papers.length}><span>⇩</span><strong>Copy selected PDFs…</strong></button><button onClick={() => setSkillsOpen(true)}><span>◆</span><strong>Skills</strong><small>{activeSkillIds.length} active</small></button></footer>}
         </aside>
 
         )}
@@ -1133,14 +766,26 @@ export function WorkspaceShell() {
             onReorder={(ordered) => setOpenDocs(ordered.map((tab) => openDocs.find((doc) => doc.id === tab.id)!).filter(Boolean))}
             rememberAs="workspace"
           />
-          {!activeDoc && <div className={styles.emptyDocument}><span>⌘</span><h2>Open a paper or workspace file</h2><p>Read papers, edit project files, and work with the agent without leaving this workspace.</p>{activeWorkspace && <button onClick={() => setPaperPickerOpen(true)}>Add papers</button>}</div>}
+          {!activeDoc && (
+            <div className={styles.emptyDocument}>
+              <span aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4.5 5.5c2.6-1.2 5.1-1.2 7.5 0v13c-2.4-1.2-4.9-1.2-7.5 0zM12 5.5c2.4-1.2 4.9-1.2 7.5 0v13c-2.6-1.2-5.1-1.2-7.5 0" /></svg></span>
+              <h2>Open a paper or a workspace file</h2>
+              <p>Read papers, edit project files, and work with the agent without leaving this workspace.</p>
+              {activeWorkspace && (
+                <div className={styles.emptyActions}>
+                  <button type="button" className={styles.primaryAction} onClick={() => setPaperPickerOpen(true)}>Add papers</button>
+                  <button type="button" className={styles.secondaryAction} onClick={createFile}>New note</button>
+                </div>
+              )}
+            </div>
+          )}
           {(activeDoc?.kind === "paper" || activeDoc?.kind === "workspacePdf") && <div className={styles.pdfStage}>{pdfError ? <div className={styles.emptyDocument}><h2>Paper unavailable</h2><p>{pdfError}</p></div> : pdfData ? <PdfViewer
                 ref={pdfViewerRef}
                 pdfDataUrl={pdfData}
-                onTextSelected={(text, page, _occurrence, _position, intent) => void askAgent({ kind: intent ?? "explain", selectedText: text, pageNumber: page })}
-                onAskAboutSelection={(text, prompt, page) => void askAgent({ kind: "question", question: prompt, selectedText: text, pageNumber: page })}
+                onTextSelected={(text, page, _occurrence, _position, intent) => askFromPage({ kind: intent ?? "explain", selectedText: text, pageNumber: page })}
+                onAskAboutSelection={(text, prompt, page) => askFromPage({ kind: "question", question: prompt, selectedText: text, pageNumber: page })}
                 onQuoteSelection={(text, page) => quoteIntoComposer(text, page)}
-                onRegionCaptured={(result) => void askAgent({ kind: "figure", imageDataUrl: result.imageDataUrl })}
+                onRegionCaptured={(result) => askFromPage({ kind: "figure", imageDataUrl: result.imageDataUrl })}
                 onHighlight={(text, page, position, color, occurrence, segments) => void makeHighlight(text, page, position, color, undefined, occurrence, segments)}
                 onNote={(text, note, page, position, color, occurrence, segments) => void makeHighlight(text, page, position, color, note, occurrence, segments)}
                 onRemoveHighlight={removeHighlight}
@@ -1154,18 +799,29 @@ export function WorkspaceShell() {
                 // surfaces read the same paper for different ends
                 positionKey={`workspace:${activeDoc.kind === "paper" ? activeDoc.paper.id : activeDoc.path}`}
               /> : <div className={styles.emptyDocument}><p>Loading PDF…</p></div>}</div>}
-          {activeDoc?.kind === "file" && <><header className={styles.editorToolbar}><div><strong>{activeDoc.path}</strong><small>{activeDoc.extension === "md" ? "Markdown" : "Text"} · editable workspace file</small></div>{activeDoc.extension === "md" && <span><button className={!preview ? styles.selected : ""} onClick={() => setPreview(false)}>Edit</button><button className={preview ? styles.selected : ""} onClick={() => setPreview(true)}>Preview</button></span>}<p><small className={editorContent === savedContent ? "" : styles.unsaved}>{editorContent === savedContent ? "Saved" : "Unsaved"}</small><button onClick={saveFile}>Save ⌘S</button></p></header><div className={styles.editorStage}>{preview && activeDoc.extension === "md" ? <article className={styles.markdown}><ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex, [rehypeHighlight, { detect: true }]]} urlTransform={(url, key) => key === "src" && activeWorkspace ? workspaceMarkdownAssetUrl(activeWorkspace.root, activeDoc.path, url) : defaultUrlTransform(url)}>{editorContent}</ReactMarkdown></article> : <textarea value={editorContent} onChange={(event) => setEditorContent(event.target.value)} spellCheck={false} />}</div></>}
+          {activeDoc?.kind === "file" && <><header className={styles.editorToolbar}><div><strong>{activeDoc.path}</strong><small>{activeDoc.extension === "md" ? "Markdown" : "Text"} · editable workspace file</small></div>{activeDoc.extension === "md" && <span role="group" aria-label="View"><button className={!preview ? styles.selected : ""} aria-pressed={!preview} onClick={() => setPreview(false)}>Edit</button><button className={preview ? styles.selected : ""} aria-pressed={preview} onClick={() => setPreview(true)}>Preview</button></span>}<p><small className={editorContent === savedContent ? "" : styles.unsaved}>{editorContent === savedContent ? "Saved" : "Unsaved"}</small><button onClick={() => void saveFile()} disabled={editorContent === savedContent} title="Save (⌘S)">Save</button></p></header><div className={styles.editorStage}>{preview && activeDoc.extension === "md" && activeWorkspace ? <MarkdownPreview root={activeWorkspace.root} path={activeDoc.path} content={editorContent} /> : <textarea value={editorContent} onChange={(event) => setEditorContent(event.target.value)} onKeyDown={(event) => { if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") { event.preventDefault(); void saveFile(); } }} spellCheck={false} aria-label={`Edit ${activeDoc.path}`} />}</div></>}
         </section>
 
         <ResizeHandle onDrag={dragAgent} onStart={startAgent} onEnd={endAgent} />
 
-        {agentOpen && (
-        <aside className={styles.agentPanel} style={{ width: agentWidth }}>
-          <header><button className={styles.collapsePanel} onClick={() => setAgentOpen(false)} title="Hide the workspace agent" aria-label="Hide the workspace agent">›</button><div><span>✦</span><p><strong>Workspace Agent</strong><small>{activeDoc ? `Working with ${activeDoc.kind === "paper" ? activeDoc.paper.name : activeDoc.path}` : "Workspace context"}</small></p></div><span className={styles.headerTools}><button type="button" className={styles.exportButton} onClick={() => setExportOpen(true)} disabled={!activeWorkspace || !messages.length} title="Export this conversation as a Markdown file, to carry to another agent or machine">⇪ Export</button><ModelPicker model={model} effort={effort} onModelChange={setModel} onEffortChange={setEffort} onConfigureCustom={() => setNotice("Configure custom models from Reader.")} /></span></header>
-          <div className={styles.messages}>{!messages.length && <div className={styles.agentWelcome}><span>✦</span><h2>Start with the decision you need to make</h2><p>I can read the open document, inspect workspace files, use your active skills, and turn an idea into an experiment handoff.</p><button onClick={() => setQuestion("Evaluate whether this idea is novel, feasible, and worth a small experiment.")}>Evaluate an idea</button><button onClick={() => setQuestion("Search for the latest related work and identify the strongest novelty risk.")}>Check latest related work</button></div>}{messages.map((message) => <article key={message.id} className={message.role === "user" ? styles.userMessage : styles.agentMessage}>{message.role === "assistant" && <span>✦</span>}<div>{message.tools && message.tools.length > 0 && <details className={styles.tools}><summary>✓ Used {message.tools.length} tool{message.tools.length === 1 ? "" : "s"}</summary>{message.tools.map((tool, index) => <p key={`${tool.name}-${index}`}><strong>{tool.name}</strong><small>{tool.detail}</small></p>)}</details>}{message.imageDataUrl && <img src={message.imageDataUrl} alt="captured figure" style={{ display: "block", maxWidth: "100%", maxHeight: 160, borderRadius: 4, marginBottom: 6 }} />}<ReactMarkdown remarkPlugins={[remarkGfm]} urlTransform={citationUrl} components={{ a: ({ href, children }) => { const cite = /^paper:(\d+)$/.exec(href ?? ""); if (cite) return <a href="#" title={`Page ${cite[1]} of the open paper`} onClick={(event) => { event.preventDefault(); followCitation(Number(cite[1]), textOf(children)); }}>{children}</a>; if (/^turn:/.test(href ?? "")) return <span>{children}</span>; return <a href={href} target="_blank" rel="noreferrer">{children}</a>; } }}>{unwrapCodedCitations(message.content) || (streaming ? "Working…" : "")}</ReactMarkdown></div></article>)}</div>
-          <footer className={styles.composerArea}><div className={styles.composer}><textarea ref={composerRef} value={question} onChange={(event) => setQuestion(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void askAgent(); } }} placeholder="Ask about the open document or workspace…" /><div><span><button onClick={() => setSkillsOpen(true)}>◆ {activeSkillIds.length} skills</button><span role="group" aria-label="Agent mode" className={styles.modeSwitch}>{([["discussion", "Discussion", "Think it through together: the conversation is the point; files are read, and at most noted in"], ["auto", "Auto", "Implement: the agent reads, edits and runs what it needs inside the workspace, as Claude Code's auto mode does"]] as [AgentMode, string, string][]).map(([value, label, hint]) => <button key={value} type="button" className={mode === value ? styles.modeOn : ""} aria-pressed={mode === value} onClick={() => setMode(value)} title={hint}>{label}</button>)}</span></span>{streaming ? <button className={styles.send} onClick={() => abortRef.current?.abort()}>■</button> : <button className={styles.send} disabled={!question.trim() || !activeWorkspace} onClick={() => void askAgent()}>↑</button>}</div></div><small>{mode === "auto" ? "Auto: the agent implements on its own inside this workspace — edits, commands, tests" : "Discussion: brainstorming with the open document, the files and the papers' Reader conversations at hand · notes may be written, nothing is built"}</small></footer>
-        </aside>
-        )}
+        {/* Mounted while collapsed too: an ask from the page, or an answer
+            still streaming, goes on without the panel drawn */}
+        <WorkspaceAgent
+          key={activeWorkspace?.id ?? "none"}
+          ref={agentRef}
+          workspace={activeWorkspace}
+          open={agentOpen}
+          width={agentWidth}
+          onCollapse={collapseAgent}
+          documentLabel={documentLabel}
+          getContext={getContext}
+          activeSkillIds={activeSkillIds}
+          onOpenSkills={openSkills}
+          onCitePaper={followCitation}
+          onFilesChanged={refreshFiles}
+          onNotice={setNotice}
+          onExported={exported}
+        />
         {!agentOpen && <CollapsedRail label="Agent" side="right" onExpand={() => setAgentOpen(true)} title="Show the workspace agent" />}
       </main>
 
@@ -1174,12 +830,7 @@ export function WorkspaceShell() {
       <CreateWorkspaceDialog open={createOpen} onClose={() => { if (workspaces.length) setCreateOpen(false); else router.replace("/"); }} onCreated={(workspace) => { const next = [...workspaces, workspace]; persist(next); switchWorkspace(workspace.id); setCreateOpen(false); }} />
       {deleteWorkspaceTarget && <DeleteWorkspaceDialog workspace={deleteWorkspaceTarget} onClose={() => setDeleteWorkspaceTarget(null)} onDelete={(deleteDirectory) => deleteWorkspace(deleteWorkspaceTarget, deleteDirectory)} />}
       {activeWorkspace && <PaperPicker open={paperPickerOpen} papers={readerTabs} existing={activeWorkspace.papers} onClose={() => setPaperPickerOpen(false)} onAdd={addPapers} />}
-      {activeWorkspace && <ExportDialog open={exportOpen} workspace={activeWorkspace} messages={messages} model={model} onClose={() => setExportOpen(false)} onExported={({ path, inside }) => {
-        // Opening the file clears the notice, so the notice comes after
-        if (inside) { void refreshFiles(); void openDocument({ id: `file:${path}`, kind: "file", path, name: path.split("/").pop() || path, extension: "md" }); }
-        setNotice(`Exported the conversation to ${path}`);
-      }} />}
-      {activeWorkspace && <CopyPapersDialog open={copyOpen} workspace={activeWorkspace} onClose={() => setCopyOpen(false)} onCopied={() => { setNotice("Selected PDFs copied into this workspace."); void refreshFiles(); }} />}
+      {activeWorkspace && <CopyPapersDialog open={copyOpen} workspace={activeWorkspace} onClose={() => setCopyOpen(false)} onCopied={() => { setNotice("Selected PDFs copied into this workspace."); refreshFiles(); }} />}
     </div>
   );
 }

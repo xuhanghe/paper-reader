@@ -1,0 +1,78 @@
+/* The Workspace's dialogs (components/WorkspaceDialogs.tsx). Colours are the
+   app's tokens from globals.css, with the Workspace's own panel greys. */
+
+.modal > label textarea { border: 1px solid #3d4852; border-radius: 9px; outline: 0; background: #101519; padding: 12px; color: var(--ink); font-size: 13px; line-height: 1.5; resize: vertical; font-family: inherit; }
+.modal > label textarea:focus { border-color: var(--accent); }
+.modalBackdrop { position: fixed; inset: 0; z-index: 120; display: grid; place-items: center; background: rgba(2,4,6,.72); backdrop-filter: blur(3px); }
+.modal { width: min(600px, calc(100vw - 32px)); max-height: calc(100vh - 48px); overflow-y: auto; border: 1px solid #46525c; border-radius: 14px; background: #171d22; box-shadow: 0 28px 80px rgba(0,0,0,.68); }
+.modal > header { display: flex; align-items: center; justify-content: space-between; padding: 20px 22px; border-bottom: 1px solid #303943; }
+.modal header small, .modal > label > span { color: #88939c; font-size: 11px; font-weight: 680; letter-spacing: .09em; }
+.modal h2 { margin: 6px 0 0; font: 24px var(--font-lora), Georgia, serif; }
+.modal header button { border: 0; background: transparent; color: var(--ink-muted); font-size: 22px; }
+.modal > label { display: flex; flex-direction: column; gap: 8px; margin: 18px 22px; }
+.modal > label input { border: 1px solid #3d4852; border-radius: 9px; outline: 0; background: #101519; padding: 12px; color: var(--ink); font-size: 13px; }
+.modal > label input:focus { border-color: var(--accent); }
+.pathInput { display: grid; grid-template-columns: minmax(0,1fr) auto; }
+.pathInput input { min-width: 0; border-radius: 7px 0 0 7px !important; }
+.pathInput button { border: 1px solid #3d4852; border-left: 0; border-radius: 0 9px 9px 0; background: #22292f; padding: 0 13px; color: #bac2c8; font-size: 12px; font-weight: 600; }
+.pathInput button:hover { color: var(--ink); }
+.pathInput input[readonly] { cursor: default; color: var(--ink-muted); }
+.nativePickerNote { margin: -10px 22px 18px; color: #84909a; font-size: 11px; }
+.zeroPaperNote { margin: -3px 22px 18px; color: #a2abb3; font-size: 12px; line-height: 1.5; }
+.zeroPaperNote strong { color: var(--accent); }
+.modal > footer { display: flex; justify-content: flex-end; gap: 9px; padding: 16px 22px; border-top: 1px solid #303943; }
+.modal > footer button { border: 1px solid #424e58; border-radius: 8px; background: #1c2328; padding: 10px 14px; color: #bbc3c9; font-size: 12px; font-weight: 600; }
+.modal > footer button.primary { border-color: var(--accent); background: var(--accent); color: #211b0e; font-weight: 650; }
+.modal > footer button:disabled { opacity: .4; }
+.lockNote, .destination { display: grid; grid-template-columns: 34px 1fr; gap: 10px; align-items: center; margin: 18px 22px; border: 1px solid #5c5131; border-radius: 9px; background: #201e15; padding: 13px; }
+.lockNote > span, .destination > span { color: var(--accent); }
+.lockNote p, .destination p { min-width: 0; display: flex; flex-direction: column; gap: 3px; margin: 0; }
+.lockNote strong, .destination strong { font-size: 13px; }
+.lockNote small { color: #a6afb6; font-size: 11px; }
+.destination code { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: #a6afb6; font-size: 11px; }
+.deleteWorkspaceModal { width: min(620px, calc(100vw - 32px)); }
+.deleteChoices { display: grid; gap: 9px; padding: 14px 16px; }
+.deleteChoices article { display: grid; grid-template-columns: 32px minmax(0,1fr) auto; gap: 10px; align-items: center; border: 1px solid var(--border); border-radius: 8px; background: #11161a; padding: 12px; }
+.deleteChoices article > span { width: 28px; height: 28px; display: grid; place-items: center; border-radius: 6px; background: #20272d; color: var(--ink-faint); font: 11px ui-monospace, SFMono-Regular, Menlo, monospace; }
+.deleteChoices article > div { min-width: 0; }
+.deleteChoices h3 { margin: 0 0 5px; color: var(--ink); font-size: 14px; }
+.deleteChoices p { margin: 0; color: #a6afb6; font-size: 12px; line-height: 1.5; }
+.deleteChoices code { display: block; overflow: hidden; margin-top: 7px; color: #84909a; font-size: 11px; white-space: nowrap; text-overflow: ellipsis; }
+.deleteChoices article > button { border: 1px solid #424e58; border-radius: 8px; background: #20272d; padding: 10px 11px; color: #bbc3c9; font-size: 12px; white-space: nowrap; }
+.deleteChoices article > button:hover { color: var(--ink); }
+.deleteChoices article.deleteDirectoryChoice { grid-template-columns: 32px minmax(0,1fr); border-color: #5a3535; background: #191313; }
+.deleteDirectoryChoice > label { grid-column: 2; display: flex; flex-direction: column; gap: 5px; }
+.deleteDirectoryChoice > label small { color: #84909a; font-size: 11px; letter-spacing: .06em; }
+.deleteDirectoryChoice > label strong { color: #f1a2a2; }
+.deleteDirectoryChoice > label input { border: 1px solid #563838; border-radius: 8px; outline: 0; background: #0f1113; padding: 11px; color: var(--ink); font-size: 13px; }
+.deleteDirectoryChoice > label input:focus { border-color: #f08080; }
+.deleteChoices article.deleteDirectoryChoice > button { grid-column: 2; justify-self: start; border-color: #794545; background: #2a1717; color: #f1a2a2; }
+.deleteChoices article > button:disabled { opacity: .4; }
+.paperModal { width: min(900px, calc(100vw - 32px)); }
+.paperPickerToolbar { display: grid; grid-template-columns: minmax(240px, .72fr) minmax(320px, 1.28fr); gap: 10px; padding: 18px 22px 10px; }
+.paperPickerToolbar select, .paperPickerToolbar input { min-width: 0; height: 44px; border: 1px solid #3d4852; border-radius: 9px; outline: 0; background: #101519; padding: 0 12px; color: var(--ink); font-size: 13px; }
+.paperPickerToolbar select:focus, .paperPickerToolbar input:focus { border-color: var(--accent); }
+.paperPickerSummary { display: flex; align-items: center; justify-content: space-between; gap: 14px; min-height: 52px; margin: 0 22px; border-bottom: 1px solid #2d363e; }
+.paperPickerSummary p { display: flex; flex-direction: column; gap: 2px; margin: 0; }
+.paperPickerSummary strong { font-size: 13px; }
+.paperPickerSummary small { color: #84909a; font-size: 11px; }
+.paperPickerSummary button { overflow: hidden; max-width: 55%; border: 1px solid #6a5c34; border-radius: 8px; background: var(--accent-faint); padding: 9px 11px; color: var(--accent-bright); font-size: 12px; font-weight: 620; white-space: nowrap; text-overflow: ellipsis; }
+.paperPickerSummary button:disabled { opacity: .5; }
+.paperPicker { max-height: 470px; overflow-y: auto; padding: 12px 22px; }
+.paperPicker > label { display: grid; grid-template-columns: 20px 40px minmax(0,1fr); gap: 11px; align-items: center; margin-bottom: 8px; border: 1px solid #303943; border-radius: 9px; background: #141a1f; padding: 11px; cursor: pointer; }
+.paperPicker > label:hover { border-color: #4a5660; background: #1a2025; }
+.paperPicker p { min-width: 0; display: flex; flex-direction: column; gap: 2px; margin: 0; }
+.paperPicker strong, .paperPicker small { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.paperPicker strong { font-size: 13px; }
+.paperPicker small { color: #84909a; font-size: 11px; }
+.paperPicker .loadMore { width: 100%; border: 1px dashed #46525c; border-radius: 9px; background: #141a1f; padding: 11px; color: #b1bac1; font-size: 12px; }
+.paperPicker .loadMore small { margin-left: 5px; }
+.empty { padding: 28px 14px; color: #a6afb6; font-size: 13px; line-height: 1.55; text-align: center; }
+.error { margin: 11px 22px; color: #f09a9a; font-size: 12px; }
+.kindPdf { width: 38px; height: 38px; display: grid; place-items: center; border: 1px solid #4a3526; border-radius: 8px; background: #30241c; color: #e4a66e; font: 10px ui-monospace, SFMono-Regular, Menlo, monospace; }
+
+@media (max-width: 760px) {
+  .paperPickerToolbar { grid-template-columns: 1fr; }
+  .paperPickerSummary { align-items: flex-start; flex-direction: column; padding: 7px 0; }
+  .paperPickerSummary button { max-width: 100%; }
+}

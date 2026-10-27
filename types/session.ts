@@ -55,19 +55,6 @@ export type ConceptEntry = {
 // Values saved before ("claude-sonnet-4-6", "codex", "custom") still parse.
 export type Model = string;
 
-// The custom API config versions before saved endpoints kept in the browser;
-// moved to the server once (lib/legacy-custom-api), still accepted by the routes
-export type CustomApiConfig = {
-  baseUrl: string;
-  apiKey: string;
-  model: string;
-  vision?: boolean;
-  // Wire format the endpoint speaks; absent in configs saved before this
-  // existed, which stay on OpenAI
-  format?: "openai" | "anthropic";
-  maxTokens?: number; // Anthropic requires one; defaults to 8192
-};
-
 // An effort level in the backend's own words — Claude's low…max, Codex's
 // reasoning efforts, an OpenCode variant — as lib/model-catalog reports them.
 // Absent: the backend's own default.
