@@ -13,6 +13,7 @@ const nextConfig: NextConfig = {
     if (process.env.NODE_ENV === "production") return [];
     return [{ source: "/_next/static/:path*", headers: [{ key: "Cache-Control", value: "no-store, must-revalidate" }] }];
   },
+  devIndicators: false,
   turbopack: {
     resolveAlias: {
       canvas: "./empty-module.ts",
