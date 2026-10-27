@@ -1,5 +1,5 @@
 import path from "node:path";
-import { listWorkspaceFiles, readWorkspaceText, resolveWorkspaceFile, writeWorkspaceText } from "@/lib/workspace-files";
+import { createWorkspaceDirectory, listWorkspaceFiles, moveWorkspaceFile, readWorkspaceText, resolveWorkspaceFile, writeWorkspaceText } from "@/lib/workspace-files";
 
 export const runtime = "nodejs";
 
@@ -12,7 +12,21 @@ export async function GET(req: Request) {
       if (url.searchParams.get("raw") === "1") {
         const { file } = await resolveWorkspaceFile(root, relative);
         const { readFile } = await import("node:fs/promises");
-        return new Response(new Uint8Array(await readFile(file)), { headers: { "Content-Type": "application/pdf", "Cache-Control": "no-store" } });
+        const contentTypes: Record<string, string> = {
+          ".pdf": "application/pdf",
+          ".png": "image/png",
+          ".jpg": "image/jpeg",
+          ".jpeg": "image/jpeg",
+          ".gif": "image/gif",
+          ".webp": "image/webp",
+          ".svg": "image/svg+xml",
+        };
+        return new Response(new Uint8Array(await readFile(file)), { headers: {
+          "Content-Type": contentTypes[path.extname(file).toLowerCase()] || "application/octet-stream",
+          "Cache-Control": "no-store",
+          "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; sandbox",
+          "X-Content-Type-Options": "nosniff",
+        } });
       }
       const content = await readWorkspaceText(root, relative);
       return Response.json({ path: relative, content });
@@ -28,6 +42,9 @@ export async function POST(req: Request) {
     const body = await req.json();
     const root = String(body.root || "");
     const relative = String(body.path || "");
+    if (body.kind === "directory") {
+      return Response.json({ ok: true, path: await createWorkspaceDirectory(root, relative) });
+    }
     const content = typeof body.content === "string" ? body.content : "";
     const extension = path.extname(relative).toLowerCase();
     if ([".pdf", ".png", ".jpg", ".jpeg", ".gif"].includes(extension)) {
@@ -55,5 +72,15 @@ export async function PUT(req: Request) {
     return Response.json({ ok: true, path: relative });
   } catch (error) {
     return Response.json({ error: error instanceof Error ? error.message : "Could not copy the PDF." }, { status: 400 });
+  }
+}
+
+export async function PATCH(req: Request) {
+  try {
+    const body = await req.json();
+    const path = await moveWorkspaceFile(String(body.root || ""), String(body.from || ""), String(body.toDirectory || ""));
+    return Response.json({ ok: true, path });
+  } catch (error) {
+    return Response.json({ error: error instanceof Error ? error.message : "Could not move the workspace file." }, { status: 400 });
   }
 }
