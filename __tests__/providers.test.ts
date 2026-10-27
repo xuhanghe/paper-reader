@@ -1,6 +1,9 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
-import { parseCustomConfig, toAnthropicMessages } from "../lib/providers.js";
+import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { codexArgs, codexExitMessage, codexStream, parseCustomConfig, toAnthropicMessages } from "../lib/providers.js";
 import { providerIdFor } from "../lib/provider-id.js";
 
 describe("providerIdFor", () => {
@@ -14,6 +17,86 @@ describe("providerIdFor", () => {
     assert.equal(providerIdFor("claude-sonnet-4-6"), "claude");
     assert.equal(providerIdFor(undefined), "claude");
     assert.equal(providerIdFor(""), "claude");
+  });
+});
+
+describe("Codex CLI argument placement", () => {
+  test("puts sandbox policy before exec for a first selection question", () => {
+    const args = codexArgs("explain this");
+    assert.ok(args.indexOf("-s") < args.indexOf("exec"));
+    assert.equal(args[args.indexOf("-s") + 1], "read-only");
+    assert.ok(args.indexOf("--ignore-user-config") > args.indexOf("exec"));
+    assert.ok(args.indexOf("--ignore-rules") > args.indexOf("exec"));
+    assert.equal(args.at(-1), "explain this");
+  });
+
+  test("never passes root-only flags to exec resume", () => {
+    const sessionId = "019c1234-1234-7000-8000-123456789abc";
+    const args = codexArgs("follow up", {
+      resumeId: sessionId,
+      cwd: "/tmp/research-workspace",
+      writable: true,
+      effort: "high",
+    });
+    const execAt = args.indexOf("exec");
+    const resumeAt = args.indexOf("resume");
+    const resumeArgs = args.slice(resumeAt + 1);
+
+    assert.ok(args.indexOf("-C") < execAt);
+    assert.ok(args.indexOf("-a") < execAt);
+    assert.ok(args.indexOf("-s") < execAt);
+    assert.equal(args[args.indexOf("-s") + 1], "workspace-write");
+    assert.ok(resumeAt > execAt);
+    assert.ok(args.indexOf("--ignore-user-config") < resumeAt);
+    assert.ok(args.indexOf("--ignore-rules") < resumeAt);
+    assert.equal(resumeArgs.includes("-s"), false);
+    assert.ok(resumeArgs.indexOf("--json") < resumeArgs.indexOf(sessionId));
+    assert.deepEqual(args.slice(-2), [sessionId, "follow up"]);
+  });
+});
+
+describe("Codex stream failures", () => {
+  test("turns a CLI crash into a visible conversation error", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "paper-reader-codex-"));
+    const fakeCodex = path.join(dir, "codex");
+    const previous = process.env.CODEX_BIN;
+    const previousHome = process.env.PAPER_READER_CODEX_HOME;
+    try {
+      await writeFile(fakeCodex, "#!/bin/sh\necho 'error: failed to load models cache: missing field base_instructions' >&2\nexit 1\n");
+      await chmod(fakeCodex, 0o755);
+      process.env.CODEX_BIN = fakeCodex;
+      process.env.PAPER_READER_CODEX_HOME = path.join(dir, "runtime");
+
+      const reader = codexStream("define command ring").getReader();
+      const decoder = new TextDecoder();
+      let output = "";
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        output += decoder.decode(value, { stream: true });
+      }
+      output += decoder.decode();
+
+      const text = output
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line).delta?.text ?? "")
+        .join("");
+      assert.match(text, /Codex exited with code 1/);
+      assert.match(text, /failed to load models cache/);
+    } finally {
+      if (previous === undefined) delete process.env.CODEX_BIN;
+      else process.env.CODEX_BIN = previous;
+      if (previousHome === undefined) delete process.env.PAPER_READER_CODEX_HOME;
+      else process.env.PAPER_READER_CODEX_HOME = previousHome;
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("selects the useful line from multiline stderr", () => {
+    const message = codexExitMessage("warning: retrying\nerror: invalid cache\nfor help, use --help\n", 1);
+    assert.match(message, /error: invalid cache/);
+    assert.doesNotMatch(message, /for help/);
   });
 });
 

@@ -26,6 +26,7 @@ import { unwrapPartials } from "@/lib/claude-stream";
 import { turnMarker } from "@/lib/citations";
 import { selectedSkillPaths } from "@/lib/skills";
 import { earlierConversation, earlierConversationSection, freshStartOnLostSession, LOST_SESSION } from "@/lib/session-recovery";
+import { decodeCodexSessionId } from "@/lib/codex-runtime";
 
 export const runtime = "nodejs";
 
@@ -157,7 +158,9 @@ export async function POST(req: Request) {
     imageFile: figureFile ?? undefined,
   }).catch(() => {});
 
-  const isResume = provider !== "custom" && typeof session_id === "string" && !!session_id;
+  const requestedSession = typeof session_id === "string" && session_id ? session_id : undefined;
+  const codexResumeId = provider === "codex" ? decodeCodexSessionId(requestedSession) : undefined;
+  const isResume = provider !== "custom" && !!requestedSession && (provider !== "codex" || !!codexResumeId);
 
   // The first message of a provider session carries the bootstrap header —
   // and, when this paper has been talked about before, the record of that
@@ -201,7 +204,7 @@ export async function POST(req: Request) {
       cleanup = () => { try { unlinkSync(tmpPath); } catch {} };
     }
     // A session Codex no longer has is started again, seeded from the record
-    const resumed = codexStream(prompt, { images, effort, resumeId: isResume ? session_id : undefined });
+    const resumed = codexStream(prompt, { images, effort, resumeId: codexResumeId });
     return streamResponse(
       teeToThread(
         freshStartOnLostSession(resumed, async () => codexStream(await freshPrompt(), { images, effort }), LOST_SESSION.codex, cleanup),

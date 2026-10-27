@@ -1,10 +1,10 @@
 import { spawn } from "child_process";
 import { sanitizeSpawnArg, effortArgs } from "./model-flags";
-import { claudeBin } from "./bin";
+import { claudeBin, codexBin } from "./bin";
+import { encodeCodexSessionId, prepareCodexEnvironment } from "./codex-runtime";
 import { codexMcpArgs } from "./mcp-config";
 import { ensureServer } from "./opencode-server";
 import { providerIdFor } from "./provider-id";
-import { codexBin } from "./bin";
 
 // Multi-provider backend. Every provider emits newline-delimited JSON with
 // {type:"content_block_delta", delta:{type:"text_delta", text}} events — the
@@ -124,22 +124,43 @@ type CodexRunOptions = {
   writable?: boolean;
 };
 
-function codexArgs(prompt: string, opts?: CodexRunOptions): string[] {
-  // `--search` is a global Codex flag, so it must precede the `exec`
-  // subcommand. Web is an always-available capability in both app surfaces.
+export function codexArgs(prompt: string, opts?: CodexRunOptions): string[] {
+  // Execution policy belongs to the root Codex parser. In particular,
+  // `codex exec resume` does not accept `-s`, even though `codex exec` does.
+  // Keep every root option before `exec` so a resumed selection conversation
+  // is parsed exactly like its first turn.
   const args = ["--search"];
   if (opts?.cwd) args.push("-C", opts.cwd);
   if (opts?.writable) args.push("-a", "never");
-  args.push("exec");
-  if (opts?.resumeId) args.push("resume", opts.resumeId);
-  // Sessions are kept (no --ephemeral) so the per-paper conversation can resume
-  args.push("--json", "--skip-git-repo-check", "-s", opts?.writable ? "workspace-write" : "read-only");
+  args.push("-s", opts?.writable ? "workspace-write" : "read-only");
   args.push(...codexMcpArgs()); // Zotero library access
   const eff = codexEffort(opts?.effort);
   if (eff) args.push("-c", `model_reasoning_effort="${eff}"`);
+
+  args.push("exec");
+  // These are documented `codex exec` automation flags. Paper Reader supplies
+  // its policy explicitly instead of inheriting a mutable interactive config.
+  args.push("--ignore-user-config", "--ignore-rules");
+  if (opts?.resumeId) args.push("resume");
+  // Sessions are kept (no --ephemeral) so the per-paper conversation can resume
+  args.push("--json", "--skip-git-repo-check");
   for (const img of opts?.images ?? []) args.push("-i", img);
+  if (opts?.resumeId) args.push(opts.resumeId);
   args.push(sanitizeSpawnArg(prompt));
   return args;
+}
+
+export function codexExitMessage(stderr: string, code: number | null): string {
+  const lines = stderr
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const detail = [...lines].reverse().find((line) =>
+    /(?:error|failed|missing|denied|not found|invalid)/i.test(line)
+  ) ?? lines.at(-1);
+  const status = code === null ? "unexpectedly" : `with code ${code}`;
+  const suffix = detail ? ` ${detail.slice(0, 500)}` : "";
+  return `Error: Codex exited ${status} before returning an answer.${suffix}`;
 }
 
 export function codexStream(
@@ -147,12 +168,47 @@ export function codexStream(
   opts?: CodexRunOptions & { onClose?: () => void }
 ): ReadableStream {
   let child: ReturnType<typeof spawn> | null = null;
+  let cancelled = false;
   return new ReadableStream({
     start(controller) {
-      const proc = spawn(codexBin(), codexArgs(prompt, opts));
+      const proc = spawn(codexBin(), codexArgs(prompt, opts), {
+        env: prepareCodexEnvironment(),
+      });
       child = proc;
       proc.stdin.end();
       let buf = "";
+      let stderr = "";
+      let sawAgentText = false;
+      let finished = false;
+      let closeCallbackCalled = false;
+
+      const runCloseCallback = () => {
+        if (closeCallbackCalled) return;
+        closeCallbackCalled = true;
+        opts?.onClose?.();
+      };
+      const enqueue = (chunk: Uint8Array) => {
+        if (finished || cancelled) return;
+        try {
+          controller.enqueue(chunk);
+        } catch {
+          // The HTTP consumer can disappear before the child process exits.
+          // Treat that exactly like stream cancellation and let close cleanup
+          // run without trying to write to an already-closed controller.
+          cancelled = true;
+        }
+      };
+      const finish = () => {
+        if (finished) return;
+        finished = true;
+        runCloseCallback();
+        if (cancelled) return;
+        try {
+          controller.close();
+        } catch {
+          // Cancellation may race the child process close event.
+        }
+      };
       // What has already been sent for each message, so an item reported while
       // it is still being written contributes only the part that is new. Codex
       // may only report finished messages, in which case this sends the whole
@@ -165,71 +221,103 @@ export function codexStream(
         const already = sent.get(key) ?? "";
         const delta = item.text.startsWith(already) ? item.text.slice(already.length) : item.text;
         sent.set(key, item.text);
-        if (delta) controller.enqueue(encodeEvent(delta));
+        if (delta) {
+          sawAgentText = true;
+          enqueue(encodeEvent(delta));
+        }
+      };
+      const processLine = (line: string) => {
+        try {
+          const ev = JSON.parse(line);
+          if (ev.type === "thread.started" && typeof ev.thread_id === "string") {
+            // Normalized session event — client captures it like claude's init
+            enqueue(encoder.encode(JSON.stringify({
+              type: "system",
+              session_id: encodeCodexSessionId(ev.thread_id),
+            }) + "\n"));
+          } else if (ev.type === "item.updated" || ev.type === "item.completed") {
+            const item = ev.item ?? {};
+            emitAgentMessage(item);
+            if (ev.type === "item.completed" && item.type !== "agent_message" && item.type !== "reasoning") {
+              const name = item.type === "web_search"
+                ? "web.search"
+                : item.type === "command_execution"
+                  ? "workspace.command"
+                  : item.type === "mcp_tool_call"
+                    ? String(item.server || "mcp") + "." + String(item.tool || "tool")
+                    : String(item.type || "tool");
+              const detail = String(item.query || item.command || item.status || "Completed").slice(0, 180);
+              enqueue(encoder.encode(JSON.stringify({ type: "tool", name, detail, status: "completed" }) + "\n"));
+            }
+          }
+        } catch {
+          // non-JSON line
+        }
       };
       proc.stdout.on("data", (chunk: Buffer) => {
         buf += chunk.toString();
         const lines = buf.split("\n");
         buf = lines.pop()!;
-        for (const line of lines) {
-          try {
-            const ev = JSON.parse(line);
-            if (ev.type === "thread.started" && typeof ev.thread_id === "string") {
-              // Normalized session event — client captures it like claude's init
-              controller.enqueue(
-                encoder.encode(JSON.stringify({ type: "system", session_id: ev.thread_id }) + "\n")
-              );
-            } else if (ev.type === "item.updated" || ev.type === "item.completed") {
-              const item = ev.item ?? {};
-              emitAgentMessage(item);
-              if (ev.type === "item.completed" && item.type !== "agent_message" && item.type !== "reasoning") {
-                const name = item.type === "web_search"
-                  ? "web.search"
-                  : item.type === "command_execution"
-                    ? "workspace.command"
-                    : item.type === "mcp_tool_call"
-                      ? String(item.server || "mcp") + "." + String(item.tool || "tool")
-                      : String(item.type || "tool");
-                const detail = String(item.query || item.command || item.status || "Completed").slice(0, 180);
-                controller.enqueue(encoder.encode(JSON.stringify({ type: "tool", name, detail, status: "completed" }) + "\n"));
-              }
-            }
-          } catch {
-            // non-JSON line
-          }
-        }
+        for (const line of lines) processLine(line);
       });
-      proc.stdout.on("end", () => { opts?.onClose?.(); controller.close(); });
-      proc.stderr.on("data", (d: Buffer) => console.error("[codex stderr]", d.toString().slice(0, 400)));
+      proc.stdout.on("end", () => {
+        if (buf.trim()) processLine(buf);
+        buf = "";
+      });
+      proc.stderr.on("data", (d: Buffer) => {
+        const text = d.toString();
+        stderr = (stderr + text).slice(-4000);
+        console.error("[codex stderr]", text.slice(0, 400));
+      });
+      proc.on("close", (code) => {
+        if (code !== 0) {
+          enqueue(encodeEvent(`${sawAgentText ? "\n\n" : ""}${codexExitMessage(stderr, code)}`));
+        } else if (!sawAgentText) {
+          const message = stderr.trim()
+            ? codexExitMessage(stderr, code)
+            : "Error: Codex finished without returning an answer.";
+          enqueue(encodeEvent(message));
+        }
+        finish();
+      });
       proc.on("error", (err) => {
-        opts?.onClose?.();
         console.error("[codex spawn error]", err);
-        controller.enqueue(encodeEvent("Error: could not run the codex CLI. Is it installed and logged in?"));
-        controller.close();
+        enqueue(encodeEvent("Error: could not run the Codex CLI. Is it installed and logged in?"));
+        finish();
       });
     },
     // Stopping an answer has to stop the model too; a child left running
     // finishes the reply nobody will read, on the reader's own machine
     cancel() {
+      cancelled = true;
       if (!child || child.killed) return;
       const proc = child;
       proc.kill("SIGTERM");
-      setTimeout(() => { if (!proc.killed) proc.kill("SIGKILL"); }, 2000).unref?.();
+      setTimeout(() => {
+        if (proc.exitCode === null && proc.signalCode === null) proc.kill("SIGKILL");
+      }, 2000).unref?.();
     },
   });
 }
 
 export async function codexComplete(prompt: string, effort?: unknown): Promise<string> {
   return new Promise((resolve, reject) => {
-    const proc = spawn(codexBin(), codexArgs(prompt, { effort }));
+    const proc = spawn(codexBin(), codexArgs(prompt, { effort }), {
+      env: prepareCodexEnvironment(),
+    });
     proc.stdin.end();
     let out = "";
+    let stderr = "";
     const texts: string[] = [];
     proc.stdout.on("data", (c: Buffer) => { out += c.toString(); });
-    proc.stderr.on("data", (d: Buffer) => console.error("[codex stderr]", d.toString().slice(0, 400)));
+    proc.stderr.on("data", (d: Buffer) => {
+      const text = d.toString();
+      stderr = (stderr + text).slice(-4000);
+      console.error("[codex stderr]", text.slice(0, 400));
+    });
     proc.on("error", reject);
     proc.on("close", (code) => {
-      if (code !== 0) return reject(new Error(`codex exited with ${code}`));
+      if (code !== 0) return reject(new Error(codexExitMessage(stderr, code)));
       for (const line of out.split("\n")) {
         try {
           const ev = JSON.parse(line);

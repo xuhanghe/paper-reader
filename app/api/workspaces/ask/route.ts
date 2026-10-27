@@ -14,6 +14,7 @@ import { claudePermissionMode, modeDirective, parseAgentMode } from "@/lib/works
 import { chatHistorySection, freshStartOnLostSession, LOST_SESSION, parseChatHistory } from "@/lib/session-recovery";
 import { selectedSkillPaths } from "@/lib/skills";
 import { listWorkspaceFiles, validateWorkspaceRoot } from "@/lib/workspace-files";
+import { decodeCodexSessionId } from "@/lib/codex-runtime";
 
 export const runtime = "nodejs";
 
@@ -82,10 +83,11 @@ User request: ${request}`;
   const history = chatHistorySection(parseChatHistory(body.history));
   const freshPrompt = () => (history ? prompt.replace("\n\nUser request: ", `\n\n${history}\n\nUser request: `) : prompt);
   if (provider === "codex") {
+    const resumeId = decodeCodexSessionId(body.session_id);
     const codexOpts = { images: imageFile ? [imageFile] : undefined, cwd: root, writable: true, effort: body.effort };
     const resumed = codexStream(prompt, {
       ...codexOpts,
-      resumeId: isResume ? body.session_id : undefined,
+      resumeId,
     });
     return streamResponse(freshStartOnLostSession(resumed, async () => codexStream(freshPrompt(), codexOpts), LOST_SESSION.codex, cleanupImage));
   }
