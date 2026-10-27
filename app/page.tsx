@@ -11,13 +11,16 @@ import { ExplainPanel } from "@/components/AskPanel";
 import { ZoteroLibrary } from "@/components/ZoteroLibrary";
 import { SaveToZoteroModal } from "@/components/SaveToZoteroModal";
 import { OpenUrlModal } from "@/components/OpenUrlModal";
-import { CustomApiConfig, DocType } from "@/types/session";
-import { CustomApiModal } from "@/components/CustomApiModal";
-import { ModelPicker } from "@/components/ModelPicker";
+import type { DocType } from "@/types/session";
+import { AgentPicker } from "@/components/AgentPicker";
+import { loadModelCatalog } from "@/hooks/useModelCatalog";
+import { migrateLegacyCustomApi } from "@/lib/legacy-custom-api";
 import { MaterialTabs, MaterialTab } from "@/components/MaterialTabs";
 import { DEFAULT_HIGHLIGHT_COLOR } from "@/lib/highlight-colors";
 import { createZoteroHighlight } from "@/lib/zotero-highlight-api";
 import { providerIdFor } from "@/lib/provider-id";
+import { readLines } from "@/lib/ndjson";
+import { parseAgentEvent } from "@/lib/agent-events";
 import { RegionResult } from "@/hooks/useRegionDrag";
 import type { PdfViewerHandle, AskedPassage, SelectionSegment } from "@/components/PdfViewer";
 import type { PanelScroll } from "@/components/AskPanel";
@@ -41,8 +44,6 @@ const PdfViewer = dynamic(() => import("@/components/PdfViewer").then((m) => m.P
 const HtmlViewer = dynamic(() => import("@/components/HtmlViewer").then((m) => m.HtmlViewer), {
   ssr: false,
 });
-
-const CUSTOM_API_KEY = "paper-reader:custom-api";
 
 const LAYOUT_KEY = "paper-reader:layout";
 const SETUP_SEEN_KEY = "paper-reader:setup-seen";
@@ -76,15 +77,6 @@ function loadLayout(): Layout {
 const NO_SUBSCRIBE = () => () => {};
 const useIsClient = () => useSyncExternalStore(NO_SUBSCRIBE, () => true, () => false);
 
-function loadCustomApi(): CustomApiConfig | null {
-  if (typeof window === "undefined") return null;
-  try {
-    const raw = localStorage.getItem(CUSTOM_API_KEY);
-    return raw ? (JSON.parse(raw) as CustomApiConfig) : null;
-  } catch {
-    return null;
-  }
-}
 
 
 export default function Home() {
@@ -162,8 +154,9 @@ export default function Home() {
   const [urlModalOpen, setUrlModalOpen] = useState(false);
   const [libraryRefresh, setLibraryRefresh] = useState(0);
   const bumpLibraryRefresh = useCallback(() => setLibraryRefresh((v) => v + 1), []);
-  const [customApi, setCustomApi] = useState<CustomApiConfig | null>(loadCustomApi);
-  const [customApiModalOpen, setCustomApiModalOpen] = useState(false);
+  // A custom API saved by an older version, in this browser, moves to the
+  // server's endpoint list once
+  useEffect(() => migrateLegacyCustomApi(() => void loadModelCatalog()), []);
   const [skillsOpen, setSkillsOpen] = useState(false);
   const [setupOpen, setSetupOpen] = useState(false);
   // Opened by itself once: a machine with no library and no agent has a
@@ -608,7 +601,6 @@ export default function Home() {
               previous: opts.force ? [] : previous,
               model,
               effort: state.mapEffort || "low",
-              custom: model === "custom" ? customApi : undefined,
             }),
           });
           const data = await res.json();
@@ -644,7 +636,7 @@ export default function Home() {
       summaryRuns.current.set(annotationId, { running });
       return running;
     },
-    [readPaper, customApi, setTakeaways]
+    [readPaper, setTakeaways]
   );
 
   // Opening the Concepts tab: catch up threads never summarised, one at a
@@ -708,7 +700,6 @@ export default function Home() {
             annotation_id: annotationId,
             model: session.model,
             effort: session.effort,
-            custom: session.model === "custom" ? customApi : undefined,
             session_id: session.providerSessions?.[provider],
             skills: activeSkillIds,
           }),
@@ -720,43 +711,32 @@ export default function Home() {
           return;
         }
 
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
         let sessionCaptured = false;
-
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          const chunk = decoder.decode(value, { stream: true });
-
-          const lines = chunk.split("\n").filter((l) => l.trim());
-          for (const line of lines) {
-            try {
-              const event = JSON.parse(line);
-              // Capture the provider session id — the fused paper conversation
-              if (event.type === "turn" && typeof event.turn === "number") {
-                // What the model will cite this ask as, if it points back at it
-                markTurn(annotationId, event.turn, forPaper);
-              } else if (!sessionCaptured && event.type === "system" && event.session_id) {
-                setProviderSession(provider, event.session_id, forPaper);
-                sessionCaptured = true;
-              } else if (event.type === "content_block_delta" && event.delta?.type === "text_delta") {
-                accumulated += event.delta.text;
-                updateLastAssistantMessage(annotationId, accumulated, forPaper);
-              } else if (event.type === "assistant" && event.message?.content) {
-                for (const block of event.message.content) {
-                  if (block.type === "text") accumulated += block.text;
-                }
-                updateLastAssistantMessage(annotationId, accumulated, forPaper);
-              } else if (event.type === "result" && event.result && !accumulated) {
-                accumulated = typeof event.result === "string" ? event.result : "";
-                updateLastAssistantMessage(annotationId, accumulated, forPaper);
-              }
-            } catch {
-              // non-JSON line, skip
+        // A line can arrive split across two chunks: the shared reader keeps
+        // the unfinished tail, so no event is dropped at a chunk boundary
+        await readLines(res.body, (line) => {
+          const event = parseAgentEvent(line);
+          if (!event) return;
+          // Capture the provider session id — the fused paper conversation
+          if (event.type === "turn" && typeof event.turn === "number") {
+            // What the model will cite this ask as, if it points back at it
+            markTurn(annotationId, event.turn, forPaper);
+          } else if (!sessionCaptured && event.type === "system" && event.session_id) {
+            setProviderSession(provider, event.session_id, forPaper);
+            sessionCaptured = true;
+          } else if (event.type === "content_block_delta" && event.delta?.type === "text_delta") {
+            accumulated += event.delta.text ?? "";
+            updateLastAssistantMessage(annotationId, accumulated, forPaper);
+          } else if (event.type === "assistant" && Array.isArray(event.message?.content)) {
+            for (const block of event.message.content) {
+              if (block.type === "text") accumulated += block.text ?? "";
             }
+            updateLastAssistantMessage(annotationId, accumulated, forPaper);
+          } else if (event.type === "result" && event.result && !accumulated) {
+            accumulated = typeof event.result === "string" ? event.result : "";
+            updateLastAssistantMessage(annotationId, accumulated, forPaper);
           }
-        }
+        });
       } catch (err) {
         // Stopping is a choice, not a failure — keep whatever arrived
         if (!(err instanceof DOMException && err.name === "AbortError")) {
@@ -777,7 +757,7 @@ export default function Home() {
         }
       }
     },
-    [session.model, session.effort, session.pdfName, session.providerSessions, paperId, customApi, activeSkillIds, updateLastAssistantMessage, setProviderSession, markTurn, summarizeThread]
+    [session.model, session.effort, session.pdfName, session.providerSessions, paperId, activeSkillIds, updateLastAssistantMessage, setProviderSession, markTurn, summarizeThread]
   );
 
   // Following a citation the model wrote.
@@ -1164,7 +1144,6 @@ export default function Home() {
           paper_id: paperId,
           model: mapModel,
           effort: session.mapEffort || session.effort,
-          custom: mapModel === "custom" ? customApi : undefined,
         }),
       });
       const data = await res.json();
@@ -1178,7 +1157,7 @@ export default function Home() {
     } finally {
       setMindmapLoading(false);
     }
-  }, [session.model, session.effort, session.mapModel, session.mapEffort, paperId, customApi, setMindmap]);
+  }, [session.model, session.effort, session.mapModel, session.mapEffort, paperId, setMindmap]);
 
   // Initialize the paper's context store once per paper: cache the extracted
   // text as paper.md (agentic models read it with file tools), then upload
@@ -1355,22 +1334,20 @@ export default function Home() {
   );
 
   const explainModelControls = (
-    <ModelPicker
-      model={session.model}
-      effort={session.effort || "high"}
-      onModelChange={(m) => { setModel(m); if (m === "custom" && !customApi) setCustomApiModalOpen(true); }}
-      onEffortChange={setEffort}
-      onConfigureCustom={() => setCustomApiModalOpen(true)}
+    <AgentPicker
+      label="Model for questions"
+      value={session.model}
+      effort={session.effort}
+      onChange={(model, effort) => { setModel(model); setEffort(effort); }}
     />
   );
 
   const mapModelControls = (
-    <ModelPicker
-      model={session.mapModel || session.model}
-      effort={session.mapEffort || session.effort || "high"}
-      onModelChange={(m) => { setMapModel(m); if (m === "custom" && !customApi) setCustomApiModalOpen(true); }}
-      onEffortChange={setMapEffort}
-      onConfigureCustom={() => setCustomApiModalOpen(true)}
+    <AgentPicker
+      label="Model for the paper map"
+      value={session.mapModel || session.model}
+      effort={session.mapEffort || session.effort}
+      onChange={(model, effort) => { setMapModel(model); setMapEffort(effort); }}
     />
   );
 
@@ -1523,18 +1500,6 @@ export default function Home() {
           <span className="max-w-[420px]">{citeMiss}</span>
           <button onClick={() => setCiteMiss(null)} className="btn-icon w-5 h-5 leading-none">✕</button>
         </div>
-      )}
-
-      {customApiModalOpen && (
-        <CustomApiModal
-          initial={customApi}
-          onSave={(cfg) => {
-            setCustomApi(cfg);
-            try { localStorage.setItem(CUSTOM_API_KEY, JSON.stringify(cfg)); } catch {}
-            setCustomApiModalOpen(false);
-          }}
-          onClose={() => setCustomApiModalOpen(false)}
-        />
       )}
 
       {/* Main area */}

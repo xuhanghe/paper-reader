@@ -50,10 +50,13 @@ export type ConceptEntry = {
   edited?: boolean;
 };
 
-// "claude-*" ids run via the claude CLI; "codex" via the codex CLI;
-// "custom" via a user-configured OpenAI-compatible endpoint
+// A model choice, provider and model in one string: "claude:opus",
+// "codex:gpt-5.2-codex", "custom:<endpoint>:<model>" — see lib/model-spec.
+// Values saved before ("claude-sonnet-4-6", "codex", "custom") still parse.
 export type Model = string;
 
+// The custom API config versions before saved endpoints kept in the browser;
+// moved to the server once (lib/legacy-custom-api), still accepted by the routes
 export type CustomApiConfig = {
   baseUrl: string;
   apiKey: string;
@@ -65,7 +68,10 @@ export type CustomApiConfig = {
   maxTokens?: number; // Anthropic requires one; defaults to 8192
 };
 
-export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
+// An effort level in the backend's own words — Claude's low…max, Codex's
+// reasoning efforts, an OpenCode variant — as lib/model-catalog reports them.
+// Absent: the backend's own default.
+export type Effort = string;
 
 export type MindmapNode = {
   label: string;

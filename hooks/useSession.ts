@@ -4,13 +4,15 @@ import { SessionState, Annotation, ConceptEntry, Model, Effort, Mindmap, DocType
 import { makeLabel } from "@/lib/session-utils";
 import { cacheDocument, getCachedDocument } from "@/lib/document-cache";
 import { sessionIdFor, legacySessionIdFor } from "@/lib/session-id";
+import { uid } from "@/lib/uid";
 
 const DEFAULT_STATE: SessionState = {
   pdfName: "",
   pdfDataUrl: "",
   annotations: [],
   concepts: [],
-  model: "claude-sonnet-4-6",
+  // Sonnet, the way the CLI names its current one; sessions keep what they chose
+  model: "claude:sonnet",
   effort: "high",
   mindmap: null,
   highlights: [],
@@ -314,7 +316,7 @@ export function useSession() {
   }, []);
 
   const addHighlight = useCallback((partial: Omit<Highlight, "id" | "createdAt">): string => {
-    const id = typeof crypto !== "undefined" ? crypto.randomUUID() : Math.random().toString(36).slice(2);
+    const id = uid();
     setSession((s) => ({
       ...s,
       highlights: [...(s.highlights || []), { ...partial, id, createdAt: Date.now() }],
@@ -390,7 +392,7 @@ export function useSession() {
     setSession((s) => ({ ...s, model }));
   }, []);
 
-  const setEffort = useCallback((effort: Effort) => {
+  const setEffort = useCallback((effort: Effort | undefined) => {
     setSession((s) => ({ ...s, effort }));
   }, []);
 
@@ -398,7 +400,7 @@ export function useSession() {
     setSession((s) => ({ ...s, mapModel }));
   }, []);
 
-  const setMapEffort = useCallback((mapEffort: Effort) => {
+  const setMapEffort = useCallback((mapEffort: Effort | undefined) => {
     setSession((s) => ({ ...s, mapEffort }));
   }, []);
 
@@ -408,7 +410,7 @@ export function useSession() {
   }, [applyTo]);
 
   const addAnnotation = useCallback((partial: Omit<Annotation, "id" | "createdAt" | "label">): string => {
-    const id = typeof crypto !== "undefined" ? crypto.randomUUID() : Math.random().toString(36).slice(2);
+    const id = uid();
     const firstUserMessage = partial.messages.find((m) => m.role === "user")?.content;
     const label = makeLabel(partial.selectedText || firstUserMessage || "Figure region", partial.type);
     const annotation: Annotation = { ...partial, id, label, createdAt: Date.now() };
