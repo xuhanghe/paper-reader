@@ -644,6 +644,13 @@ mark.pr-quoted:hover {
   padding-left: 1.4em;
   margin-bottom: 0.8em;
 }
+/* Tailwind's reset takes the markers off every list; an answer's lists are
+   lists, and read as ones */
+.prose-paper ul { list-style: disc; }
+.prose-paper ol { list-style: decimal; }
+.prose-paper ul ul { list-style: circle; }
+.prose-paper li::marker { color: var(--ink-faint); }
+.prose-paper .contains-task-list { padding-left: 0.3em; list-style: none; }
 .prose-paper li {
   margin-bottom: 0.25em;
 }
