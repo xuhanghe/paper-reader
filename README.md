@@ -116,6 +116,17 @@ chart, table or diagram to ask about it directly.
 **Web pages.** Paste a URL to read a page in the reader, with the same highlight
 layer, and save it to Zotero as a snapshot if you want to keep it.
 
+**A workspace for what comes after reading.** The Workspace — the switch at the
+top — pairs a project folder with papers linked from Zotero (linked, not copied)
+and an agent that works in that folder. It reads the open document and the
+files, draws on what you asked about each paper in the Reader, and in *Auto*
+mode edits and runs what the work needs; in *Discussion* it thinks with you and
+at most writes notes. Each workspace keeps its own conversation, its own agent
+and model, and the documents you left open, and an answer keeps streaming into
+its workspace while you look at another. Markdown notes edit and preview in
+place, and a conversation exports to a Markdown file for another agent or
+machine.
+
 ---
 
 ## Requirements
@@ -190,17 +201,34 @@ isn't there, nothing changes.
 
 ## Providers
 
-Pick one per paper from the model dropdown; each keeps its own conversation.
+The agent, its model and its effort are chosen with the picker in a panel's
+header — the Reader's questions, the paper map and each workspace's agent keep
+their own choice. What it offers is what each backend reports, not a list built
+into the app: the `claude` CLI's models with the effort levels each one takes,
+Codex's models and reasoning efforts (from `codex app-server`), OpenCode's
+providers and their variants, and each custom endpoint's own model list. Any
+other model id can be typed in. Each provider keeps its own conversation, so
+switching to another and back resumes where you were.
 
 | Provider | How it runs | Notes |
 |---|---|---|
-| **Claude** (Haiku / Sonnet / Opus / Fable) | `claude` CLI | Reads the paper text from disk as a file, so long papers cost nothing extra per turn |
-| **Codex** | `codex` CLI | Same agentic file access |
+| **Claude Code** | `claude` CLI | Reads the paper text from disk as a file, so long papers cost nothing extra per turn |
+| **Codex** | `codex` CLI | Same agentic file access, in a Codex home of its own |
 | **OpenCode** | headless HTTP server | Started on first use, adopted if already running, shut down when idle and on exit |
-| **Custom API** | direct HTTP | Speaks OpenAI *or* Anthropic — pick the format in the dialog |
+| **Custom endpoint** | direct HTTP | Any OpenAI-compatible or Anthropic Messages endpoint — as many as you like |
 
-The 🌐 toggle turns on web search where the provider supports it. Reasoning
-effort is selectable for everything except Custom API.
+Custom endpoints are added from the picker (＋ Add endpoint), with presets for
+OpenAI, Anthropic, OpenRouter, Google Gemini, DeepSeek, Groq, Mistral, xAI,
+Ollama and LM Studio. *Check connection* asks the endpoint for its models with
+the URL and key as typed, before anything is saved. Endpoints and their keys
+are kept by the server in `.paper-reader-endpoints.json` in the data folder,
+readable only by you; a key is never sent back to the browser. A custom API set
+up in an older version moves there by itself.
+
+The 🌐 toggle turns on web search where the provider supports it. Effort levels
+are the backend's own words — Claude's low … max, Codex's minimal … xhigh,
+OpenCode's variants; a custom endpoint gets one only when its model list says
+the model takes it (OpenRouter's reasoning models do).
 
 OpenCode gets a full lifecycle rather than a spawn per question: `opencode run`
 hung indefinitely on one of two trivial probes during testing, which would have
@@ -222,7 +250,7 @@ All optional, in `.env.local`:
 | `ZOTERO_MCP_BIN` | `~/.local/bin/zotero-mcp` | Where `zotero-mcp` lives |
 | `CLAUDE_BIN` / `CODEX_BIN` / `OPENCODE_BIN` | looked up on `PATH` | Point at a CLI explicitly when the server's `PATH` can't find it |
 | `OPENCODE_PORT` | `4599` | Port for the headless server |
-| `OPENCODE_MODEL` | server default | `provider/model` override |
+| `OPENCODE_MODEL` | server default | `provider/model` used when OpenCode's default is picked |
 | `OPENCODE_IDLE_MS` | `900000` | Shut the server down after this long idle |
 | `OPENCODE_TIMEOUT_MS` | `180000` | Give up on a single answer after this long |
 
@@ -275,6 +303,8 @@ matcher paints highlights into HTML snapshots inside their iframe.
 app/
   page.tsx              the reader — panels, session, highlight and Zotero wiring
   api/ask/              the one endpoint every question goes through
+  api/models/           the models and efforts each backend reports
+  api/endpoints/        saved custom endpoints, and checking one
   api/zotero/           library, attachments, notes, annotations
   api/sessions/         per-paper state
   api/paper/            text extraction and page snapshots
@@ -286,10 +316,18 @@ components/
   HtmlViewer.tsx        sandboxed snapshot reader with the same highlight layer
   MindmapSidebar.tsx    paper map and notes column
   ZoteroLibrary.tsx     collection browser
-  ExplainPanel.tsx      the conversation
+  AskPanel.tsx          the conversation
+  MarkdownAnswer.tsx    how every answer is drawn, citations included
+  AgentPicker.tsx       agent, model and effort
+  WorkspaceShell.tsx    the Workspace: workspaces, project tree, documents
+  WorkspaceAgent.tsx    the Workspace's agent
 lib/
   highlight-dom.ts      whitespace-insensitive passage matching and painting
   providers.ts          claude / codex / opencode / custom
+  model-spec.ts         a model choice as one string: claude:opus, codex:gpt-5.5, custom:<endpoint>:<model>
+  model-catalog.ts      asking each backend for its models and efforts
+  endpoints.ts          the saved custom endpoints
+  workspace-chat.ts     the Workspace agent's conversations, per workspace
   opencode-server.ts    headless server lifecycle
   mcp-config.ts         Zotero MCP, rendered per provider
   session-store.ts      the per-paper directory layout
@@ -368,8 +406,9 @@ Worth knowing before you rely on them:
 - **A trashed item can reappear in the sidebar until Zotero syncs.** The list is
   read from the local Zotero API but the trashing goes through zotero.org, so ↻
   before the sync lands will show it again. The sidebar says so when it happens.
-- **`/api/explain`, `/api/explain-image` and `/api/followup` are dead.** Nothing
-  calls them since everything moved to `/api/ask`; they are still in the build.
+- **A model list is as fresh as its last answer.** Each backend is asked when a
+  page first goes idle and the answer is kept for ten minutes; ↻ in the picker
+  asks again — after installing a CLI or signing in, say.
 
 ---
 
