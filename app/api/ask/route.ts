@@ -1,10 +1,9 @@
-import { spawn } from "child_process";
 import path from "node:path";
 import { writeFileSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { effortArgs, sanitizeSpawnArg } from "@/lib/model-flags";
-import { claudeMcpArgs } from "@/lib/mcp-config";
-import { resolveProvider, parseCustomConfig, codexStream, customStream, opencodeStream, streamResponse } from "@/lib/providers";
+import { claudeStream, codexStream, customConfigFor, customStream, opencodeStream, resolveProvider, streamResponse } from "@/lib/providers";
+import { effortFor } from "@/lib/model-catalog";
+import { createLineSplitter, parseJsonLine } from "@/lib/ndjson";
 import { buildSessionBootstrap, buildAskMessage } from "@/lib/prompts";
 import {
   appendThread,
@@ -21,7 +20,6 @@ import {
   sessionRelativeFile,
   countAsks,
 } from "@/lib/session-store";
-import { claudeBin } from "@/lib/bin";
 import { unwrapPartials } from "@/lib/claude-stream";
 import { turnMarker } from "@/lib/citations";
 import { selectedSkillPaths } from "@/lib/skills";
@@ -43,9 +41,18 @@ type TeeOpts = { paperId: string; annotationId?: string; kind?: string; turn?: n
 // then append it to the paper's thread.jsonl
 function teeToThread(source: ReadableStream, opts: TeeOpts): ReadableStream {
   const decoder = new TextDecoder();
-  let carry = "";
   let acc = "";
   let resultText = "";
+  const lines = createLineSplitter((line) => {
+    const ev = parseJsonLine(line) as { type?: string; delta?: { type?: string; text?: string }; message?: { content?: { type?: string; text?: string }[] }; result?: unknown } | undefined;
+    if (ev?.type === "content_block_delta" && ev.delta?.type === "text_delta") {
+      acc += ev.delta.text ?? "";
+    } else if (ev?.type === "assistant" && Array.isArray(ev.message?.content)) {
+      for (const b of ev.message.content) if (b.type === "text") acc += b.text ?? "";
+    } else if (ev?.type === "result" && typeof ev.result === "string") {
+      resultText = ev.result;
+    }
+  });
   let persisted = false;
   const persist = () => {
     if (persisted) return;
@@ -72,25 +79,10 @@ function teeToThread(source: ReadableStream, opts: TeeOpts): ReadableStream {
       },
       transform(chunk, controller) {
         controller.enqueue(chunk);
-        carry += decoder.decode(chunk as BufferSource, { stream: true });
-        const lines = carry.split("\n");
-        carry = lines.pop()!;
-        for (const line of lines) {
-          try {
-            const ev = JSON.parse(line);
-            if (ev.type === "content_block_delta" && ev.delta?.type === "text_delta") {
-              acc += ev.delta.text;
-            } else if (ev.type === "assistant" && ev.message?.content) {
-              for (const b of ev.message.content) if (b.type === "text") acc += b.text;
-            } else if (ev.type === "result" && typeof ev.result === "string") {
-              resultText = ev.result;
-            }
-          } catch {
-            // partial line
-          }
-        }
+        lines.push(decoder.decode(chunk as BufferSource, { stream: true }));
       },
       flush() {
+        lines.end();
         persist();
       },
       // Stopping an answer cancels this stream, and cancel is not flush — so
@@ -204,10 +196,10 @@ export async function POST(req: Request) {
       cleanup = () => { try { unlinkSync(tmpPath); } catch {} };
     }
     // A session Codex no longer has is started again, seeded from the record
-    const resumed = codexStream(prompt, { images, effort, resumeId: codexResumeId });
+    const resumed = codexStream(prompt, { images, model, effort, resumeId: codexResumeId });
     return streamResponse(
       teeToThread(
-        freshStartOnLostSession(resumed, async () => codexStream(await freshPrompt(), { images, effort }), LOST_SESSION.codex, cleanup),
+        freshStartOnLostSession(resumed, async () => codexStream(await freshPrompt(), { images, model, effort }), LOST_SESSION.codex, cleanup),
         teeOpts
       )
     );
@@ -216,6 +208,7 @@ export async function POST(req: Request) {
   if (provider === "opencode") {
     const opencodeOpts = {
       images: image_base64 ? [{ mime: "image/png", dataUrl: String(image_base64) }] : undefined,
+      model,
       effort,
       webSearch: true,
       title: typeof paper_title === "string" ? paper_title : undefined,
@@ -230,7 +223,8 @@ export async function POST(req: Request) {
   }
 
   if (provider === "custom") {
-    const cfg = parseCustomConfig(custom);
+    // A saved endpoint, read here with its key; see lib/endpoints
+    const cfg = await customConfigFor(model, custom);
     if (!cfg) return new Response("custom API is not configured", { status: 400 });
     const mindmap = await readMindmapFile(paper_id);
     const paperText = (await readPaperText(paper_id)) || "";
@@ -267,74 +261,22 @@ export async function POST(req: Request) {
       content.push({ type: "text", text: message });
       messages.push({ role: "user", content: content.length > 1 ? content : message });
     }
-    return streamResponse(teeToThread(customStream(cfg, messages), teeOpts));
+    return streamResponse(teeToThread(customStream({ ...cfg, effort: effortFor(model, effort) }, messages), teeOpts));
   }
 
-  // claude CLI
-  const modelFlag = typeof model === "string" && model.startsWith("claude") ? model : "claude-sonnet-4-6";
-  const useStdin = !!base64Data;
-  let child: ReturnType<typeof spawn> | null = null;
-  const stopChild = () => {
-    if (!child || child.killed) return;
-    child.kill("SIGTERM");
-    // The CLI ignores SIGTERM while a request is in flight often enough to
-    // matter: a stopped answer that keeps generating costs tokens and CPU
-    const proc = child;
-    setTimeout(() => { if (!proc.killed) proc.kill("SIGKILL"); }, 2000).unref?.();
-  };
-  req.signal.addEventListener("abort", stopChild);
-
-  // One run of the CLI: resuming the paper's session, or starting a fresh one
-  const spawnClaude = (text: string, resume: boolean, onStderr?: (chunk: string) => void): ReadableStream => {
-    const cleanPrompt = sanitizeSpawnArg(text);
-    const args = [
-      "-p", ...(useStdin ? [] : [cleanPrompt]),
-      ...(resume ? ["--resume", session_id] : []),
-      "--model", modelFlag,
-      ...effortArgs(effort),
-      "--output-format", "stream-json",
-      // Without this the CLI only reports whole messages, so an answer appears
-      // in one lump at the end — and stopping it leaves an empty bubble even
-      // though the model had already written most of the reply
-      "--include-partial-messages",
-      ...(useStdin ? ["--input-format", "stream-json"] : []),
-      "--verbose",
-      "--dangerously-skip-permissions",
-      ...claudeMcpArgs(), // Zotero library access
-    ];
-    return new ReadableStream({
-      start(controller) {
-        const proc = spawn(claudeBin(), args);
-        child = proc;
-        if (useStdin) {
-          proc.stdin.write(
-            JSON.stringify({
-              type: "user",
-              message: {
-                role: "user",
-                content: [
-                  { type: "image", source: { type: "base64", media_type: "image/png", data: base64Data } },
-                  { type: "text", text: cleanPrompt },
-                ],
-              },
-            }) + "\n"
-          );
-        }
-        proc.stdin.end();
-        proc.stdout.on("data", (c: Buffer) => controller.enqueue(c));
-        proc.stdout.on("end", () => controller.close());
-        proc.stderr.on("data", (d: Buffer) => { const chunk = d.toString(); onStderr?.(chunk); console.error("[claude stderr]", chunk.slice(0, 400)); });
-        proc.on("error", (err) => { console.error("[claude spawn error]", err); controller.error(err); });
-      },
-      cancel() {
-        stopChild();
-      },
-    });
-  };
-  // A session the CLI no longer has — its transcript cleaned up, the id stale
-  // — is started again, seeded from the record; the failed start is never shown
+  // claude CLI. A session the CLI no longer has — its transcript cleaned up,
+  // the id stale — is started again, seeded from the record; the failed start
+  // is never shown
   let stderr = "";
-  const resumed = spawnClaude(prompt, isResume, (chunk) => { stderr = (stderr + chunk).slice(-2000); });
-  const stream = freshStartOnLostSession(resumed, async () => spawnClaude(await freshPrompt(), false), (output) => LOST_SESSION.claude(output, stderr));
+  const runClaude = (text: string, resume: boolean) =>
+    claudeStream(text, {
+      model,
+      effort,
+      resumeId: resume ? session_id : undefined,
+      imageBase64: base64Data,
+      onStderr: (chunk) => { stderr = (stderr + chunk).slice(-2000); },
+      signal: req.signal,
+    });
+  const stream = freshStartOnLostSession(runClaude(prompt, isResume), async () => runClaude(await freshPrompt(), false), (output) => LOST_SESSION.claude(output, stderr));
   return streamResponse(teeToThread(unwrapPartials(stream), teeOpts));
 }

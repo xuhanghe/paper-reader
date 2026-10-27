@@ -1,8 +1,8 @@
 import { spawn } from "child_process";
 import { buildMindmapPrompt } from "@/lib/prompts";
 import { extractMindmapJson } from "@/lib/mindmap-utils";
-import { effortArgs, sanitizeSpawnArg } from "@/lib/model-flags";
-import { resolveProvider, parseCustomConfig, codexComplete, customComplete, opencodeComplete } from "@/lib/providers";
+import { sanitizeSpawnArg } from "@/lib/model-flags";
+import { claudeModelArgs, completeWith, resolveProvider } from "@/lib/providers";
 import { writeMindmapFile } from "@/lib/session-store";
 import { claudeBin } from "@/lib/bin";
 
@@ -32,29 +32,20 @@ export async function POST(req: Request) {
     return Response.json({ error: "paper_text is required" }, { status: 400 });
   }
 
-  const modelFlag = model || "claude-sonnet-4-6";
   const prompt = sanitizeSpawnArg(buildMindmapPrompt(paper_text));
 
   const provider = resolveProvider(model);
   if (provider !== "claude") {
     try {
-      let text: string;
-      if (provider === "codex") {
-        text = await codexComplete(prompt, effort);
-      } else if (provider === "opencode") {
-        text = await opencodeComplete(prompt, effort);
-      } else {
-        const cfg = parseCustomConfig(custom);
-        if (!cfg) return Response.json({ error: "custom API is not configured" }, { status: 400 });
-        text = await customComplete(cfg, [{ role: "user", content: prompt }]);
-      }
+      const text = await completeWith(model, prompt, { effort, custom });
       const mindmap = extractMindmapJson(text);
       if (!mindmap) return Response.json({ error: "The model did not return a valid mind map." }, { status: 500 });
       if (typeof paper_id === "string" && paper_id) await writeMindmapFile(paper_id, mindmap).catch(() => {});
       return Response.json({ mindmap });
     } catch (err) {
       console.error("[mindmap]", err);
-      return Response.json({ error: "Failed to generate the mind map with the selected model." }, { status: 500 });
+      const detail = err instanceof Error && err.message === "custom API is not configured" ? " — the custom endpoint is not configured" : "";
+      return Response.json({ error: `Failed to generate the mind map with the selected model${detail}.` }, { status: 500 });
     }
   }
 
@@ -64,8 +55,7 @@ export async function POST(req: Request) {
   const result = await new Promise<{ ok: true; out: string } | { ok: false; error: string }>((resolve) => {
     const proc = spawn(claudeBin(), [
       "-p",
-      "--model", modelFlag,
-      ...effortArgs(effort),
+      ...claudeModelArgs(model, effort),
       "--output-format", "json",
       "--dangerously-skip-permissions",
     ]);
@@ -74,7 +64,9 @@ export async function POST(req: Request) {
 
     let out = "";
     let err = "";
-    proc.stdout.on("data", (chunk: Buffer) => { out += chunk.toString(); });
+    // Decoded as a stream: a character split across two chunks stays whole
+    proc.stdout.setEncoding("utf8");
+    proc.stdout.on("data", (chunk: string) => { out += chunk; });
     proc.stderr.on("data", (chunk: Buffer) => { err += chunk.toString(); });
     proc.on("error", (spawnError) => resolve({ ok: false, error: `could not start claude: ${spawnError.message}` }));
     proc.on("close", (code) => {

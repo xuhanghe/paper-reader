@@ -1,16 +1,23 @@
 import { spawn } from "child_process";
-import { sanitizeSpawnArg, effortArgs } from "./model-flags";
+import { sanitizeSpawnArg } from "./model-flags";
 import { claudeBin, codexBin } from "./bin";
 import { encodeCodexSessionId, prepareCodexEnvironment } from "./codex-runtime";
-import { codexMcpArgs } from "./mcp-config";
+import { claudeMcpArgs, codexMcpArgs } from "./mcp-config";
 import { ensureServer } from "./opencode-server";
-import { providerIdFor } from "./provider-id";
+import { parseModelSpec, providerIdFor, type ProviderId } from "./model-spec";
+import { effortFor, knownModel } from "./model-catalog";
+import { getEndpoint, listEndpoints } from "./endpoints";
+import { createLineSplitter, parseJsonLine } from "./ndjson";
 
 // Multi-provider backend. Every provider emits newline-delimited JSON with
 // {type:"content_block_delta", delta:{type:"text_delta", text}} events — the
 // same shape the client already parses from the claude CLI stream.
+//
+// Which provider and model a question runs on is one string, the model spec
+// (lib/model-spec); which models and efforts exist is asked of each backend
+// (lib/model-catalog).
 
-export type Provider = "claude" | "codex" | "custom" | "opencode";
+export type Provider = ProviderId;
 export type CustomApiFormat = "openai" | "anthropic";
 export type CustomConfig = {
   baseUrl: string;
@@ -19,16 +26,22 @@ export type CustomConfig = {
   vision?: boolean;
   format: CustomApiFormat;
   maxTokens?: number;
+  // OpenRouter's normalized reasoning effort, when the endpoint said the model takes it
+  effort?: string;
 };
 
 const ANTHROPIC_VERSION = "2023-06-01";
 // Anthropic rejects a request without max_tokens, so one is always sent
 const DEFAULT_MAX_TOKENS = 8192;
+// The CLI ignores SIGTERM while a request is in flight often enough to matter:
+// a stopped answer that keeps generating costs tokens and CPU
+const KILL_GRACE_MS = 2000;
 
 export function resolveProvider(model: unknown): Provider {
   return providerIdFor(model);
 }
 
+/** A custom endpoint config sent by the browser, as versions before saved endpoints did. */
 export function parseCustomConfig(value: unknown): CustomConfig | null {
   if (typeof value !== "object" || value === null) return null;
   const v = value as Record<string, unknown>;
@@ -46,6 +59,32 @@ export function parseCustomConfig(value: unknown): CustomConfig | null {
   };
 }
 
+/**
+ * The endpoint a `custom…` model spec names, with its key, read on the server.
+ * A bare "custom" — what sessions saved before endpoints were stored hold — is
+ * the config the browser still sends, else the first saved endpoint.
+ */
+export async function customConfigFor(spec: unknown, legacy?: unknown): Promise<CustomConfig | null> {
+  const parsed = parseModelSpec(spec);
+  if (parsed.provider !== "custom") return null;
+  if (!parsed.endpointId) {
+    const sent = parseCustomConfig(legacy);
+    if (sent) return sent;
+  }
+  const endpoint = parsed.endpointId ? await getEndpoint(parsed.endpointId) : (await listEndpoints())[0] ?? null;
+  if (!endpoint) return null;
+  const model = parsed.model ?? endpoint.defaultModel;
+  const known = knownModel(parsed.endpointId ? spec : `custom:${endpoint.id}:${model}`);
+  return {
+    baseUrl: endpoint.baseUrl,
+    apiKey: endpoint.apiKey,
+    model,
+    vision: known?.vision ?? endpoint.vision,
+    format: endpoint.format,
+    ...(endpoint.maxTokens ? { maxTokens: endpoint.maxTokens } : {}),
+  };
+}
+
 const encoder = new TextEncoder();
 const encodeEvent = (text: string) =>
   encoder.encode(JSON.stringify({ type: "content_block_delta", delta: { type: "text_delta", text } }) + "\n");
@@ -56,23 +95,129 @@ export function streamResponse(stream: ReadableStream): Response {
   });
 }
 
+// Stops a child: politely, then for certain
+function stopChild(proc: ReturnType<typeof spawn> | null) {
+  if (!proc || proc.exitCode !== null || proc.signalCode !== null) return;
+  proc.kill("SIGTERM");
+  setTimeout(() => {
+    if (proc.exitCode === null && proc.signalCode === null) proc.kill("SIGKILL");
+  }, KILL_GRACE_MS).unref?.();
+}
+
+// ── Claude CLI ──────────────────────────────────────────────────────
+
+export type ClaudeRunOptions = {
+  model?: unknown;
+  effort?: unknown;
+  resumeId?: string;
+  // A captured figure, as base64 PNG: it can only reach the CLI as a stream-json turn on stdin
+  imageBase64?: string | null;
+  cwd?: string;
+  // How tools are permitted: the Reader skips prompts, the Workspace passes its mode
+  permissionArgs?: string[];
+  extraArgs?: string[];
+  onStderr?: (chunk: string) => void;
+  // The request's own signal: a client that goes away stops the CLI
+  signal?: AbortSignal;
+};
+
+/** The claude CLI's --model and --effort for a model spec; empty for its own defaults. */
+export function claudeModelArgs(model: unknown, effort: unknown): string[] {
+  const parsed = parseModelSpec(model);
+  const args = parsed.provider === "claude" && parsed.model ? ["--model", parsed.model] : [];
+  const level = effortFor(parsed.provider === "claude" ? model : undefined, effort);
+  return level ? [...args, "--effort", level] : args;
+}
+
+export function claudeArgs(prompt: string, opts: ClaudeRunOptions = {}): string[] {
+  const viaStdin = !!opts.imageBase64;
+  return [
+    "-p", ...(viaStdin ? [] : [sanitizeSpawnArg(prompt)]),
+    ...(opts.resumeId ? ["--resume", opts.resumeId] : []),
+    ...claudeModelArgs(opts.model, opts.effort),
+    "--output-format", "stream-json",
+    // Without this the CLI only reports whole messages, so an answer appears
+    // in one lump at the end — and stopping it leaves an empty bubble even
+    // though the model had already written most of the reply
+    "--include-partial-messages",
+    ...(viaStdin ? ["--input-format", "stream-json"] : []),
+    "--verbose",
+    ...(opts.permissionArgs ?? ["--dangerously-skip-permissions"]),
+    ...(opts.extraArgs ?? []),
+    ...claudeMcpArgs(), // Zotero library access
+  ];
+}
+
+/** One run of the claude CLI, streaming its stream-json output. */
+export function claudeStream(prompt: string, opts: ClaudeRunOptions = {}): ReadableStream {
+  let child: ReturnType<typeof spawn> | null = null;
+  const stop = () => stopChild(child);
+  opts.signal?.addEventListener("abort", stop, { once: true });
+  return new ReadableStream({
+    start(controller) {
+      let open = true;
+      const close = (error?: Error) => {
+        if (!open) return;
+        open = false;
+        opts.signal?.removeEventListener("abort", stop);
+        if (error) controller.error(error);
+        else controller.close();
+      };
+      const proc = spawn(claudeBin(), claudeArgs(prompt, opts), opts.cwd ? { cwd: opts.cwd } : undefined);
+      child = proc;
+      if (opts.imageBase64) {
+        proc.stdin.write(
+          JSON.stringify({
+            type: "user",
+            message: {
+              role: "user",
+              content: [
+                { type: "image", source: { type: "base64", media_type: "image/png", data: opts.imageBase64 } },
+                { type: "text", text: sanitizeSpawnArg(prompt) },
+              ],
+            },
+          }) + "\n"
+        );
+      }
+      proc.stdin.on("error", () => {}); // EPIPE when the CLI exits before reading
+      proc.stdin.end();
+      proc.stdout.on("data", (chunk: Buffer) => {
+        if (open) controller.enqueue(chunk);
+      });
+      proc.stderr.on("data", (d: Buffer) => {
+        const chunk = d.toString();
+        opts.onStderr?.(chunk);
+        console.error("[claude stderr]", chunk.slice(0, 400));
+      });
+      proc.on("close", () => close());
+      proc.on("error", (err) => {
+        console.error("[claude spawn error]", err);
+        close(err);
+      });
+    },
+    cancel() {
+      stop();
+    },
+  });
+}
+
 // ── One-shot completions ────────────────────────────────────────────
 // For the things that are not a conversation: the paper map, a conversation's
 // takeaways. No session, no streaming, no resume — ask once, read the answer.
 
-export async function claudeComplete(prompt: string, opts?: { model?: string; effort?: unknown }): Promise<string> {
-  const model = typeof opts?.model === "string" && opts.model.startsWith("claude") ? opts.model : "claude-sonnet-4-6";
+export async function claudeComplete(prompt: string, opts?: { model?: unknown; effort?: unknown }): Promise<string> {
   return new Promise((resolve, reject) => {
     const proc = spawn(claudeBin(), [
       "-p", sanitizeSpawnArg(prompt),
-      "--model", model,
-      ...effortArgs(opts?.effort),
+      ...claudeModelArgs(opts?.model, opts?.effort),
       "--output-format", "json",
       "--dangerously-skip-permissions",
     ]);
     proc.stdin.end();
     let out = "";
-    proc.stdout.on("data", (c: Buffer) => { out += c.toString(); });
+    // Decoded as a stream: a character split across two chunks stays whole
+    proc.stdout.setEncoding("utf8");
+    proc.stdout.on("data", (c: string) => { out += c; });
     proc.stderr.on("data", (d: Buffer) => console.error("[claude stderr]", d.toString().slice(0, 400)));
     proc.on("error", reject);
     proc.on("close", (code) => {
@@ -87,7 +232,7 @@ export async function claudeComplete(prompt: string, opts?: { model?: string; ef
   });
 }
 
-// Whichever provider the reader picked, asked once and answered in full
+// Whichever provider and model the reader picked, asked once and answered in full
 export async function completeWith(
   model: unknown,
   prompt: string,
@@ -95,29 +240,25 @@ export async function completeWith(
 ): Promise<string> {
   switch (resolveProvider(model)) {
     case "codex":
-      return codexComplete(prompt, opts?.effort);
+      return codexComplete(prompt, { model, effort: opts?.effort });
     case "opencode":
-      return opencodeComplete(prompt, opts?.effort);
+      return opencodeComplete(prompt, { model, effort: opts?.effort });
     case "custom": {
-      const cfg = parseCustomConfig(opts?.custom);
+      const cfg = await customConfigFor(model, opts?.custom);
       if (!cfg) throw new Error("custom API is not configured");
-      return customComplete(cfg, [{ role: "user", content: prompt }]);
+      return customComplete({ ...cfg, effort: effortFor(model, opts?.effort) }, [{ role: "user", content: prompt }]);
     }
     default:
-      return claudeComplete(prompt, { model: typeof model === "string" ? model : undefined, effort: opts?.effort });
+      return claudeComplete(prompt, { model, effort: opts?.effort });
   }
 }
 
 // ── Codex CLI ───────────────────────────────────────────────────────
 
-function codexEffort(effort: unknown): string | null {
-  if (typeof effort !== "string") return null;
-  if (effort === "max") return "xhigh";
-  return ["low", "medium", "high", "xhigh"].includes(effort) ? effort : null;
-}
-
 type CodexRunOptions = {
   images?: string[];
+  // A model spec; "codex" alone runs Codex's own default model
+  model?: unknown;
   effort?: unknown;
   resumeId?: string;
   cwd?: string;
@@ -134,7 +275,12 @@ export function codexArgs(prompt: string, opts?: CodexRunOptions): string[] {
   if (opts?.writable) args.push("-a", "never");
   args.push("-s", opts?.writable ? "workspace-write" : "read-only");
   args.push(...codexMcpArgs()); // Zotero library access
-  const eff = codexEffort(opts?.effort);
+  // Config overrides, like the effort below, so they apply to a resumed turn too.
+  // The user's own config is ignored (see below), so without this Codex runs
+  // its built-in default model, whatever was picked.
+  const parsed = parseModelSpec(opts?.model);
+  if (parsed.provider === "codex" && parsed.model) args.push("-c", `model="${parsed.model}"`);
+  const eff = effortFor(parsed.provider === "codex" ? opts?.model : "codex", opts?.effort);
   if (eff) args.push("-c", `model_reasoning_effort="${eff}"`);
 
   args.push("exec");
@@ -176,7 +322,6 @@ export function codexStream(
       });
       child = proc;
       proc.stdin.end();
-      let buf = "";
       let stderr = "";
       let sawAgentText = false;
       let finished = false;
@@ -226,44 +371,35 @@ export function codexStream(
           enqueue(encodeEvent(delta));
         }
       };
-      const processLine = (line: string) => {
-        try {
-          const ev = JSON.parse(line);
-          if (ev.type === "thread.started" && typeof ev.thread_id === "string") {
-            // Normalized session event — client captures it like claude's init
-            enqueue(encoder.encode(JSON.stringify({
-              type: "system",
-              session_id: encodeCodexSessionId(ev.thread_id),
-            }) + "\n"));
-          } else if (ev.type === "item.updated" || ev.type === "item.completed") {
-            const item = ev.item ?? {};
-            emitAgentMessage(item);
-            if (ev.type === "item.completed" && item.type !== "agent_message" && item.type !== "reasoning") {
-              const name = item.type === "web_search"
-                ? "web.search"
-                : item.type === "command_execution"
-                  ? "workspace.command"
-                  : item.type === "mcp_tool_call"
-                    ? String(item.server || "mcp") + "." + String(item.tool || "tool")
-                    : String(item.type || "tool");
-              const detail = String(item.query || item.command || item.status || "Completed").slice(0, 180);
-              enqueue(encoder.encode(JSON.stringify({ type: "tool", name, detail, status: "completed" }) + "\n"));
-            }
+      const lines = createLineSplitter((line) => {
+        const ev = parseJsonLine(line) as { type?: string; thread_id?: unknown; item?: Record<string, unknown> } | undefined;
+        if (!ev) return;
+        if (ev.type === "thread.started" && typeof ev.thread_id === "string") {
+          // Normalized session event — client captures it like claude's init
+          enqueue(encoder.encode(JSON.stringify({
+            type: "system",
+            session_id: encodeCodexSessionId(ev.thread_id),
+          }) + "\n"));
+        } else if (ev.type === "item.updated" || ev.type === "item.completed") {
+          const item = ev.item ?? {};
+          emitAgentMessage(item);
+          if (ev.type === "item.completed" && item.type !== "agent_message" && item.type !== "reasoning") {
+            const name = item.type === "web_search"
+              ? "web.search"
+              : item.type === "command_execution"
+                ? "workspace.command"
+                : item.type === "mcp_tool_call"
+                  ? String(item.server || "mcp") + "." + String(item.tool || "tool")
+                  : String(item.type || "tool");
+            const detail = String(item.query || item.command || item.status || "Completed").slice(0, 180);
+            enqueue(encoder.encode(JSON.stringify({ type: "tool", name, detail, status: "completed" }) + "\n"));
           }
-        } catch {
-          // non-JSON line
         }
-      };
-      proc.stdout.on("data", (chunk: Buffer) => {
-        buf += chunk.toString();
-        const lines = buf.split("\n");
-        buf = lines.pop()!;
-        for (const line of lines) processLine(line);
       });
-      proc.stdout.on("end", () => {
-        if (buf.trim()) processLine(buf);
-        buf = "";
-      });
+      // Decoded as a stream: a character split across two chunks stays whole
+      proc.stdout.setEncoding("utf8");
+      proc.stdout.on("data", (chunk: string) => lines.push(chunk));
+      proc.stdout.on("end", () => lines.end());
       proc.stderr.on("data", (d: Buffer) => {
         const text = d.toString();
         stderr = (stderr + text).slice(-4000);
@@ -290,26 +426,27 @@ export function codexStream(
     // finishes the reply nobody will read, on the reader's own machine
     cancel() {
       cancelled = true;
-      if (!child || child.killed) return;
-      const proc = child;
-      proc.kill("SIGTERM");
-      setTimeout(() => {
-        if (proc.exitCode === null && proc.signalCode === null) proc.kill("SIGKILL");
-      }, 2000).unref?.();
+      stopChild(child);
     },
   });
 }
 
-export async function codexComplete(prompt: string, effort?: unknown): Promise<string> {
+export async function codexComplete(prompt: string, opts?: { model?: unknown; effort?: unknown }): Promise<string> {
   return new Promise((resolve, reject) => {
-    const proc = spawn(codexBin(), codexArgs(prompt, { effort }), {
+    const proc = spawn(codexBin(), codexArgs(prompt, { model: opts?.model, effort: opts?.effort }), {
       env: prepareCodexEnvironment(),
     });
     proc.stdin.end();
-    let out = "";
     let stderr = "";
     const texts: string[] = [];
-    proc.stdout.on("data", (c: Buffer) => { out += c.toString(); });
+    const lines = createLineSplitter((line) => {
+      const ev = parseJsonLine(line) as { type?: string; item?: { type?: string; text?: unknown } } | undefined;
+      if (ev?.type === "item.completed" && ev.item?.type === "agent_message" && typeof ev.item.text === "string") {
+        texts.push(ev.item.text);
+      }
+    });
+    proc.stdout.setEncoding("utf8");
+    proc.stdout.on("data", (c: string) => lines.push(c));
     proc.stderr.on("data", (d: Buffer) => {
       const text = d.toString();
       stderr = (stderr + text).slice(-4000);
@@ -317,17 +454,8 @@ export async function codexComplete(prompt: string, effort?: unknown): Promise<s
     });
     proc.on("error", reject);
     proc.on("close", (code) => {
+      lines.end();
       if (code !== 0) return reject(new Error(codexExitMessage(stderr, code)));
-      for (const line of out.split("\n")) {
-        try {
-          const ev = JSON.parse(line);
-          if (ev.type === "item.completed" && ev.item?.type === "agent_message" && typeof ev.item.text === "string") {
-            texts.push(ev.item.text);
-          }
-        } catch {
-          // skip
-        }
-      }
       resolve(texts.join("\n"));
     });
   });
@@ -336,7 +464,7 @@ export async function codexComplete(prompt: string, effort?: unknown): Promise<s
 // ── opencode (headless HTTP server) ─────────────────────────────────
 
 const OPENCODE_TIMEOUT_MS = Number(process.env.OPENCODE_TIMEOUT_MS) || 180000;
-// Used only when neither OPENCODE_MODEL nor opencode's own config names one
+// Used only when neither the picked model, OPENCODE_MODEL nor opencode's own config names one
 const OPENCODE_FALLBACK_MODEL = "opencode/claude-sonnet-4-6";
 // Everything that touches the machine stays off: opencode answers from the
 // context we inject, exactly like the custom provider. MCP tools are absent
@@ -348,14 +476,7 @@ const OPENCODE_DISABLED_TOOLS = [
 const OPENCODE_SEARCH_TOOLS = ["websearch", "webfetch", "web_search"];
 
 export type OpencodeImage = { mime: string; dataUrl: string };
-
-function opencodeVariant(effort: unknown): string | undefined {
-  if (typeof effort !== "string") return undefined;
-  if (effort === "low") return "minimal";
-  if (effort === "high" || effort === "xhigh") return "high";
-  if (effort === "max") return "max";
-  return undefined; // "medium" and anything unknown: let the provider decide
-}
+type OpencodeModelRef = { providerID: string; modelID: string };
 
 function opencodeTools(webSearch?: boolean): Record<string, boolean> {
   const tools: Record<string, boolean> = {};
@@ -364,7 +485,14 @@ function opencodeTools(webSearch?: boolean): Record<string, boolean> {
   return tools;
 }
 
-async function opencodeModel(baseUrl: string): Promise<{ providerID: string; modelID: string }> {
+const splitOpencodeModel = (id: string): OpencodeModelRef => {
+  const slash = id.indexOf("/");
+  return slash > 0 ? { providerID: id.slice(0, slash), modelID: id.slice(slash + 1) } : { providerID: "opencode", modelID: id };
+};
+
+async function opencodeModel(baseUrl: string, spec?: unknown): Promise<OpencodeModelRef> {
+  const picked = parseModelSpec(spec);
+  if (picked.provider === "opencode" && picked.model) return splitOpencodeModel(picked.model);
   let raw = process.env.OPENCODE_MODEL;
   if (!raw) {
     try {
@@ -375,11 +503,7 @@ async function opencodeModel(baseUrl: string): Promise<{ providerID: string; mod
       // fall through to the default
     }
   }
-  const id = raw || OPENCODE_FALLBACK_MODEL;
-  const slash = id.indexOf("/");
-  return slash > 0
-    ? { providerID: id.slice(0, slash), modelID: id.slice(slash + 1) }
-    : { providerID: "opencode", modelID: id };
+  return splitOpencodeModel(raw || OPENCODE_FALLBACK_MODEL);
 }
 
 async function openSession(baseUrl: string, title?: string): Promise<string> {
@@ -397,8 +521,8 @@ async function openSession(baseUrl: string, title?: string): Promise<string> {
 
 function messageBody(
   prompt: string,
-  model: { providerID: string; modelID: string },
-  opts?: { images?: OpencodeImage[]; effort?: unknown; webSearch?: boolean }
+  model: OpencodeModelRef,
+  opts?: { images?: OpencodeImage[]; spec?: unknown; effort?: unknown; webSearch?: boolean }
 ) {
   const parts: unknown[] = (opts?.images ?? []).map((img) => ({
     type: "file",
@@ -407,7 +531,8 @@ function messageBody(
     filename: "figure.png",
   }));
   parts.push({ type: "text", text: prompt });
-  const variant = opencodeVariant(opts?.effort);
+  // The effort is the model's own variant name (see lib/model-catalog)
+  const variant = effortFor(parseModelSpec(opts?.spec).provider === "opencode" ? opts?.spec : "opencode", opts?.effort);
   return {
     parts,
     model,
@@ -429,6 +554,7 @@ export function opencodeStream(
   prompt: string,
   opts?: {
     images?: OpencodeImage[];
+    model?: unknown;
     effort?: unknown;
     resumeId?: string;
     webSearch?: boolean;
@@ -463,36 +589,29 @@ export function opencodeStream(
           if (!evRes.ok || !evRes.body) return;
           const reader = evRes.body.getReader();
           const decoder = new TextDecoder();
-          let buf = "";
+          const lines = createLineSplitter((line) => {
+            const t = line.trim();
+            if (!t.startsWith("data:")) return;
+            const ev = parseJsonLine(t.slice(5)) as { type?: string; properties?: Record<string, unknown> } | undefined;
+            const p = ev?.properties ?? {};
+            if (p.sessionID !== sessionId) return;
+            if (ev?.type === "message.part.delta" && p.field === "text" && typeof p.delta === "string") {
+              streamed += p.delta;
+              controller.enqueue(encodeEvent(p.delta));
+            }
+          });
           while (true) {
             const { done, value } = await reader.read();
             if (done) return;
-            buf += decoder.decode(value, { stream: true });
-            const lines = buf.split("\n");
-            buf = lines.pop()!;
-            for (const line of lines) {
-              const t = line.trim();
-              if (!t.startsWith("data:")) continue;
-              try {
-                const ev = JSON.parse(t.slice(5));
-                const p = ev?.properties ?? {};
-                if (p.sessionID !== sessionId) continue;
-                if (ev.type === "message.part.delta" && p.field === "text" && typeof p.delta === "string") {
-                  streamed += p.delta;
-                  controller.enqueue(encodeEvent(p.delta));
-                }
-              } catch {
-                // partial or unrelated event
-              }
-            }
+            lines.push(decoder.decode(value, { stream: true }));
           }
         })();
 
-        const model = await opencodeModel(baseUrl);
+        const model = await opencodeModel(baseUrl, opts?.model);
         const res = await fetch(`${baseUrl}/session/${sessionId}/message`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(messageBody(prompt, model, opts)),
+          body: JSON.stringify(messageBody(prompt, model, { ...opts, spec: opts?.model })),
           signal: AbortSignal.timeout(OPENCODE_TIMEOUT_MS),
         });
         if (!res.ok) {
@@ -524,14 +643,14 @@ export function opencodeStream(
   });
 }
 
-export async function opencodeComplete(prompt: string, effort?: unknown): Promise<string> {
+export async function opencodeComplete(prompt: string, opts?: { model?: unknown; effort?: unknown }): Promise<string> {
   const baseUrl = await ensureServer();
   const sessionId = await openSession(baseUrl, "paper-reader map");
-  const model = await opencodeModel(baseUrl);
+  const model = await opencodeModel(baseUrl, opts?.model);
   const res = await fetch(`${baseUrl}/session/${sessionId}/message`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(messageBody(prompt, model, { effort })),
+    body: JSON.stringify(messageBody(prompt, model, { spec: opts?.model, effort: opts?.effort })),
     signal: AbortSignal.timeout(OPENCODE_TIMEOUT_MS),
   });
   if (!res.ok) throw new Error(`opencode responded with ${res.status}`);
@@ -623,7 +742,7 @@ function wireFormat(cfg: CustomConfig, messages: ChatMessage[]): WireFormat {
       "Content-Type": "application/json",
       ...(cfg.apiKey ? { Authorization: `Bearer ${cfg.apiKey}` } : {}),
     },
-    body: (stream) => JSON.stringify({ model: cfg.model, messages, stream }),
+    body: (stream) => JSON.stringify({ model: cfg.model, messages, stream, ...(cfg.effort ? { reasoning: { effort: cfg.effort } } : {}) }),
     deltaText: (event) => {
       const delta = (event as { choices?: { delta?: { content?: unknown } }[] })?.choices?.[0]?.delta?.content;
       return typeof delta === "string" ? delta : "";
@@ -635,6 +754,7 @@ function wireFormat(cfg: CustomConfig, messages: ChatMessage[]): WireFormat {
 
 export function customStream(cfg: CustomConfig, messages: ChatMessage[]): ReadableStream {
   const wire = wireFormat(cfg, messages);
+  const aborted = new AbortController();
   return new ReadableStream({
     async start(controller) {
       try {
@@ -642,7 +762,7 @@ export function customStream(cfg: CustomConfig, messages: ChatMessage[]): Readab
           method: "POST",
           headers: wire.headers,
           body: wire.body(true),
-          signal: AbortSignal.timeout(180000),
+          signal: AbortSignal.any([aborted.signal, AbortSignal.timeout(180000)]),
         });
         if (!res.ok || !res.body) {
           const detail = (await res.text().catch(() => "")).slice(0, 200);
@@ -652,31 +772,30 @@ export function customStream(cfg: CustomConfig, messages: ChatMessage[]): Readab
         }
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
-        let buf = "";
+        const lines = createLineSplitter((line) => {
+          const t = line.trim();
+          if (!t.startsWith("data:")) return;
+          const payload = t.slice(5).trim();
+          if (payload === "[DONE]") return;
+          const text = wire.deltaText(parseJsonLine(payload));
+          if (text) controller.enqueue(encodeEvent(text));
+        });
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
-          buf += decoder.decode(value, { stream: true });
-          const lines = buf.split("\n");
-          buf = lines.pop()!;
-          for (const line of lines) {
-            const t = line.trim();
-            if (!t.startsWith("data:")) continue;
-            const payload = t.slice(5).trim();
-            if (payload === "[DONE]") continue;
-            try {
-              const text = wire.deltaText(JSON.parse(payload));
-              if (text) controller.enqueue(encodeEvent(text));
-            } catch {
-              // partial JSON — skip
-            }
-          }
+          lines.push(decoder.decode(value, { stream: true }));
         }
+        lines.end();
         controller.close();
       } catch {
+        if (aborted.signal.aborted) return;
         controller.enqueue(encodeEvent("Error: could not reach the custom API endpoint."));
         controller.close();
       }
+    },
+    // Stopping an answer stops the request too, so the endpoint stops generating
+    cancel() {
+      aborted.abort();
     },
   });
 }

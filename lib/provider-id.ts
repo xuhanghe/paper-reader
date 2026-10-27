@@ -1,17 +1,10 @@
-// Which backend a model id runs on.
+// Which backend a model choice runs on.
 //
-// This lives apart from lib/providers.ts because the client needs the same
-// answer — it keys each paper's saved session ids by provider — and that module
-// imports child_process, so it can't be pulled into the browser bundle. Keeping
-// one implementation here stops the two copies drifting: a model routed to
-// "opencode" on the server but keyed as "claude" on the client would resume the
-// wrong conversation.
+// The client needs the same answer as the server — it keys each paper's saved
+// session ids by provider — and lib/providers.ts imports child_process, so it
+// can't be pulled into the browser bundle. The one implementation lives in
+// lib/model-spec, which is client-safe; this module keeps the import path the
+// rest of the app already uses. A model routed to "opencode" on the server but
+// keyed as "claude" on the client would resume the wrong conversation.
 
-export type ProviderId = "claude" | "codex" | "custom" | "opencode";
-
-export function providerIdFor(model: unknown): ProviderId {
-  if (model === "codex") return "codex";
-  if (model === "custom") return "custom";
-  if (model === "opencode") return "opencode";
-  return "claude";
-}
+export { providerIdFor, type ProviderId } from "./model-spec";

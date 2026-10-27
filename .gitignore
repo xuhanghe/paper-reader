@@ -42,6 +42,9 @@ next-env.d.ts
 
 # auto-saved reading sessions
 .paper-reader-sessions/
+# custom API endpoints, with their keys
+.paper-reader-endpoints.json
+.paper-reader-endpoints.json.*.tmp
 band-audit-out/
 
 # scratch renders from debugging
