@@ -8,6 +8,7 @@ import { parseModelSpec, providerIdFor, type ProviderId } from "./model-spec";
 import { effortFor, knownModel } from "./model-catalog";
 import { getEndpoint, listEndpoints } from "./endpoints";
 import { createLineSplitter, parseJsonLine } from "./ndjson";
+import type { ToolResult, ToolSpec } from "./endpoint-tools";
 
 // Multi-provider backend. Every provider emits newline-delimited JSON with
 // {type:"content_block_delta", delta:{type:"text_delta", text}} events — the
@@ -28,6 +29,8 @@ export type CustomConfig = {
   maxTokens?: number;
   // OpenRouter's normalized reasoning effort, when the endpoint said the model takes it
   effort?: string;
+  // Whether the model takes tools, when the endpoint says; unknown is tried
+  tools?: boolean;
 };
 
 const ANTHROPIC_VERSION = "2023-06-01";
@@ -80,6 +83,7 @@ export async function customConfigFor(spec: unknown, legacy?: unknown): Promise<
     apiKey: endpoint.apiKey,
     model,
     vision: known?.vision ?? endpoint.vision,
+    ...(known?.tools !== undefined ? { tools: known.tools } : {}),
     format: endpoint.format,
     ...(endpoint.maxTokens ? { maxTokens: endpoint.maxTokens } : {}),
   };
@@ -659,7 +663,7 @@ export async function opencodeComplete(prompt: string, opts?: { model?: unknown;
 
 // ── Custom API: OpenAI or Anthropic wire format ─────────────────────
 
-type ChatMessage = { role: string; content: unknown };
+type ChatMessage = { role: string; content: unknown; [field: string]: unknown };
 
 // Anthropic takes the system prompt as a top-level field rather than a message,
 // and describes images differently. Callers keep building OpenAI-shaped
@@ -810,4 +814,196 @@ export async function customComplete(cfg: CustomConfig, messages: ChatMessage[])
   });
   if (!res.ok) throw new Error(`custom API responded with ${res.status}`);
   return wire.fullText(await res.json());
+}
+
+// ── Custom API with the reader's tools ──────────────────────────────
+//
+// A model behind an API reads the paper with tools that run here
+// (lib/endpoint-tools), through the API's own function calling: it is sent
+// their definitions, answers with calls when it wants one, and is sent back
+// what they returned — round after round until it answers. What it writes on
+// the way streams as it comes, and each call is announced to the panel as a
+// "tool" event. An endpoint or model that takes no tools is asked again the
+// old way, with what `fallback` builds.
+
+export type ToolRunner = {
+  specs: ToolSpec[];
+  run: (name: string, args: unknown) => Promise<ToolResult>;
+};
+
+type ToolCall = { id: string; name: string; args: string };
+type StreamEvent = {
+  type?: string;
+  index?: number;
+  content_block?: { type?: string; id?: string; name?: string };
+  delta?: { type?: string; text?: string; partial_json?: string };
+  choices?: { delta?: { content?: unknown; tool_calls?: { index?: number; id?: string; function?: { name?: string; arguments?: string } }[] } }[];
+};
+
+const TOOL_ROUNDS = 6;
+
+// One response: the text, streamed as it comes, and the calls it ends with
+async function readResponse(body: ReadableStream<Uint8Array>, anthropic: boolean, onText: (text: string) => void): Promise<{ text: string; calls: ToolCall[] }> {
+  const calls = new Map<number, ToolCall>();
+  let text = "";
+  const said = (piece: string) => {
+    text += piece;
+    onText(piece);
+  };
+  const lines = createLineSplitter((line) => {
+    const t = line.trim();
+    if (!t.startsWith("data:")) return;
+    const payload = t.slice(5).trim();
+    if (!payload || payload === "[DONE]") return;
+    const event = parseJsonLine(payload) as StreamEvent | undefined;
+    if (!event) return;
+    if (anthropic) {
+      if (event.type === "content_block_start" && event.content_block?.type === "tool_use") {
+        calls.set(event.index ?? 0, { id: event.content_block.id ?? "", name: event.content_block.name ?? "", args: "" });
+      } else if (event.type === "content_block_delta") {
+        if (event.delta?.type === "text_delta" && event.delta.text) said(event.delta.text);
+        else if (event.delta?.type === "input_json_delta") {
+          const call = calls.get(event.index ?? 0);
+          if (call) call.args += event.delta.partial_json ?? "";
+        }
+      }
+      return;
+    }
+    const delta = event.choices?.[0]?.delta;
+    if (typeof delta?.content === "string" && delta.content) said(delta.content);
+    for (const piece of delta?.tool_calls ?? []) {
+      const index = piece.index ?? 0;
+      const call = calls.get(index) ?? { id: "", name: "", args: "" };
+      if (piece.id) call.id = piece.id;
+      if (piece.function?.name) call.name ||= piece.function.name;
+      if (piece.function?.arguments) call.args += piece.function.arguments;
+      calls.set(index, call);
+    }
+  });
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    lines.push(decoder.decode(value, { stream: true }));
+  }
+  lines.end();
+  return { text, calls: [...calls.values()].filter((c) => c.name).map((c, i) => ({ ...c, id: c.id || `call_${i}` })) };
+}
+
+const parseArgs = (args: string): unknown => {
+  try {
+    return args.trim() ? JSON.parse(args) : {};
+  } catch {
+    return {};
+  }
+};
+
+export function customAgentStream(cfg: CustomConfig, messages: ChatMessage[], tools: ToolRunner, fallback: () => Promise<ChatMessage[]>): ReadableStream {
+  const aborted = new AbortController();
+  const anthropic = cfg.format === "anthropic";
+  const wire = wireFormat(cfg, messages);
+  const converted = anthropic ? toAnthropicMessages(messages) : null;
+  const history: ChatMessage[] = converted ? [...converted.messages] : [...messages];
+  const body = (last: boolean) =>
+    JSON.stringify(anthropic
+      ? {
+          model: cfg.model,
+          max_tokens: cfg.maxTokens ?? DEFAULT_MAX_TOKENS,
+          ...(converted?.system ? { system: converted.system } : {}),
+          messages: history,
+          stream: true,
+          tools: tools.specs.map((s) => ({ name: s.name, description: s.description, input_schema: s.parameters })),
+          // The last round answers with what it has
+          ...(last ? { tool_choice: { type: "none" } } : {}),
+        }
+      : {
+          model: cfg.model,
+          messages: history,
+          stream: true,
+          tools: tools.specs.map((s) => ({ type: "function", function: s })),
+          ...(last ? { tool_choice: "none" } : {}),
+          ...(cfg.effort ? { reasoning: { effort: cfg.effort } } : {}),
+        });
+
+  return new ReadableStream({
+    async start(controller) {
+      const text = (piece: string) => controller.enqueue(encodeEvent(piece));
+      try {
+        for (let round = 0; round < TOOL_ROUNDS; round++) {
+          const res = await fetch(wire.url, {
+            method: "POST",
+            headers: wire.headers,
+            body: body(round === TOOL_ROUNDS - 1),
+            signal: AbortSignal.any([aborted.signal, AbortSignal.timeout(180000)]),
+          });
+          if (!res.ok || !res.body) {
+            const detail = (await res.text().catch(() => "")).replace(/\s+/g, " ").slice(0, 300);
+            if (round === 0 && [400, 404, 422].includes(res.status) && /tool|function/i.test(detail)) {
+              const reader = customStream(cfg, await fallback()).getReader();
+              while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                controller.enqueue(value);
+              }
+              controller.close();
+              return;
+            }
+            text(`Error: custom API responded with ${res.status}. ${detail.slice(0, 200)}`);
+            controller.close();
+            return;
+          }
+          const turn = await readResponse(res.body, anthropic, text);
+          if (!turn.calls.length) break;
+
+          const results: ToolResult[] = [];
+          for (const call of turn.calls) {
+            const result = await tools.run(call.name, parseArgs(call.args)).catch((): ToolResult => ({ text: "The tool failed.", activity: "Working" }));
+            controller.enqueue(encoder.encode(JSON.stringify({ type: "tool", name: call.name, detail: result.activity, status: "completed" }) + "\n"));
+            results.push(result);
+          }
+          if (anthropic) {
+            history.push({
+              role: "assistant",
+              content: [
+                ...(turn.text ? [{ type: "text", text: turn.text }] : []),
+                ...turn.calls.map((c) => ({ type: "tool_use", id: c.id, name: c.name, input: parseArgs(c.args) })),
+              ],
+            });
+            history.push({
+              role: "user",
+              content: turn.calls.map((c, i) => ({
+                type: "tool_result",
+                tool_use_id: c.id,
+                content: [
+                  { type: "text", text: results[i].text },
+                  ...(toAnthropicContent((results[i].images ?? []).map((url) => ({ type: "image_url", image_url: { url } }))) as unknown[]),
+                ],
+              })),
+            });
+          } else {
+            history.push({
+              role: "assistant",
+              content: turn.text || null,
+              tool_calls: turn.calls.map((c) => ({ id: c.id, type: "function", function: { name: c.name, arguments: c.args || "{}" } })),
+            });
+            turn.calls.forEach((c, i) => history.push({ role: "tool", tool_call_id: c.id, content: results[i].text }));
+            // A tool's message holds words only here; the pages it looked at follow
+            const images = results.flatMap((r) => r.images ?? []);
+            if (images.length) {
+              history.push({ role: "user", content: [{ type: "text", text: "The page images the tools returned:" }, ...images.map((url) => ({ type: "image_url", image_url: { url } }))] });
+            }
+          }
+        }
+        controller.close();
+      } catch {
+        if (aborted.signal.aborted) return;
+        text("Error: could not reach the custom API endpoint.");
+        controller.close();
+      }
+    },
+    cancel() {
+      aborted.abort();
+    },
+  });
 }

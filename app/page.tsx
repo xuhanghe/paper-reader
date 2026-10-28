@@ -136,6 +136,9 @@ export default function Home() {
   const [layout0] = useState(loadLayout);
   const [sidebarOpen, setSidebarOpen] = useState(layout0.mapOpen);
   const [streamingIds, setStreamingIds] = useState<Set<string>>(new Set());
+  // What a model reading with tools is doing before its answer starts —
+  // "Reading pages 3–4" — by conversation; shown in place of "Thinking…"
+  const [activities, setActivities] = useState<Record<string, string>>({});
   // In-flight answers, so each can be stopped independently. Each remembers
   // its paper: switching papers leaves it running, closing that paper's tab
   // stops it.
@@ -755,6 +758,9 @@ export default function Home() {
           } else if (event.type === "result" && event.result && !accumulated) {
             accumulated = typeof event.result === "string" ? event.result : "";
             updateLastAssistantMessage(annotationId, accumulated, forPaper);
+          } else if (event.type === "tool" && event.detail) {
+            const detail = event.detail;
+            setActivities((a) => ({ ...a, [annotationId]: detail }));
           }
         });
       } catch (err) {
@@ -771,6 +777,12 @@ export default function Home() {
         if (abortControllers.current.get(annotationId)?.controller === controller) {
           abortControllers.current.delete(annotationId);
           setStreamingIds((s) => { const next = new Set(s); next.delete(annotationId); return next; });
+          setActivities((a) => {
+            if (!(annotationId in a)) return a;
+            const next = { ...a };
+            delete next[annotationId];
+            return next;
+          });
           // The thread's concept follows its answers: every one that
           // arrived — stopped short or not — is folded into the notes now
           if (!failed && accumulated.trim()) void summarizeThread(annotationId, forPaper, { answer: accumulated });
@@ -1631,6 +1643,7 @@ export default function Home() {
           askSeq={askSeq}
           model={session.model}
           streamingIds={streamingIds}
+          activities={activities}
           onFollowUp={handleFollowUp}
           onStop={stopAsk}
           onEditMessage={handleEditMessage}

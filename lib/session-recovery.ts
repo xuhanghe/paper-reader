@@ -39,6 +39,13 @@ function withoutDirectives(text: string): string {
   return text.slice(0, cut).replace(REWRITE, "").trim();
 }
 
+// A message of mine as I asked it: its [turn N] marker, and the question
+// without what the app added to direct the answer
+export function askedText(text: string): string {
+  const marker = /^\[turn \d+\]\s*/.exec(text)?.[0] ?? "";
+  return `${marker}${withoutDirectives(text.slice(marker.length))}`.trim();
+}
+
 const tidy = (text: string, max = 110) => {
   const flat = text.replace(/\s+/g, " ").trim();
   return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;

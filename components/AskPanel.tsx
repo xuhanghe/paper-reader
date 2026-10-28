@@ -16,6 +16,8 @@ type Props = {
   activeId: string | null;
   model: Model;
   streamingIds: Set<string>;
+  // What a model reading with tools is doing before its answer starts, by conversation
+  activities?: Record<string, string>;
   onFollowUp: (annotationId: string, question: string, imageDataUrl?: string) => void;
   // Cancel the answer being streamed into a conversation
   onStop?: (annotationId: string) => void;
@@ -170,7 +172,7 @@ const COLLAPSE_CHARS = 300;
 // Workspace and back
 const composerImageMemory = new Map<string, string>();
 
-export const ExplainPanel = memo(function ExplainPanel({ annotations, activeId, model, streamingIds, onFollowUp, onStop, onEditMessage, onDeletePair, onAskGeneral, onDelete, onReExplainImage, onViewInPdf, onFocusedChange, onCitePaper, annotationRefs, scrollHandle, isOpen, onToggle, width = 460, modelControls, positionKey, askSeq }: Props) {
+export const ExplainPanel = memo(function ExplainPanel({ annotations, activeId, model, streamingIds, activities, onFollowUp, onStop, onEditMessage, onDeletePair, onAskGeneral, onDelete, onReExplainImage, onViewInPdf, onFocusedChange, onCitePaper, annotationRefs, scrollHandle, isOpen, onToggle, width = 460, modelControls, positionKey, askSeq }: Props) {
   // One composer for both kinds of question. What is typed is kept across
   // the switch, so flipping it never loses a draft.
   // What is being typed, kept per paper: see lib/drafts
@@ -2138,7 +2140,7 @@ export const ExplainPanel = memo(function ExplainPanel({ annotations, activeId, 
                             <span className="w-1 h-1 rounded-full animate-bounce [animation-delay:150ms]" style={{ background: "var(--accent)" }} />
                             <span className="w-1 h-1 rounded-full animate-bounce [animation-delay:300ms]" style={{ background: "var(--accent)" }} />
                           </span>
-                          Thinking…
+                          {activities?.[annotation.id] ? `${activities[annotation.id]}…` : "Thinking…"}
                         </div>
                       ) : (
                         <Answer

@@ -43,6 +43,8 @@ export type CatalogModel = {
   isDefault?: boolean;
   // Accepts images, when the backend says
   vision?: boolean;
+  // Takes tools (function calling), when a custom endpoint says
+  tools?: boolean;
 };
 
 export type CatalogGroup = {
@@ -193,8 +195,9 @@ export function parseEndpointModels(body: unknown, endpoint: Pick<CustomEndpoint
     const arch = (m.architecture ?? {}) as { input_modalities?: unknown; modality?: unknown };
     const inputs = Array.isArray(arch.input_modalities) ? arch.input_modalities : null;
     const vision = inputs ? inputs.includes("image") : typeof arch.modality === "string" ? /image/.test(arch.modality.split("->")[0]) : endpoint.vision;
-    // OpenRouter says which models take its normalized reasoning effort
-    const reasoning = Array.isArray(m.supported_parameters) && m.supported_parameters.includes("reasoning");
+    // OpenRouter says which models take its normalized reasoning effort, and tools
+    const params = Array.isArray(m.supported_parameters) ? (m.supported_parameters as unknown[]) : null;
+    const reasoning = !!params?.includes("reasoning");
     return [{
       spec: modelSpec("custom", id, endpoint.id),
       id,
@@ -202,6 +205,7 @@ export function parseEndpointModels(body: unknown, endpoint: Pick<CustomEndpoint
       description: text(m.description, 140),
       efforts: reasoning ? ["low", "medium", "high"] : [],
       vision,
+      ...(params ? { tools: params.includes("tools") } : {}),
     }];
   });
 }

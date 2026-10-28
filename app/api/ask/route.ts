@@ -1,14 +1,17 @@
 import path from "node:path";
 import { writeFileSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { claudeStream, codexStream, customConfigFor, customStream, opencodeStream, resolveProvider, streamResponse } from "@/lib/providers";
+import { claudeStream, codexStream, customAgentStream, customConfigFor, customStream, opencodeStream, resolveProvider, streamResponse } from "@/lib/providers";
+import { conversationsOf, overviewSection, recentExchanges } from "@/lib/endpoint-context";
+import { paperTextUpTo, runTool, toolSpecs } from "@/lib/endpoint-tools";
 import { effortFor } from "@/lib/model-catalog";
 import { createLineSplitter, parseJsonLine } from "@/lib/ndjson";
-import { buildSessionBootstrap, buildAskMessage } from "@/lib/prompts";
+import { buildSessionBootstrap, buildAskMessage, wantsWholePaper } from "@/lib/prompts";
 import {
   appendThread,
-  readThread,
   readMindmapFile,
+  readState,
+  conversationEntries,
   readPaperText,
   hasPaperText,
   paperPathFor,
@@ -163,8 +166,9 @@ export async function POST(req: Request) {
   // so history stays complete without re-sending image bytes on replays
   const figureFile = image_base64 ? await writeFigureImage(paper_id, String(image_base64)) : null;
 
-  // Replay context is read BEFORE appending the new user turn
-  const priorThread = provider === "custom" ? await readThread(paper_id) : [];
+  // What a custom endpoint is sent of this conversation is read BEFORE this
+  // question is appended to it
+  const ownEntries = provider === "custom" && conversation ? await conversationEntries(paper_id, conversation) : [];
   appendThread(paper_id, {
     ts: Date.now(),
     role: "user",
@@ -251,44 +255,57 @@ export async function POST(req: Request) {
     // A saved endpoint, read here with its key; see lib/endpoints
     const cfg = await customConfigFor(model, custom);
     if (!cfg) return new Response("custom API is not configured", { status: 400 });
+    const vision = !!cfg.vision;
+    const readUpTo = typeof read_up_to === "number" && read_up_to > 0 ? read_up_to : undefined;
+    const wholePaper = wantsWholePaper(typeof question === "string" ? question : undefined);
     const mindmap = await readMindmapFile(paper_id);
-    const paperText = (await readPaperText(paper_id)) || "";
-    const header = buildSessionBootstrap({
-      title: typeof paper_title === "string" ? paper_title : "the paper",
-      mindmapJson: mindmap ? JSON.stringify(mindmap) : undefined,
-      agentic: false,
-      paperTextInline: paperText.slice(0, 24000),
-    });
-    const messages: { role: string; content: unknown }[] = [{ role: "system", content: header }];
-    // The thread before this question: its figures go as images, which the
-    // endpoint can see, never as paths, which it cannot open
-    messages.push(...await replayForEndpoint(priorThread, {
-      vision: !!cfg.vision,
-      annotationId: annotation_id,
-      readFigure: (ref) => readFigureDataUrl(paper_id, ref),
-    }));
+    const conversations = conversationsOf(await readState(paper_id), conversation);
 
-    if (!cfg.vision) {
-      // Text-only model: never send image payloads
-      const note = image_base64
-        ? `${message}\n\n(A figure was attached, but this model is text-only — answer from the paper text and conversation context.)`
-        : message;
-      messages.push({ role: "user", content: note });
-    } else {
-      // Vision model: attach the ask's figure, plus the page snapshots around
-      // the selection so the model sees the page as laid out
+    // The question, with its figure and, for a model that reads images, the
+    // page it is about — and the pages either side, when it has no tools to
+    // look further itself
+    const ask = async (tools: boolean) => {
+      if (!vision) {
+        // Text-only model: never send image payloads
+        return { role: "user", content: image_base64 ? `${message}\n\n(A figure was attached, but this model is text-only — answer from the paper text and conversation context.)` : message };
+      }
       const content: unknown[] = [];
       if (image_base64) content.push({ type: "image_url", image_url: { url: image_base64 } });
       if (typeof page_number === "number") {
-        for (const n of [page_number - 1, page_number, page_number + 1]) {
+        for (const n of tools ? [page_number] : [page_number - 1, page_number, page_number + 1]) {
           const img = await readPageImageDataUrl(paper_id, n);
           if (img) content.push({ type: "image_url", image_url: { url: img } });
         }
       }
       content.push({ type: "text", text: message });
-      messages.push({ role: "user", content: content.length > 1 ? content : message });
-    }
-    return streamResponse(teeToThread(customStream({ ...cfg, effort: effortFor(model, effort) }, messages), teeOpts));
+      return { role: "user", content: content.length > 1 ? content : message };
+    };
+    // The paper's map and its conversations with what each worked out, then
+    // this conversation's latest exchanges as they were had — its figures as
+    // images, never paths — then the question. With tools the paper is read
+    // on demand; without, the pages up to mine go inline.
+    const build = async (tools: boolean) => {
+      const header = buildSessionBootstrap({
+        title: typeof paper_title === "string" ? paper_title : "the paper",
+        mindmapJson: mindmap ? JSON.stringify(mindmap) : undefined,
+        agentic: false,
+        tools: tools ? { vision } : undefined,
+        paperTextInline: tools ? undefined : paperTextUpTo((await readPaperText(paper_id)) || "", wholePaper ? undefined : readUpTo, 24000),
+      });
+      const overview = overviewSection(conversations, { tools });
+      const history = await replayForEndpoint(recentExchanges(ownEntries, tools ? 12000 : 20000), {
+        vision,
+        annotationId: conversation,
+        readFigure: (ref) => readFigureDataUrl(paper_id, ref),
+      });
+      return [{ role: "system", content: overview ? `${header}\n\n${overview}` : header }, ...history, await ask(tools)];
+    };
+
+    const config = { ...cfg, effort: effortFor(model, effort) };
+    if (cfg.tools === false) return streamResponse(teeToThread(customStream(config, await build(false)), teeOpts));
+    const toolContext = { paperId: paper_id, readUpTo, wholePaper, vision, conversations };
+    const tools = { specs: toolSpecs({ vision }), run: (name: string, args: unknown) => runTool(name, args, toolContext) };
+    return streamResponse(teeToThread(customAgentStream(config, await build(true), tools, () => build(false)), teeOpts));
   }
 
   // claude CLI. A session the CLI no longer has — its transcript cleaned up,

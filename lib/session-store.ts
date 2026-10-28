@@ -396,6 +396,11 @@ export async function readThread(id: string, maxEntries = 40, maxChars = 24000):
   return kept;
 }
 
+// Every entry of one conversation, in order
+export async function conversationEntries(id: string, conversation: string): Promise<ThreadEntry[]> {
+  return withoutWithdrawn(entriesOf(await threadLines(id)), await readWithdrawn(id)).filter((e) => e.annotationId === conversation);
+}
+
 // Where a conversation stands: its last question, and the last question of
 // the whole thread, whichever conversation that was asked in
 export async function conversationTurns(id: string, conversation: string): Promise<{ previous?: { turn: number; text: string }; latest?: number }> {

@@ -77,6 +77,7 @@ export function buildSessionBootstrap(opts: {
   pagesCount?: number;
   figuresDir?: string; // where captured-figure screenshots are stored
   agentic: boolean; // model has file tools (claude / codex CLIs)
+  tools?: { vision: boolean }; // a custom endpoint given the reader's tools (lib/endpoint-tools)
   paperTextInline?: string; // fallback for tool-less providers
 }): string {
   const parts = [
@@ -118,6 +119,10 @@ The paper: "${opts.title}"`,
         `Figures I capture during our conversation are saved under ${opts.figuresDir}/ — when I refer back to an earlier figure, re-view its file rather than asking me to re-attach it.`
       );
     }
+  } else if (opts.tools) {
+    parts.push(
+      `The paper's text is not in front of you: read what you need with read_paper (by page) and search_paper${opts.tools.vision ? ", and look at a page with view_page when its layout, a figure, a table or an equation matters" : ""}. Read a passage before you answer about it rather than guess what the page says. Our earlier conversations are listed below with what each worked out; read_conversation gives one in full.`
+    );
   } else if (opts.paperTextInline) {
     parts.push(`The paper's extracted text (possibly truncated):\n\n${opts.paperTextInline}`);
   }
