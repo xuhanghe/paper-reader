@@ -3,6 +3,7 @@ import { useState, useCallback, useEffect, useRef } from "react";
 import { SessionState, Annotation, ConceptEntry, Model, Effort, Mindmap, DocType, Highlight, Message } from "@/types/session";
 import { makeLabel } from "@/lib/session-utils";
 import { cacheDocument, getCachedDocument } from "@/lib/document-cache";
+import { fetchZoteroDocument } from "@/lib/paper-data";
 import { sessionIdFor, legacySessionIdFor } from "@/lib/session-id";
 import { uid } from "@/lib/uid";
 
@@ -27,9 +28,41 @@ const AUTOSAVE_DELAY_MS = 800;
 // carries its whole PDF in there), then autosave the same bytes straight
 // back. The document itself is shared with the document cache.
 const keptSessions = new Map<string, SessionState>();
-// What was last written for each paper, so an autosave of the state just
-// loaded, or just written, is not written again
+// What was last written for each paper — without its document — so an
+// autosave of the state just loaded, or just written, is not written again
 const lastSaved = new Map<string, string>();
+// The document the server holds for each local paper. A local paper's PDF is
+// megabytes and its conversation changes with every answer, so a save carries
+// the document only when the server does not have this one yet; the server
+// keeps it beside the state (lib/session-store).
+const documentSent = new Map<string, string>();
+
+type SaveRequest = { key: string; body: string; document?: string };
+
+// A save of one paper's state: `key` is the state without the document, for
+// telling whether anything changed; `body` adds the document when it is new
+function saveRequest(id: string, s: SessionState): SaveRequest {
+  const key = JSON.stringify({ id, state: { ...s, pdfDataUrl: "" } });
+  if (s.zoteroKey || !s.pdfDataUrl || documentSent.get(id) === s.pdfDataUrl) return { key, body: key };
+  return { key, body: JSON.stringify({ id, state: s }), document: s.pdfDataUrl };
+}
+
+// Papers let go of, until opened again: a save still in flight when one is
+// closed must not pin its document here once it lands
+const released = new Set<string>();
+
+// A closed paper: nothing here holds on to its state or its document
+function letGo(id: string) {
+  keptSessions.delete(id);
+  documentSent.delete(id);
+  released.add(id);
+}
+
+async function send(id: string, request: SaveRequest): Promise<boolean> {
+  const res = await fetch("/api/sessions", { method: "POST", headers: { "Content-Type": "application/json" }, body: request.body });
+  if (res.ok && request.document && !released.has(id)) documentSent.set(id, request.document);
+  return res.ok;
+}
 
 // Stable per-paper session id: the Zotero item key when the paper lives in
 // Zotero (survives renames, consistent everywhere), else a name slug. Lives
@@ -67,15 +100,13 @@ export function useSession() {
   // on a quick tab switch, or the parked copy's save, would otherwise write
   // the empty session over the saved conversation, and every card is gone.
   const restoredRef = useRef<Set<string>>(new Set());
+  // Papers whose tab was closed while still on screen: let go once the reader
+  // moves off them, rather than parked to be come back to
+  const closingRef = useRef<Set<string>>(new Set());
 
   const persist = useCallback((id: string, s: SessionState) => {
     if (!restoredRef.current.has(id)) return Promise.resolve();
-    const state = s.zoteroKey ? { ...s, pdfDataUrl: "" } : s;
-    return fetch("/api/sessions", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id, state }),
-    }).catch(() => {});
+    return send(id, saveRequest(id, s)).catch(() => {});
   }, []);
 
   // A change meant for one paper: applied on screen if that paper is open,
@@ -100,7 +131,7 @@ export function useSession() {
   }, [persist]);
 
   // A closed tab has nothing to come back to: write what its parked copy
-  // holds and let it go
+  // holds and let it go — its document included, which nothing else holds
   const forgetPaper = useCallback((id: string) => {
     const timer = parkedSaves.current.get(id);
     const parked = parkedRef.current.get(id);
@@ -110,10 +141,16 @@ export function useSession() {
       clearTimeout(timer);
       if (parked) persist(id, parked);
     }
+    // The paper on screen is saved once more on the way out; its copy here
+    // goes when the reader moves off it
+    if (id === activeIdRef.current) closingRef.current.add(id);
+    else letGo(id);
   }, [persist]);
 
   // Close the open material and return to the empty reader (last tab closed)
   const clearPaper = useCallback(() => {
+    const left = activeIdRef.current;
+    if (left && closingRef.current.delete(left)) letGo(left);
     activeIdRef.current = null;
     setSession((s) => ({ ...DEFAULT_STATE, model: s.model, effort: s.effort }));
     try { localStorage.removeItem(LAST_SESSION_KEY); } catch {}
@@ -126,14 +163,10 @@ export function useSession() {
     if (!s.pdfName || !s.pdfDataUrl) return;
     const id = sessionIdFor(s.pdfName, s.zoteroKey);
     if (!restoredRef.current.has(id)) return;
-    const state = s.zoteroKey ? { ...s, pdfDataUrl: "" } : s;
     try {
       localStorage.setItem(LAST_SESSION_KEY, id);
-      await fetch("/api/sessions", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id, state }),
-      });
+      const request = saveRequest(id, s);
+      if (await send(id, request)) lastSaved.set(id, request.key);
     } catch {
       // best effort — the debounced autosave will retry
     }
@@ -159,7 +192,9 @@ export function useSession() {
         if (!res.ok) return;
         const { state } = await res.json();
         if (!state?.pdfName) return;
-        lastSaved.set(last, JSON.stringify({ id: last, state }));
+        lastSaved.set(last, JSON.stringify({ id: last, state: { ...state, pdfDataUrl: "" } }));
+        // A local paper's document came from the server: it has it
+        if (!state.zoteroKey && state.pdfDataUrl) documentSent.set(last, state.pdfDataUrl);
         restoredRef.current.add(last);
 
         if (!state.pdfDataUrl && state.zoteroKey) {
@@ -175,23 +210,10 @@ export function useSession() {
             return;
           }
           // Zero-copy session: pull the document back out of Zotero
-          const fileRes = await fetch(`/api/zotero/file?key=${encodeURIComponent(state.zoteroKey)}`);
-          if (!fileRes.ok) return;
-          // Needed to write highlights back as Zotero annotations
-          state.zoteroAttachmentKey = fileRes.headers.get("X-Attachment-Key") || state.zoteroAttachmentKey;
-          if ((fileRes.headers.get("Content-Type") || "").includes("text/html")) {
-            state.pdfDataUrl = await fileRes.text();
-            state.docType = "html";
-          } else {
-            const blob = await fileRes.blob();
-            state.pdfDataUrl = await new Promise<string>((resolve, reject) => {
-              const reader = new FileReader();
-              reader.onload = () => resolve(reader.result as string);
-              reader.onerror = () => reject(new Error("read failed"));
-              reader.readAsDataURL(blob);
-            });
-            state.docType = "pdf";
-          }
+          const loaded = await fetchZoteroDocument(state.zoteroKey);
+          state.zoteroAttachmentKey = loaded.attachmentKey || state.zoteroAttachmentKey;
+          state.pdfDataUrl = loaded.data;
+          state.docType = loaded.docType;
         }
         if (state.pdfDataUrl) {
           cacheDocument(last, state.pdfDataUrl);
@@ -217,16 +239,12 @@ export function useSession() {
     const t = setTimeout(() => {
       try { localStorage.setItem(LAST_SESSION_KEY, id); } catch {}
       // Zero-copy: papers that live in Zotero are saved without the document
-      // bytes — only the conversation context is stored locally
-      const state = session.zoteroKey ? { ...session, pdfDataUrl: "" } : session;
-      const body = JSON.stringify({ id, state });
-      if (lastSaved.get(id) === body) return;
-      lastSaved.set(id, body);
-      fetch("/api/sessions", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body,
-      }).catch(() => {});
+      // bytes — only the conversation context is stored locally — and a local
+      // paper's document is sent once, not with every change
+      const request = saveRequest(id, session);
+      if (lastSaved.get(id) === request.key && !request.document) return;
+      lastSaved.set(id, request.key);
+      send(id, request).catch(() => {});
     }, AUTOSAVE_DELAY_MS);
     return () => clearTimeout(t);
   }, [session, hydrated, restoring]);
@@ -239,8 +257,12 @@ export function useSession() {
     const leaving = sessionRef.current;
     const leavingId = leaving.pdfName ? sessionIdFor(leaving.pdfName, leaving.zoteroKey) : null;
     if (leavingId && leavingId !== id) {
-      parkedRef.current.set(leavingId, leaving.zoteroKey ? { ...leaving, pdfDataUrl: "" } : leaving);
+      // A closed tab is not parked: nothing comes back to it
+      if (closingRef.current.delete(leavingId)) letGo(leavingId);
+      else parkedRef.current.set(leavingId, leaving.zoteroKey ? { ...leaving, pdfDataUrl: "" } : leaving);
     }
+    closingRef.current.delete(id);
+    released.delete(id);
     activeIdRef.current = id;
     // Coming back to a parked paper: its copy here is the latest there is —
     // everything saved to disk came from it, plus whatever streamed in since

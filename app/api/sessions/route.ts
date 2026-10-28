@@ -10,9 +10,11 @@ export async function GET(req: NextRequest) {
   const legacy = req.nextUrl.searchParams.get("legacy") || undefined;
 
   if (id) {
-    const state = await readState(id, legacy);
+    // lean: the conversation without the document, for a paper whose document
+    // is already on screen
+    const lean = !!req.nextUrl.searchParams.get("lean");
+    const state = await readState(id, legacy, { document: !lean });
     if (!state) return Response.json({ error: "not found" }, { status: 404 });
-    if (req.nextUrl.searchParams.get("lean")) delete (state as Record<string, unknown>).pdfDataUrl;
     return Response.json({ state });
   }
 

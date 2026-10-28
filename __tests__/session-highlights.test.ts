@@ -26,7 +26,8 @@ describe("highlights written from the workspace", () => {
 
   test("a Zotero paper never opened in the Reader gets a session the Reader can open", async () => {
     assert.equal(await patchSessionHighlights(NEW, [mark("h1", "first")], { pdfName: "New.pdf", zoteroKey: "Z9", zoteroAttachmentKey: "ATT9" }), "created");
-    const state = await readState(NEW);
+    // Read as the Reader opens it, document and all: there is none to read
+    const state = await readState(NEW, undefined, { document: true });
     assert.equal(state?.zoteroKey, "Z9");
     assert.equal(state?.zoteroAttachmentKey, "ATT9");
     assert.equal(state?.pdfDataUrl, "", "the Reader fetches the PDF by key, as for its own Zotero sessions");

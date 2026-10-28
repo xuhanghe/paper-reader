@@ -22,6 +22,31 @@ export async function responseAsDataUrl(response: Response): Promise<string> {
   });
 }
 
+/**
+ * A Zotero item's document as the viewers take it: a PDF as a data URL, or a
+ * snapshot's HTML. `fresh` reads past any cached copy, for a reload.
+ */
+export async function fetchZoteroDocument(
+  key: string,
+  opts: { fresh?: boolean } = {}
+): Promise<{ data: string; docType: "pdf" | "html"; attachmentKey?: string; sourceUrl?: string }> {
+  const response = await fetch(`/api/zotero/file?key=${encodeURIComponent(key)}`, opts.fresh ? { cache: "no-store" } : undefined);
+  if (!response.ok) {
+    // The route says why: no attachment, Zotero not running, …
+    const body = await response.json().catch(() => null);
+    throw new Error(body?.error || "Could not fetch the file from Zotero");
+  }
+  // Needed to write highlights back as Zotero annotations
+  const attachmentKey = response.headers.get("X-Attachment-Key") || undefined;
+  // The page a web snapshot was taken from
+  const source = response.headers.get("X-Source-Url");
+  const sourceUrl = source ? decodeURIComponent(source) : undefined;
+  if ((response.headers.get("Content-Type") || "").includes("text/html")) {
+    return { data: await response.text(), docType: "html", attachmentKey, sourceUrl };
+  }
+  return { data: await responseAsDataUrl(response), docType: "pdf", attachmentKey, sourceUrl };
+}
+
 export async function loadPaperData(paper: MaterialTab): Promise<{ data: string; attachmentKey?: string }> {
   // Shared with the Reader, so crossing surfaces reuses the bytes already
   // fetched rather than pulling the whole PDF from Zotero again

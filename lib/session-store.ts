@@ -1,10 +1,11 @@
 import { homePath } from "@/lib/home";
-import { mkdir, readFile, writeFile, appendFile, rename, readdir, stat, rm } from "node:fs/promises";
+import { mkdir, readFile, writeFile, appendFile, rename, readdir, stat, rm, unlink } from "node:fs/promises";
 import path from "node:path";
 
 // Per-paper session store:
 //   .paper-reader-sessions/<id>/
 //     state.json    — UI state (annotation cards, prefs)
+//     document.dataurl — a local paper's document (not in Zotero), see writeState
 //     paper.md      — extracted text, written once; agentic models read it via file tools
 //     mindmap.json  — the paper map, independent artifact
 //     thread.jsonl  — the fused conversation: every question & answer, append-only
@@ -48,7 +49,49 @@ export function sessionRelativeFile(id: string, ref: string): string {
 
 // ── state.json (with migration from the old flat <slug>.json layout) ──
 
-export async function readState(id: string, legacyId?: string): Promise<Record<string, unknown> | null> {
+// A local paper's document — a PDF or a page that is not in Zotero — is kept
+// beside its state rather than inside it: written when it arrives, not again
+// with every change to a conversation, and read only by whoever asks for it.
+// A paper in Zotero keeps none; its document is read from Zotero.
+const DOCUMENT_FILE = "document.dataurl";
+
+// Written whole or not at all: a reader never sees half a file. Each write has
+// its own temporary name, so two saves landing together cannot share one.
+let tempCount = 0;
+async function writeAtomic(file: string, text: string) {
+  const temp = `${file}.${process.pid}.${++tempCount}.tmp`;
+  try {
+    await writeFile(temp, text);
+    await rename(temp, file);
+  } catch (error) {
+    await unlink(temp).catch(() => {});
+    throw error;
+  }
+}
+
+const exists = (file: string) => stat(file).then(() => true, () => false);
+
+/**
+ * A paper's saved state. Its document is attached only when `document` is
+ * asked for — everything else reads the conversation, and a local paper's
+ * document is megabytes.
+ */
+export async function readState(id: string, legacyId?: string, opts: { document?: boolean } = {}): Promise<Record<string, unknown> | null> {
+  const state = await readStateFile(id, legacyId);
+  if (!state) return null;
+  const embedded = typeof state.pdfDataUrl === "string" && state.pdfDataUrl;
+  if (!opts.document) delete state.pdfDataUrl;
+  else if (!embedded) {
+    try {
+      state.pdfDataUrl = await readFile(path.join(dirFor(id), DOCUMENT_FILE), "utf8");
+    } catch {
+      // a paper in Zotero, or one with nothing saved
+    }
+  }
+  return state;
+}
+
+async function readStateFile(id: string, legacyId?: string): Promise<Record<string, unknown> | null> {
   try {
     return JSON.parse(await readFile(path.join(dirFor(id), "state.json"), "utf8"));
   } catch {
@@ -58,8 +101,7 @@ export async function readState(id: string, legacyId?: string): Promise<Record<s
       try {
         const state = JSON.parse(await readFile(flat, "utf8"));
         // migrate into the directory layout
-        await ensureDir(id);
-        await writeFile(path.join(dirFor(id), "state.json"), JSON.stringify(state));
+        await writeState(id, state);
         await rename(flat, `${flat}.migrated`).catch(() => {});
         return state;
       } catch {
@@ -70,16 +112,37 @@ export async function readState(id: string, legacyId?: string): Promise<Record<s
   }
 }
 
+/**
+ * Saves a paper's state. A document in it is written to its own file; a state
+ * without one (`pdfDataUrl` empty) keeps the document already saved — an
+ * empty field never deletes it. A state saved before documents were kept
+ * apart has its document moved out on its next save.
+ */
 export async function writeState(id: string, state: unknown) {
   await ensureDir(id);
-  await writeFile(path.join(dirFor(id), "state.json"), JSON.stringify(state));
+  const dir = dirFor(id);
+  const record = { ...(state as Record<string, unknown>) };
+  const document = typeof record.pdfDataUrl === "string" ? record.pdfDataUrl : "";
+  const documentFile = path.join(dir, DOCUMENT_FILE);
+  if (document) {
+    await writeAtomic(documentFile, document);
+  } else if (!record.zoteroKey && !(await exists(documentFile))) {
+    try {
+      const before = JSON.parse(await readFile(path.join(dir, "state.json"), "utf8"));
+      if (typeof before?.pdfDataUrl === "string" && before.pdfDataUrl) await writeAtomic(documentFile, before.pdfDataUrl);
+    } catch {
+      // nothing saved before
+    }
+  }
+  record.pdfDataUrl = "";
+  await writeAtomic(path.join(dir, "state.json"), JSON.stringify(record));
 }
 
 // The Workspace marks the same paper the Reader does, and keeps the marks
 // where the Reader will find them: in the paper's state.json. A paper with no
 // state yet — attached from Zotero, never opened in the Reader — gets the
 // minimal one the Reader can open (it fetches the PDF by Zotero key). A local
-// paper with no state cannot be seeded: its PDF bytes live only in its state.
+// paper with no state cannot be seeded: its PDF bytes live only in its session.
 export async function patchSessionHighlights(
   id: string,
   highlights: unknown[],
@@ -100,7 +163,7 @@ export async function patchSessionHighlights(
     annotations: [],
     concepts: [],
     highlights,
-    model: "claude-sonnet-4-6",
+    model: "claude:sonnet",
   });
   return "created";
 }

@@ -28,6 +28,7 @@ import { SkillsDrawer } from "@/components/SkillsDrawer";
 import { SetupDialog } from "@/components/SetupDialog";
 import { loadOpenTabs, saveOpenTabs, subscribeOpenTabs, upsertOpenTab } from "@/lib/open-tabs";
 import { cacheDocument, forgetDocument, getCachedDocument } from "@/lib/document-cache";
+import { fetchZoteroDocument } from "@/lib/paper-data";
 import { useAgentSkills } from "@/hooks/useAgentSkills";
 import { ResizeHandle, usePanelWidth } from "@/components/ResizablePanel";
 import Link from "next/link";
@@ -274,21 +275,10 @@ export default function Home() {
           // Not in memory (e.g. after a restart): reload from Zotero, or from
           // the saved session for materials that don't live in Zotero
           if (tab.zoteroKey) {
-            const res = await fetch(`/api/zotero/file?key=${encodeURIComponent(tab.zoteroKey)}`);
-            if (!res.ok) throw new Error("zotero fetch failed");
+            const loaded = await fetchZoteroDocument(tab.zoteroKey);
             // Refresh the attachment key so highlights can sync after a restart
-            tab.attachmentKey = res.headers.get("X-Attachment-Key") || tab.attachmentKey;
-            if ((res.headers.get("Content-Type") || "").includes("text/html")) {
-              data = await res.text();
-            } else {
-              const blob = await res.blob();
-              data = await new Promise<string>((resolve, reject) => {
-                const reader = new FileReader();
-                reader.onload = () => resolve(reader.result as string);
-                reader.onerror = () => reject(new Error("read failed"));
-                reader.readAsDataURL(blob);
-              });
-            }
+            tab.attachmentKey = loaded.attachmentKey || tab.attachmentKey;
+            data = loaded.data;
           } else {
             const res = await fetch(`/api/sessions?id=${encodeURIComponent(id)}`);
             if (!res.ok) throw new Error("session fetch failed");
@@ -320,23 +310,9 @@ export default function Home() {
     setReloading(true);
     try {
       await flushSave();
-      const res = await fetch(`/api/zotero/file?key=${encodeURIComponent(tab.zoteroKey)}`, { cache: "no-store" });
-      if (!res.ok) return;
-      const attachmentKey = res.headers.get("X-Attachment-Key") || tab.attachmentKey;
-      let data: string;
-      if ((res.headers.get("Content-Type") || "").includes("text/html")) {
-        data = await res.text();
-      } else {
-        const blob = await res.blob();
-        data = await new Promise<string>((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onload = () => resolve(reader.result as string);
-          reader.onerror = () => reject(new Error("read failed"));
-          reader.readAsDataURL(blob);
-        });
-      }
-      cacheDocument(tab.id, data);
-      openMaterial(tab.name, data, tab.docType, tab.zoteroKey, attachmentKey, tab.sourceUrl);
+      const loaded = await fetchZoteroDocument(tab.zoteroKey, { fresh: true });
+      cacheDocument(tab.id, loaded.data);
+      openMaterial(tab.name, loaded.data, tab.docType, tab.zoteroKey, loaded.attachmentKey || tab.attachmentKey, tab.sourceUrl);
     } catch {
       // couldn't reach Zotero — keep showing what's already loaded
     } finally {

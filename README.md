@@ -263,17 +263,21 @@ item key so it survives renames:
 
 ```
 .paper-reader-sessions/<zotero-key>/
-  state.json      UI state — highlights, annotation cards, preferences
-  paper.md        extracted text, written once; agentic providers read it from disk
-  pages/          per-page JPEGs, for questions about figures
-  figures/        regions you captured, stored once rather than re-sent
-  mindmap.json    the paper map
-  thread.jsonl    the conversation, append-only
+  state.json        UI state — highlights, annotation cards, preferences
+  document.dataurl  the PDF itself, for a paper opened from disk rather than Zotero
+  paper.md          extracted text, written once; agentic providers read it from disk
+  pages/            per-page JPEGs, for questions about figures
+  figures/          regions you captured, stored once rather than re-sent
+  mindmap.json      the paper map
+  thread.jsonl      the conversation, append-only
 ```
 
 Keeping the paper text out of `state.json` is what makes the agentic providers
 work: they read `paper.md` as a file instead of having the whole document
-re-injected into every prompt.
+re-injected into every prompt. The same goes for a local PDF's bytes: they are
+sent and written once, to `document.dataurl`, so the autosave after each answer
+writes only the few kilobytes of `state.json`. A Zotero paper keeps no copy — it
+is read from Zotero when opened.
 
 Nothing inside a session directory records where the project lives — figure
 references in `thread.jsonl` are stored relative to the session — so the folder
