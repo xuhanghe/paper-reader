@@ -17,7 +17,7 @@ import {
   readPageImageDataUrl,
   figuresDirFor,
   writeFigureImage,
-  sessionRelativeFile,
+  readFigureDataUrl,
   countAsks,
   readWithdrawn,
   markWithdrawalsTold,
@@ -25,7 +25,7 @@ import {
 import { unwrapPartials } from "@/lib/claude-stream";
 import { turnMarker } from "@/lib/citations";
 import { selectedSkillPaths } from "@/lib/skills";
-import { earlierConversation, earlierConversationSection, freshStartOnLostSession, LOST_SESSION } from "@/lib/session-recovery";
+import { earlierConversation, earlierConversationSection, freshStartOnLostSession, LOST_SESSION, replayForEndpoint } from "@/lib/session-recovery";
 import { decodeCodexSessionId } from "@/lib/codex-runtime";
 
 export const runtime = "nodejs";
@@ -247,11 +247,13 @@ export async function POST(req: Request) {
       paperTextInline: paperText.slice(0, 24000),
     });
     const messages: { role: string; content: unknown }[] = [{ role: "system", content: header }];
-    // Replay carries only a text marker for past figures — never image bytes
-    for (const e of priorThread) {
-      const ref = e.imageFile ? sessionRelativeFile(paper_id, e.imageFile) : null;
-      messages.push({ role: e.role, content: ref ? `[figure attached: ${ref}]\n${e.text}` : e.text });
-    }
+    // The thread before this question: its figures go as images, which the
+    // endpoint can see, never as paths, which it cannot open
+    messages.push(...await replayForEndpoint(priorThread, {
+      vision: !!cfg.vision,
+      annotationId: annotation_id,
+      readFigure: (ref) => readFigureDataUrl(paper_id, ref),
+    }));
 
     if (!cfg.vision) {
       // Text-only model: never send image payloads

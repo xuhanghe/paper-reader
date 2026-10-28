@@ -1,13 +1,13 @@
 import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { rm, writeFile } from "node:fs/promises";
+import { mkdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
-  appendThread, dirFor, markWithdrawalsTold, readThread, readWithdrawn, withdrawTurns, withoutWithdrawn, writeState, type ThreadEntry,
+  appendThread, dirFor, markWithdrawalsTold, readFigureDataUrl, readThread, readWithdrawn, withdrawTurns, withoutWithdrawn, writeState, type ThreadEntry,
 } from "../lib/session-store.js";
 import {
   askGist, chatHistorySection, earlierConversation, earlierConversationSection, entriesBefore, freshStartOnLostSession,
-  indexThread, LOST_SESSION, parseChatHistory, showsProgress, threadPathFor,
+  indexThread, LOST_SESSION, parseChatHistory, replayForEndpoint, showsProgress, threadPathFor,
 } from "../lib/session-recovery.js";
 
 // A provider that has lost its transcript of a paper's conversation gets a
@@ -177,6 +177,56 @@ describe("withdrawn turns on disk", () => {
     assert.ok(!inline.includes("test answer") && !inline.includes("[turn 2]"), inline);
     // A turn after the cut is not earlier, withdrawn or not
     assert.deepEqual((await earlierConversation(W, { beforeTurn: 2 }))?.withdrawn, []);
+  });
+});
+
+// A custom endpoint is sent the thread with every question. It has no file
+// tools, so a figure goes as the image itself or is said in words — never as
+// a path it cannot open.
+describe("the thread sent to a custom endpoint", () => {
+  const q = (turn: number, text: string, annotationId: string, imageFile?: string): ThreadEntry =>
+    ({ ts: turn, role: "user", text: marker(turn, text), annotationId, ...(imageFile ? { imageFile } : {}) });
+  const ans = (text: string, annotationId: string): ThreadEntry => ({ ts: 0, role: "assistant", text, annotationId });
+  const thread = [
+    q(1, "figure one", "A", "figures/f1.png"), ans("about f1", "A"),
+    q(2, "figure two", "B", "figures/f2.png"), ans("about f2", "B"),
+    q(3, "figure three", "C", "figures/f3.png"), ans("about f3", "C"),
+    q(4, "figure four", "D", "figures/f4.png"), ans("about f4", "D"),
+    q(5, "plain", "B"), ans("plain answer", "B"),
+  ];
+  const readFigure = async (ref: string) => (ref.includes("f3") ? null : `data:image/png;base64,${path.basename(ref)}`);
+  const images = (messages: { content: unknown }[]) =>
+    messages.flatMap((m) => (Array.isArray(m.content) ? m.content.filter((p) => p.type === "image_url").map((p) => p.image_url.url) : []));
+
+  test("a model that reads images sees the figures themselves: its own conversation's first, then the newest, a few at most", async () => {
+    const messages = await replayForEndpoint(thread, { vision: true, annotationId: "A", readFigure, max: 2 });
+    assert.deepEqual(images(messages), ["data:image/png;base64,f1.png", "data:image/png;base64,f4.png"]);
+    assert.ok(String(messages[2].content).startsWith("(I attached a figure to this message."), "one past the cap is said in words");
+    assert.ok(String(messages[4].content).startsWith("(I attached a figure"), "one that could not be read is said in words");
+    assert.equal(messages[8].content, marker(5, "plain"));
+    assert.ok(!JSON.stringify(messages).includes("figures/"), "no path is ever sent");
+  });
+
+  test("a text-only model is told of each figure in words, and sent no image", async () => {
+    const messages = await replayForEndpoint(thread, { vision: false, annotationId: "A", readFigure });
+    assert.deepEqual(images(messages), []);
+    assert.equal(messages.filter((m) => String(m.content).startsWith("(I attached a figure")).length, 4);
+    assert.ok(!JSON.stringify(messages).includes("figures/"));
+  });
+
+  test("a figure is typed by its bytes, whatever its name, and only inside the paper's own folder", async () => {
+    const F = "__figure-type-test__";
+    await mkdir(path.join(dirFor(F), "figures"), { recursive: true });
+    await writeFile(path.join(dirFor(F), "figures", "fig-1.png"), Buffer.from("ffd8ffe000104a464946", "hex"));
+    await writeFile(path.join(dirFor(F), "figures", "fig-2.png"), Buffer.from("89504e470d0a1a0a", "hex"));
+    try {
+      assert.match((await readFigureDataUrl(F, "figures/fig-1.png")) ?? "", /^data:image\/jpeg;base64,/);
+      assert.match((await readFigureDataUrl(F, "figures/fig-2.png")) ?? "", /^data:image\/png;base64,/);
+      assert.equal(await readFigureDataUrl(F, "../__recovery-test__/state.json"), null);
+      assert.equal(await readFigureDataUrl(F, "figures/missing.png"), null);
+    } finally {
+      await rm(dirFor(F), { recursive: true, force: true });
+    }
   });
 });
 

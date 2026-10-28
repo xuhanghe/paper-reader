@@ -267,6 +267,29 @@ export async function writeFigureImage(id: string, dataUrl: string): Promise<str
   }
 }
 
+// A figure the thread refers to, as a data URL to send again. Typed by its
+// bytes, not its name: a figure is saved as .png whatever it was captured as,
+// and an API that is told the wrong type refuses the image.
+export async function readFigureDataUrl(id: string, ref: string): Promise<string | null> {
+  const file = path.resolve(dirFor(id), sessionRelativeFile(id, ref));
+  if (!file.startsWith(dirFor(id) + path.sep)) return null;
+  try {
+    const buf = await readFile(file);
+    const mime = imageType(buf);
+    return mime ? `data:${mime};base64,${buf.toString("base64")}` : null;
+  } catch {
+    return null;
+  }
+}
+
+function imageType(buf: Buffer): string | null {
+  if (buf[0] === 0x89 && buf.subarray(1, 4).toString("latin1") === "PNG") return "image/png";
+  if (buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return "image/jpeg";
+  if (buf.subarray(0, 4).toString("latin1") === "GIF8") return "image/gif";
+  if (buf.subarray(0, 4).toString("latin1") === "RIFF" && buf.subarray(8, 12).toString("latin1") === "WEBP") return "image/webp";
+  return null;
+}
+
 export async function countFigures(id: string): Promise<number> {
   try {
     return (await readdir(figuresDirFor(id))).filter((f) => f.endsWith(".png")).length;

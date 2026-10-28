@@ -180,6 +180,42 @@ export function earlierConversationSection(earlier: EarlierConversation, opts: {
   return parts.join("\n\n");
 }
 
+// ── The thread sent to a custom endpoint ──
+//
+// A custom endpoint keeps no conversation of its own: every question goes to
+// it with the thread before it. Nor has it file tools, so a figure in that
+// thread goes as the image itself, never as a path it cannot open — when the
+// model reads images, and only a few: the conversation's own first, then the
+// most recent. Any other is said in words.
+
+export const REPLAY_FIGURES = 3;
+const FIGURE_NOT_SHOWN = "(I attached a figure to this message. It is not shown to you here; go by what was said about it.)";
+
+export type ReplayMessage = { role: "user" | "assistant"; content: string | unknown[] };
+
+export async function replayForEndpoint(
+  entries: ThreadEntry[],
+  opts: { vision: boolean; annotationId?: string; readFigure: (ref: string) => Promise<string | null>; max?: number },
+): Promise<ReplayMessage[]> {
+  const shown = new Map<ThreadEntry, string>();
+  if (opts.vision) {
+    const own = (e: ThreadEntry) => !!opts.annotationId && e.annotationId === opts.annotationId;
+    // Newest first, the conversation asked in ahead of the rest (sort is stable)
+    const figures = entries.filter((e) => e.role === "user" && e.imageFile).reverse().sort((a, b) => Number(own(b)) - Number(own(a)));
+    for (const entry of figures) {
+      if (shown.size >= (opts.max ?? REPLAY_FIGURES)) break;
+      const url = await opts.readFigure(entry.imageFile!);
+      if (url) shown.set(entry, url);
+    }
+  }
+  return entries.map((entry) => {
+    const url = shown.get(entry);
+    if (url) return { role: entry.role, content: [{ type: "image_url", image_url: { url } }, { type: "text", text: entry.text }] };
+    const figure = entry.role === "user" && (entry.imageFile || entry.hasImage);
+    return { role: entry.role, content: figure ? `${FIGURE_NOT_SHOWN}\n${entry.text}` : entry.text };
+  });
+}
+
 // ── The workspace chat, which has no thread file ──
 
 export type ChatTurn = { role: "user" | "assistant"; content: string };
