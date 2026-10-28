@@ -21,6 +21,7 @@
 import { spawn } from "node:child_process";
 import { claudeBin, codexBin } from "./bin";
 import { prepareCodexEnvironment } from "./codex-runtime";
+import { codexUpdateStatus, keepCodexCurrent, parseVersion, type CodexUpdate } from "./codex-update";
 import { detectCli, type CliId } from "./doctor";
 import { listEndpoints, summarizeEndpoint, type CustomEndpoint, type EndpointSummary } from "./endpoints";
 import { EFFORT_LEVELS } from "./model-flags";
@@ -54,6 +55,10 @@ export type CatalogGroup = {
   detail?: string;
   // For a provider that isn't installed
   install?: string;
+  // The CLI's version, for a provider that is
+  version?: string;
+  // Codex being brought up to date, or out of date (lib/codex-update)
+  update?: CodexUpdate;
   models: CatalogModel[];
   endpoint?: EndpointSummary;
   fetchedAt: number;
@@ -332,20 +337,26 @@ const fresh = (group: CatalogGroup | undefined) =>
 
 const reason = (error: unknown) => (error instanceof Error ? error.message : String(error)).slice(0, 300);
 
-async function buildProviderGroup(provider: (typeof PROVIDERS)[number]): Promise<CatalogGroup> {
+// A finished Codex update is asked for its models the next time anyone looks
+const forgetCodex = () => forgetCatalogGroup("codex");
+
+/** `asked`: someone pressed refresh, so Codex is also checked for a newer release afresh. */
+async function buildProviderGroup(provider: (typeof PROVIDERS)[number], asked = false): Promise<CatalogGroup> {
   const base = { key: provider.id, provider: provider.id, label: provider.label, models: [] as CatalogModel[], fetchedAt: Date.now() };
   const cli = await detectCli(provider.cli);
   if (!cli.found) return { ...base, status: "missing", detail: "Not installed on this computer.", install: cli.install };
   if (cli.source === "probed") return { ...base, status: "error", detail: cli.note ?? "Installed, but not on the server's PATH." };
+  const found = { ...base, version: parseVersion(cli.version) };
   try {
     const models =
       provider.id === "claude" ? parseClaudeModels(await probeClaudeModels())
-      : provider.id === "codex" ? parseCodexModels(await probeCodexModels())
+      // Asked alongside, so this very answer already says whether it is updating
+      : provider.id === "codex" ? parseCodexModels((await Promise.all([probeCodexModels(), keepCodexCurrent(cli, forgetCodex, asked)]))[0])
       : parseOpencodeProviders(await probeOpencodeModels());
-    if (!models.length) return { ...base, status: "error", detail: "It answered, but listed no models. Is it signed in?" };
-    return { ...base, status: "ready", models, fetchedAt: Date.now() };
+    if (!models.length) return { ...found, status: "error", detail: "It answered, but listed no models. Is it signed in?" };
+    return { ...found, status: "ready", models, fetchedAt: Date.now() };
   } catch (error) {
-    return { ...base, status: "error", detail: reason(error), fetchedAt: Date.now() };
+    return { ...found, status: "error", detail: reason(error), fetchedAt: Date.now() };
   }
 }
 
@@ -385,13 +396,22 @@ function cachedRun(key: string, build: () => Promise<CatalogGroup>, refresh: boo
   return run;
 }
 
+// Read when the catalog is, not kept with the group: an update outlives the answer it started with
+const withUpdate = (group: CatalogGroup): CatalogGroup => {
+  const update = group.key === "codex" ? codexUpdateStatus() : undefined;
+  return update ? { ...group, update } : group;
+};
+
 /** Every provider and saved endpoint with its models. `refresh` re-asks all, or the one group named. */
 export async function getCatalog(refresh: boolean | string = false): Promise<CatalogGroup[]> {
   const endpoints = await listEndpoints();
   const live = new Set(["claude", "codex", "opencode", ...endpoints.map((e) => `custom:${e.id}`)]);
   for (const key of holder.groups.keys()) if (!live.has(key)) holder.groups.delete(key);
   return Promise.all([
-    ...PROVIDERS.map((p) => cachedRun(p.id, () => buildProviderGroup(p), refresh === true || refresh === p.id)),
+    ...PROVIDERS.map((p) => {
+      const asked = refresh === true || refresh === p.id;
+      return cachedRun(p.id, () => buildProviderGroup(p, asked), asked).then(withUpdate);
+    }),
     ...endpoints.map((e) => {
       const key = `custom:${e.id}`;
       // An edited endpoint is listed again: its URL or key may have changed

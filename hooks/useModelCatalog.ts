@@ -32,19 +32,39 @@ const subscribe = (listener: () => void) => {
   return () => listeners.delete(listener);
 };
 
-/** Fetches the catalog; `refresh` re-asks every backend, or the one group named. */
-export function loadModelCatalog(refresh?: true | string): Promise<void> {
+// While Codex updates itself the server asks it again once it is done (see
+// lib/codex-update); looking every few seconds until then brings the new
+// models in without anyone pressing refresh
+const UPDATE_POLL_MS = 5000;
+let followUp: ReturnType<typeof setTimeout> | null = null;
+
+const watchUpdates = (groups: CatalogGroup[]) => {
+  if (followUp || !groups.some((g) => g.update?.state === "running")) return;
+  followUp = setTimeout(() => {
+    followUp = null;
+    void loadModelCatalog(undefined, true);
+  }, UPDATE_POLL_MS);
+};
+
+/**
+ * Fetches the catalog; `refresh` re-asks every backend, or the one group named.
+ * `quiet` looks again without showing it: no spinner, and a failure keeps what is shown.
+ */
+export function loadModelCatalog(refresh?: true | string, quiet = false): Promise<void> {
   if (inflight && !refresh) return inflight;
-  update({ loading: true, error: null });
+  if (!quiet) update({ loading: true, error: null });
   const query = refresh ? `?refresh=${refresh === true ? "1" : encodeURIComponent(refresh)}` : "";
   const run = fetch(`/api/models${query}`)
     .then(async (res) => {
       const data = await res.json();
       if (!res.ok || !Array.isArray(data.groups)) throw new Error(data.error || "Could not list the models.");
       // A refresh of one group answers with all of them; keep the order stable
-      update({ groups: data.groups, loading: false });
+      update(quiet ? { groups: data.groups } : { groups: data.groups, loading: false });
+      watchUpdates(data.groups);
     })
-    .catch((error) => update({ loading: false, error: error instanceof Error ? error.message : String(error) }))
+    .catch((error) => {
+      if (!quiet) update({ loading: false, error: error instanceof Error ? error.message : String(error) });
+    })
     .finally(() => {
       if (inflight === run) inflight = null;
     });

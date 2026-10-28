@@ -170,6 +170,38 @@ export function AgentPicker({ value, effort, onChange, label = "Model" }: Props)
   const statusText = (g: CatalogGroup) =>
     g.status === "missing" ? "Not installed" : g.status === "error" && g.provider !== "custom" ? "Problem" : g.status === "error" ? "Unreachable" : "";
 
+  // OpenAI lists new models only to a new enough Codex (lib/codex-update)
+  const updateNotice = (g: CatalogGroup) => {
+    const u = g.update;
+    if (!u) return null;
+    if (u.state === "running") {
+      return (
+        <div className={styles.notice} aria-live="polite">
+          <strong>Updating {g.label} {u.from} → {u.to}…</strong>
+          Its newer models show here once it&apos;s done.
+        </div>
+      );
+    }
+    if (u.state === "failed") {
+      return (
+        <div className={styles.notice} data-tone="error">
+          <strong>{g.label} couldn&apos;t update to {u.to}</strong>
+          Running it in a terminal shows what went wrong.
+          <code>codex update</code>
+          {u.detail && <span className={styles.noticeDetail}>{u.detail}</span>}
+          <div className={styles.noticeActions}><button type="button" className="btn-ghost text-xs px-3 py-1" onClick={() => void loadModelCatalog(g.key)}>Try again</button></div>
+        </div>
+      );
+    }
+    return (
+      <div className={styles.notice}>
+        <strong>{g.label} {u.to} is out</strong>
+        This is {u.from}, which may not be offered the newest models. {u.detail}
+        {u.updatable && <code>codex update</code>}
+      </div>
+    );
+  };
+
   const modelsPane = () => {
     if (!view) {
       return loading || !groups
@@ -182,7 +214,7 @@ export function AgentPicker({ value, effort, onChange, label = "Model" }: Props)
         <div className={styles.modelsHead}>
           <ProviderMark provider={view.provider} />
           <strong>{view.label}</strong>
-          <small>{view.status === "ready" ? `${view.models.length} model${view.models.length === 1 ? "" : "s"}` : ""}</small>
+          <small>{[view.status === "ready" ? `${view.models.length} model${view.models.length === 1 ? "" : "s"}` : "", view.version ? `v${view.version}` : ""].filter(Boolean).join(" · ")}</small>
           <span className={styles.headActions}>
             {view.endpoint && (
               <>
@@ -220,6 +252,8 @@ export function AgentPicker({ value, effort, onChange, label = "Model" }: Props)
             <div className={styles.noticeActions}><button type="button" className="btn-ghost text-xs px-3 py-1" onClick={() => void loadModelCatalog(view.key)}>Try again</button></div>
           </div>
         )}
+
+        {updateNotice(view)}
 
         {view.models.length > 0 && (
           <div className={styles.modelList} role="radiogroup" aria-label={`${view.label} models`}>

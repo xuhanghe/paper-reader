@@ -374,6 +374,14 @@
 .notice[data-tone="error"] {
   border-color: rgba(217, 130, 43, 0.35);
 }
+/* What a command printed when it failed */
+.noticeDetail {
+  display: block;
+  margin-top: 6px;
+  color: var(--ink-faint);
+  font: 11px var(--font-geist-mono), monospace;
+  overflow-wrap: anywhere;
+}
 .noticeActions {
   display: flex;
   gap: 6px;
