@@ -33,18 +33,10 @@ export function ResizeHandle({ onDrag, onStart, onEnd }: ResizeHandleProps) {
           window.addEventListener("mousemove", move);
           window.addEventListener("mouseup", up);
         }}
-        className="w-[5px] -mx-[2px] z-10 shrink-0 cursor-col-resize group/handle flex justify-center"
+        className="pr-resize"
+        data-dragging={dragging || undefined}
       >
-        <div
-          className="w-[1.5px] h-full transition-all group-hover/handle:w-[3px]"
-          style={{ background: dragging ? "var(--accent)" : "var(--border-light)" }}
-          onMouseEnter={(event) => {
-            if (!dragging) event.currentTarget.style.background = "rgba(232,120,76,0.55)";
-          }}
-          onMouseLeave={(event) => {
-            if (!dragging) event.currentTarget.style.background = "var(--border-light)";
-          }}
-        />
+        <div />
       </div>
       {dragging && <div className="fixed inset-0 z-50 cursor-col-resize" />}
     </>
@@ -53,43 +45,33 @@ export function ResizeHandle({ onDrag, onStart, onEnd }: ResizeHandleProps) {
 
 // What a collapsed panel leaves behind: a narrow labelled strip you click to
 // bring it back. Shared so every collapsible panel in the app — the Zotero
-// library, the Workspace's project tree and its agent — collapses to the same
-// thing rather than to three lookalikes.
+// library, the conversation, the notebook, the Workspace's project tree and its
+// agent — collapses to the same thing rather than to lookalikes.
 export function CollapsedRail({
   label,
   side,
   onExpand,
   title,
+  count,
 }: {
   label: string;
   /** Which edge the panel lives on, so the border faces the content */
   side: "left" | "right";
   onExpand: () => void;
   title?: string;
+  /** How much is waiting inside, shown under the label */
+  count?: number;
 }) {
   return (
-    <button
-      onClick={onExpand}
-      className="flex flex-col items-center shrink-0 cursor-pointer transition-colors hover:bg-[rgba(230,237,243,0.05)]"
-      style={{
-        width: "2.25rem",
-        [side === "left" ? "borderRight" : "borderLeft"]: "1px solid var(--border)",
-        background: "var(--surface)",
-      }}
-      title={title ?? `Show ${label.toLowerCase()}`}
-    >
-      <span
-        className="flex items-center justify-center h-9 w-full shrink-0"
-        style={{ borderBottom: "1px solid var(--border)" }}
-      >
-        <span className="rotate-90 text-xs" style={{ color: "var(--ink-faint)" }}>≡</span>
+    <button type="button" onClick={onExpand} className="pr-rail" data-side={side} title={title ?? `Show ${label.toLowerCase()}`}>
+      <span className="pr-rail-head" aria-hidden="true">
+        {/* Points the way the panel will open */}
+        <svg viewBox="0 0 16 16">
+          <path d={side === "left" ? "M6 3.5 10.5 8 6 12.5" : "M10 3.5 5.5 8l4.5 4.5"} />
+        </svg>
       </span>
-      <span
-        className="mt-3 text-[10px] uppercase tracking-widest select-none"
-        style={{ color: "var(--ink-faint)", writingMode: "vertical-rl" }}
-      >
-        {label}
-      </span>
+      <span className="pr-rail-label">{label}</span>
+      {!!count && <span className="pr-rail-count">{count}</span>}
     </button>
   );
 }

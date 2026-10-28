@@ -2947,8 +2947,9 @@ export const PdfViewer = memo(forwardRef<PdfViewerHandle, Props>(function PdfVie
 
   return (
     <div className="h-full flex flex-col overflow-hidden">
-      {/* Toolbar */}
-      <div className="shrink-0 flex items-center gap-2 px-3 py-1.5" style={{ background: "var(--paper)", borderBottom: "1px solid var(--border)" }}>
+      {/* Toolbar — one line at any width: words give way to their icons
+          when the pane is narrow (see .pr-doc-toolbar) */}
+      <div className="pr-doc-toolbar">
         <span className="pill-group">
         <button onClick={() => zoomBy(1 / BUTTON_ZOOM_FACTOR)} className="btn-icon w-6 h-6 text-base leading-none" title="Zoom out (⌘/Ctrl+scroll or pinch)">−</button>
         <button ref={zoomPercentRef} onClick={zoomReset} className="btn-icon px-2 py-0.5 text-xs min-w-[44px] text-center tabular-nums" title="Fit page width">
@@ -2958,17 +2959,17 @@ export const PdfViewer = memo(forwardRef<PdfViewerHandle, Props>(function PdfVie
         </span>
 
         <button
+          type="button"
           onClick={() => setCaptureMode((v) => !v)}
-          className="text-xs px-2.5 py-1 rounded-full transition-all"
-          style={captureMode
-            ? { background: "linear-gradient(180deg, var(--accent-bright), var(--accent))", color: "#fff", boxShadow: "0 1px 6px rgba(232,120,76,0.4)" }
-            : { border: "1px solid var(--border)", color: "var(--ink-muted)" }}
+          className="pr-doc-tool"
+          aria-pressed={captureMode}
           title="Capture a figure or graph: click, then drag over the region (or ⌥ Option + drag anytime)"
         >
-          ✂ Capture figure
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 5.5v-3h3M10.5 2.5h3v3M13.5 10.5v3h-3M5.5 13.5h-3v-3" /></svg>
+          <span className="pr-wide">Capture figure</span>
         </button>
         {captureMode && (
-          <span className="text-[11px] pr-fade-up" style={{ color: "var(--accent)" }}>drag over a region…</span>
+          <span className="pr-doc-hint pr-fade-up">drag over a region…</span>
         )}
 
         {onReload && (
@@ -2983,13 +2984,10 @@ export const PdfViewer = memo(forwardRef<PdfViewerHandle, Props>(function PdfVie
           </button>
         )}
 
-        <span className="ml-auto flex items-center gap-2">
+        <span className="pr-doc-end">
           {numPages > 0 && (
-            <span
-              className="text-[11px] tabular-nums px-2 py-0.5 rounded-full"
-              style={{ color: "var(--ink-faint)", border: "1px solid var(--border-light)" }}
-            >
-              Page {currentPage} / {numPages}
+            <span className="pr-page-count">
+              <span className="pr-wide">Page&nbsp;</span>{currentPage} / {numPages}
             </span>
           )}
           <CollectionChip zoteroKey={zoteroKey} onReveal={onRevealCollection} />
@@ -3066,7 +3064,7 @@ export const PdfViewer = memo(forwardRef<PdfViewerHandle, Props>(function PdfVie
               position: "fixed",
               ...dragRect,
               border: "2px dashed var(--accent)",
-              background: "rgba(232,120,76,0.08)",
+              background: "rgba(225,195,105,0.08)",
               pointerEvents: "none",
               zIndex: 40,
             }}

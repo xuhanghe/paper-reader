@@ -1,0 +1,81 @@
+/* The Reader's Zotero library (components/ZoteroLibrary.tsx), drawn like the
+   Workspace's project tree: quiet rows, a muted chevron, the open paper
+   marked by the accent on its edge. Colours are the app's tokens. */
+
+.panel { display: flex; flex-direction: column; overflow: hidden; min-width: 170px; border-right: 1px solid var(--border); background: var(--surface); }
+
+.head { height: 36px; flex: 0 0 auto; display: flex; align-items: center; gap: 2px; padding: 0 6px 0 12px; border-bottom: 1px solid var(--border); }
+.head strong { min-width: 0; flex: 1; overflow: hidden; color: var(--ink); font-size: 12.5px; font-weight: 650; letter-spacing: .01em; white-space: nowrap; text-overflow: ellipsis; }
+.iconButton { width: 26px; height: 26px; flex: 0 0 auto; display: grid; place-items: center; border: 1px solid transparent; border-radius: 7px; background: transparent; padding: 0; color: var(--ink-faint); font-size: 14px; line-height: 1; transition: background .13s, border-color .13s, color .13s; }
+.iconButton:hover { border-color: var(--border); background: rgba(230, 237, 243, .05); color: var(--ink); }
+.iconButton svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+
+.search { position: relative; flex: 0 0 auto; padding: 8px 10px; border-bottom: 1px solid var(--border-light); }
+.search > svg { position: absolute; left: 20px; top: 50%; width: 13px; height: 13px; transform: translateY(-50%); fill: none; stroke: var(--ink-faint); stroke-width: 1.6; stroke-linecap: round; pointer-events: none; }
+.search textarea { display: block; width: 100%; resize: none; border: 1px solid var(--border); border-radius: 8px; outline: 0; background: var(--paper); padding: 6px 10px 6px 29px; color: var(--ink); font-size: 12px; line-height: 1.45; transition: border-color .13s, box-shadow .13s; }
+.search textarea::placeholder { color: var(--ink-faint); }
+.search textarea:focus { border-color: rgba(225, 195, 105, .55); box-shadow: 0 0 0 3px rgba(225, 195, 105, .08); }
+
+.tree { min-height: 0; flex: 1; overflow-y: auto; overscroll-behavior: contain; padding: 6px 0 12px; }
+
+/* A collection: one 28px row, the whole of it toggles */
+.collection { --depth: 0; width: 100%; height: 28px; display: flex; align-items: center; gap: 6px; padding: 0 8px 0 calc(8px + var(--depth) * 12px); color: var(--ink-muted); font-size: 12.5px; cursor: pointer; user-select: none; }
+.collection:hover { background: rgba(230, 237, 243, .045); color: var(--ink); }
+.collection[data-open] { color: var(--ink); }
+.collection[data-drop="edge"] { box-shadow: inset 0 2px 0 var(--accent); }
+.collection[data-drop="into"] { outline: 1px solid var(--accent); outline-offset: -1px; background: var(--accent-dim); }
+.collection[data-dragging] { opacity: .4; }
+.chevron { width: 10px; height: 10px; flex: 0 0 auto; fill: none; stroke: var(--ink-faint); stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; transition: transform .15s ease; }
+.collection[data-open] .chevron { transform: rotate(90deg); }
+.folder { width: 14px; height: 14px; flex: 0 0 auto; fill: none; stroke: #b99a55; stroke-width: 1.2; stroke-linejoin: round; }
+.name { min-width: 0; flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.count { min-width: 18px; height: 16px; flex: 0 0 auto; display: grid; place-items: center; padding: 0 5px; border-radius: 8px; background: rgba(230, 237, 243, .06); color: var(--ink-faint); font-size: 10px; font-variant-numeric: tabular-nums; }
+/* The pin takes no room until it is wanted, so a long name keeps its width */
+.pin { width: 0; height: 18px; flex: 0 0 auto; display: grid; place-items: center; margin-left: -6px; overflow: hidden; border: 0; border-radius: 5px; background: transparent; padding: 0; color: var(--ink-faint); opacity: 0; transition: opacity .12s; }
+.collection:hover .pin, .pin:focus-visible, .pin[aria-pressed="true"] { width: 18px; margin-left: 0; opacity: 1; }
+.pin[aria-pressed="true"] { color: var(--accent); }
+.pin:hover { color: var(--accent-bright); }
+.pin svg { width: 11px; height: 11px; fill: none; stroke: currentColor; stroke-width: 1.4; stroke-linejoin: round; }
+.pin[aria-pressed="true"] svg { fill: currentColor; }
+
+/* A paper */
+.item { --indent: 1.375rem; display: flex; align-items: center; border-left: 2px solid transparent; transition: background .12s; }
+.item:hover { background: rgba(230, 237, 243, .045); }
+.item[data-active] { border-left-color: var(--accent); background: #1c242b; }
+.item[data-filing] { opacity: .6; cursor: progress; }
+.item[data-dragging] { opacity: .4; }
+.open { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 2px; border: 0; background: none; padding: 6px 4px 6px var(--indent); text-align: left; }
+.open:disabled { opacity: .5; }
+.title { color: var(--ink); font-size: 12px; line-height: 1.38; }
+.item[data-active] .title { color: #f0f2f3; font-weight: 550; }
+.opening { margin-left: 6px; color: var(--accent); font-size: 10px; }
+.meta { overflow: hidden; color: var(--ink-faint); font-size: 10.5px; white-space: nowrap; text-overflow: ellipsis; }
+.trash { width: 22px; height: 22px; flex: 0 0 auto; display: grid; place-items: center; margin-right: 6px; border: 0; border-radius: 5px; background: transparent; padding: 0; color: #f08080; opacity: 0; transition: opacity .12s, background .12s; }
+.trash svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+.item:hover .trash, .trash:focus-visible { opacity: 1; }
+.trash:hover { background: rgba(248, 113, 113, .12); }
+
+.confirm { padding: 7px 8px 7px var(--indent); border-left: 2px solid #f87171; background: rgba(248, 113, 113, .08); }
+.confirm p { overflow: hidden; color: var(--ink); font-size: 11.5px; white-space: nowrap; text-overflow: ellipsis; }
+.confirm div { display: flex; align-items: center; gap: 6px; margin-top: 5px; color: var(--ink-muted); font-size: 10.5px; }
+.confirm button { height: 20px; border: 1px solid transparent; border-radius: 5px; background: transparent; padding: 0 7px; color: var(--ink-faint); font-size: 10.5px; }
+.confirm button.danger { border-color: rgba(248, 113, 113, .4); color: #f87171; }
+
+.hint { padding: 4px 8px 4px calc(var(--indent, 1.375rem) + 2px); color: var(--ink-faint); font-size: 11px; }
+.status { padding: 22px 12px; color: var(--ink-faint); font-size: 12px; text-align: center; }
+
+/* "All papers" closes the tree, like Zotero's My Library */
+.all { margin-top: 6px; border-top: 1px solid var(--border-light); padding-top: 4px; }
+.all > button.collection { border: 0; background: none; text-align: left; }
+.all > button.collection:hover { background: rgba(230, 237, 243, .045); }
+.library { width: 14px; height: 14px; flex: 0 0 auto; fill: none; stroke: var(--ink-faint); stroke-width: 1.2; stroke-linejoin: round; }
+
+.notice { display: flex; align-items: flex-start; gap: 6px; margin: 8px 10px 0; border-radius: 7px; background: var(--accent-dim); padding: 7px 9px; color: var(--ink-muted); font-size: 10.5px; line-height: 1.5; }
+.notice span { flex: 1; }
+.notice button { border: 0; background: none; color: var(--ink-faint); }
+.error { margin: 10px; border: 1px solid rgba(248, 113, 113, .3); border-radius: 8px; background: rgba(248, 113, 113, .08); padding: 9px 11px; color: #f87171; font-size: 11.5px; line-height: 1.5; }
+.error button { display: block; margin-top: 6px; border: 0; background: none; padding: 0; color: #f87171; text-decoration: underline; }
+
+@media (prefers-reduced-motion: reduce) {
+  .chevron { transition: none; }
+}

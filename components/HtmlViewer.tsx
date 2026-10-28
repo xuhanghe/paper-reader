@@ -339,13 +339,14 @@ export const HtmlViewer = memo(forwardRef<PdfViewerHandle, Props>(function HtmlV
   return (
     <div className="h-full flex flex-col overflow-hidden">
       {/* Zoom toolbar */}
-      <div className="shrink-0 flex items-center gap-1 px-3 py-1.5" style={{ background: "var(--paper)", borderBottom: "1px solid var(--border)" }}>
-        <span className="text-[10px] uppercase tracking-widest mr-1" style={{ color: "var(--ink-faint)" }}>Zoom</span>
-        <button onClick={() => applyZoom(zoom / ZOOM_STEP)} disabled={zoom <= ZOOM_MIN} className="btn-icon w-7 h-7 text-base leading-none" title="Zoom out">−</button>
-        <button onClick={() => applyZoom(1)} className="btn-icon px-2 py-0.5 text-xs min-w-[44px] text-center tabular-nums" title="Reset zoom">
-          {Math.round(zoom * 100)}%
-        </button>
-        <button onClick={() => applyZoom(zoom * ZOOM_STEP)} disabled={zoom >= ZOOM_MAX} className="btn-icon w-7 h-7 text-base leading-none" title="Zoom in">+</button>
+      <div className="pr-doc-toolbar">
+        <span className="pill-group">
+          <button onClick={() => applyZoom(zoom / ZOOM_STEP)} disabled={zoom <= ZOOM_MIN} className="btn-icon w-6 h-6 text-base leading-none" title="Zoom out">−</button>
+          <button onClick={() => applyZoom(1)} className="btn-icon px-2 py-0.5 text-xs min-w-[44px] text-center tabular-nums" title="Reset zoom">
+            {Math.round(zoom * 100)}%
+          </button>
+          <button onClick={() => applyZoom(zoom * ZOOM_STEP)} disabled={zoom >= ZOOM_MAX} className="btn-icon w-6 h-6 text-base leading-none" title="Zoom in">+</button>
+        </span>
         {onReload && (
           <button
             onClick={onReload}
@@ -357,8 +358,8 @@ export const HtmlViewer = memo(forwardRef<PdfViewerHandle, Props>(function HtmlV
             <span className={reloading ? "pr-spin inline-block" : "inline-block"}>↻</span>
           </button>
         )}
-        <span className="ml-auto flex items-center gap-2">
-          <span className="text-[10px] uppercase tracking-widest" style={{ color: "var(--ink-faint)" }}>HTML snapshot</span>
+        <span className="pr-doc-end">
+          <span className="pr-page-count pr-wide">HTML snapshot</span>
           <CollectionChip zoteroKey={zoteroKey} onReveal={onRevealCollection} />
         </span>
       </div>

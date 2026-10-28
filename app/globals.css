@@ -491,8 +491,8 @@ mark.pr-quoted:hover {
 
 /* A note entry revealed by clicking its highlight in the paper */
 @keyframes pr-entry-flash {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(232, 120, 76, 0); }
-  40%      { box-shadow: 0 0 0 2px rgba(232, 120, 76, 0.6); }
+  0%, 100% { box-shadow: 0 0 0 0 rgba(225, 195, 105, 0); }
+  40%      { box-shadow: 0 0 0 2px rgba(225, 195, 105, 0.6); }
 }
 .pr-entry-flash {
   animation: pr-entry-flash 0.8s ease-in-out 2;
@@ -564,7 +564,7 @@ mark.pr-quoted:hover {
   transition: border-color 0.13s, color 0.13s, background 0.13s, transform 0.1s;
 }
 .btn-ghost:hover:not(:disabled) {
-  border-color: rgba(232, 120, 76, 0.45);
+  border-color: rgba(225, 195, 105, 0.45);
   color: var(--ink);
   background: var(--accent-faint);
 }
@@ -578,7 +578,8 @@ mark.pr-quoted:hover {
   align-items: center;
   justify-content: center;
   background: linear-gradient(180deg, var(--accent-bright), var(--accent));
-  color: #fff;
+  /* Dark on gold: white on it reads at well under 2:1 */
+  color: #211b0e;
   border-radius: 6px;
   cursor: pointer;
   transition: filter 0.13s, transform 0.1s, box-shadow 0.13s;
@@ -587,7 +588,7 @@ mark.pr-quoted:hover {
 }
 .btn-primary:hover:not(:disabled) {
   filter: brightness(1.07);
-  box-shadow: 0 2px 6px rgba(232, 120, 76, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.12);
+  box-shadow: 0 2px 6px rgba(225, 195, 105, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.12);
 }
 .btn-primary:active:not(:disabled) {
   transform: translateY(0.5px);
@@ -606,6 +607,188 @@ mark.pr-quoted:hover {
   border-radius: 999px;
   padding: 2px 6px;
   background: rgba(230, 237, 243, 0.02);
+}
+
+/* ── Document toolbar (PDF and snapshot viewers) ───────────────
+   Always one line: when the pane is narrow — the conversation and the map
+   both open — words give way to their icons rather than wrapping, and the
+   collection chip goes last. */
+.pr-doc-toolbar {
+  container-type: inline-size;
+  height: 36px;
+  min-width: 0;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  overflow: hidden;
+  white-space: nowrap;
+  background: var(--paper);
+  border-bottom: 1px solid var(--border);
+}
+.pr-doc-toolbar > * { flex-shrink: 0; }
+.pr-doc-tool {
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 11px 0 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--ink-muted);
+  font-size: 12px;
+  transition: border-color 0.13s, color 0.13s, background 0.13s, box-shadow 0.13s;
+}
+.pr-doc-tool svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.pr-doc-tool:hover { border-color: rgba(225, 195, 105, 0.45); color: var(--ink); }
+.pr-doc-tool[aria-pressed="true"] {
+  border-color: transparent;
+  background: linear-gradient(180deg, var(--accent-bright), var(--accent));
+  color: #211b0e;
+  box-shadow: 0 1px 8px rgba(225, 195, 105, 0.35);
+}
+.pr-doc-hint { color: var(--accent); font-size: 11px; }
+.pr-doc-end {
+  min-width: 0;
+  flex-shrink: 1;
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.pr-page-count {
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 9px;
+  border: 1px solid var(--border-light);
+  border-radius: 999px;
+  color: var(--ink-faint);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.pr-doc-end .pr-collection-chip { min-width: 0; margin-right: 0; flex-shrink: 1; }
+@container (max-width: 560px) {
+  .pr-doc-toolbar .pr-wide { display: none; }
+  .pr-doc-tool { padding: 0 8px; }
+}
+@container (max-width: 400px) {
+  .pr-doc-toolbar .pr-collection-chip { display: none; }
+}
+
+/* ── A collapsed panel's rail, and the handle between panels
+   (components/ResizablePanel.tsx) ─────────────────────────────── */
+.pr-rail {
+  width: 2.25rem;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 0 0 12px;
+  border: 0;
+  background: var(--surface);
+  color: var(--ink-faint);
+  cursor: pointer;
+  transition: background 0.13s, color 0.13s;
+}
+.pr-rail[data-side="left"] { border-right: 1px solid var(--border); }
+.pr-rail[data-side="right"] { border-left: 1px solid var(--border); }
+.pr-rail:hover { background: rgba(230, 237, 243, 0.04); color: var(--ink-muted); }
+.pr-rail:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.pr-rail-head {
+  width: 100%;
+  height: 36px;
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  border-bottom: 1px solid var(--border);
+}
+.pr-rail-head svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; transition: transform 0.15s, color 0.13s; }
+.pr-rail:hover .pr-rail-head svg { color: var(--accent); }
+.pr-rail[data-side="left"]:hover .pr-rail-head svg { transform: translateX(1px); }
+.pr-rail[data-side="right"]:hover .pr-rail-head svg { transform: translateX(-1px); }
+.pr-rail-label { writing-mode: vertical-rl; font-size: 10.5px; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase; user-select: none; }
+.pr-rail-count {
+  min-width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  padding: 0 4px;
+  border-radius: 9px;
+  background: var(--accent-faint);
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.pr-resize { width: 5px; margin: 0 -2px; z-index: 10; flex-shrink: 0; display: flex; justify-content: center; cursor: col-resize; }
+.pr-resize > div { width: 1.5px; height: 100%; background: var(--border-light); transition: width 0.15s, background 0.15s; }
+.pr-resize:hover > div { width: 3px; background: rgba(225, 195, 105, 0.55); }
+.pr-resize[data-dragging] > div { width: 3px; background: var(--accent); }
+
+/* ── Reader with nothing open — drawn like the Workspace's empty stage ── */
+.pr-reader-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 40px 28px;
+  text-align: center;
+  color: var(--ink-muted);
+  background: radial-gradient(circle at 50% 44%, rgba(225, 195, 105, 0.05), transparent 38%), var(--parchment);
+}
+.pr-reader-empty > span {
+  width: 52px;
+  height: 52px;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(225, 195, 105, 0.3);
+  border-radius: 14px;
+  background: var(--accent-faint);
+  color: var(--accent);
+}
+.pr-reader-empty > span svg { width: 26px; height: 26px; fill: none; stroke: currentColor; stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; }
+.pr-reader-empty h2 { margin: 18px 0 8px; color: var(--ink); font: 24px/1.25 var(--font-lora), Georgia, serif; }
+.pr-reader-empty p { max-width: 440px; margin: 0; font-size: 13.5px; line-height: 1.6; }
+.pr-reader-empty-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; margin-top: 22px; }
+.pr-reader-empty-primary,
+.pr-reader-empty-secondary {
+  height: 36px;
+  display: inline-flex;
+  align-items: center;
+  border-radius: 9px;
+  padding: 0 16px;
+  font-size: 13px;
+  font-weight: 650;
+  cursor: pointer;
+  transition: filter 0.13s, transform 0.13s, border-color 0.13s, color 0.13s;
+}
+.pr-reader-empty-primary {
+  border: 1px solid var(--accent-bright);
+  background: linear-gradient(180deg, var(--accent-bright), var(--accent));
+  color: #211b0e;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.28);
+}
+.pr-reader-empty-primary:hover { filter: brightness(1.06); transform: translateY(-1px); }
+.pr-reader-empty-secondary { border: 1px solid #3a4651; background: #151b20; color: #c1c8ce; }
+.pr-reader-empty-secondary:hover { border-color: #56636e; color: var(--ink); }
+.pr-reader-empty-link {
+  margin-top: 16px;
+  color: var(--ink-faint);
+  font-size: 12px;
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-color: transparent;
+  text-underline-offset: 3px;
+  transition: color 0.13s, text-decoration-color 0.13s;
+}
+.pr-reader-empty-link:hover { color: var(--ink-muted); text-decoration-color: currentColor; }
+@media (prefers-reduced-motion: reduce) {
+  .pr-reader-empty-primary:hover { transform: none; }
 }
 
 /* Sidebar list rows (library items, collections) */

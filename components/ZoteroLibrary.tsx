@@ -1,8 +1,10 @@
 "use client";
-import { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo, memo, type CSSProperties } from "react";
 import { DocType } from "@/types/session";
 import { CollapsedRail } from "@/components/ResizablePanel";
+import { fetchZoteroDocument } from "@/lib/paper-data";
 import { GrowingTextarea } from "./GrowingTextarea";
+import styles from "./library.module.css";
 
 // Device-level preference for how root collections are arranged
 const ORDER_KEY = "paper-reader:collection-order";
@@ -48,7 +50,7 @@ type Props = {
   revealCollection?: { key: string; nonce: number } | null;
 };
 
-export function ZoteroLibrary({ onDocumentLoaded, activeDocName, isOpen, onToggle, width = 272, refreshSignal, revealCollection }: Props) {
+export const ZoteroLibrary = memo(function ZoteroLibrary({ onDocumentLoaded, activeDocName, isOpen, onToggle, width = 272, refreshSignal, revealCollection }: Props) {
   const [query, setQuery] = useState("");
   const [collections, setCollections] = useState<ZoteroCollection[]>([]);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -239,28 +241,9 @@ export function ZoteroLibrary({ onDocumentLoaded, activeDocName, isOpen, onToggl
     setOpeningKey(item.key);
     setError(null);
     try {
-      const res = await fetch(`/api/zotero/file?key=${encodeURIComponent(item.key)}`);
-      if (!res.ok) {
-        const data = await res.json().catch(() => null);
-        throw new Error(data?.error || "Could not fetch the file from Zotero");
-      }
-      const contentType = res.headers.get("Content-Type") || "";
-      const attachmentKey = res.headers.get("X-Attachment-Key") || undefined;
-      const rawSourceUrl = res.headers.get("X-Source-Url");
-      const sourceUrl = rawSourceUrl ? decodeURIComponent(rawSourceUrl) : undefined;
-      if (contentType.includes("text/html")) {
-        const html = await res.text();
-        onDocumentLoaded(item.title, html, "html", item.key, attachmentKey, sourceUrl);
-      } else {
-        const blob = await res.blob();
-        const dataUrl = await new Promise<string>((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onload = () => resolve(reader.result as string);
-          reader.onerror = () => reject(new Error("Failed to read PDF data"));
-          reader.readAsDataURL(blob);
-        });
-        onDocumentLoaded(`${item.title}.pdf`, dataUrl, "pdf", item.key, attachmentKey, sourceUrl);
-      }
+      const loaded = await fetchZoteroDocument(item.key);
+      const name = loaded.docType === "html" ? item.title : `${item.title}.pdf`;
+      onDocumentLoaded(name, loaded.data, loaded.docType, item.key, loaded.attachmentKey, loaded.sourceUrl);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not open this item");
     } finally {
@@ -348,35 +331,22 @@ export function ZoteroLibrary({ onDocumentLoaded, activeDocName, isOpen, onToggl
     const isActive = activeDocName === item.title || activeDocName === `${item.title}.pdf`;
     const confirming = confirmKey === item.key;
     const removing = removingKey === item.key;
+    const indentStyle = { "--indent": `${indent}rem` } as CSSProperties;
 
     // Asking before removing, in the row itself. The trash is recoverable, but
     // a stray click on a paper you are reading still shouldn't take it away.
     if (confirming) {
       return (
-        <div
-          key={item.key}
-          className="w-full py-1.5 pr-2"
-          style={{ paddingLeft: `${indent}rem`, borderLeft: "2px solid #F87171", background: "rgba(248,113,113,0.08)" }}
-        >
-          <p className="text-[11px] leading-snug truncate" style={{ color: "var(--ink)" }}>{item.title}</p>
-          <div className="flex items-center gap-2 mt-1">
-            <span className="text-[10px]" style={{ color: "var(--ink-muted)" }}>
-              {removing ? "Moving to trash…" : "Move to Zotero trash?"}
-            </span>
+        <div key={item.key} className={styles.confirm} style={indentStyle}>
+          <p>{item.title}</p>
+          <div>
+            <span>{removing ? "Moving to trash…" : "Move to Zotero trash?"}</span>
             {!removing && (
               <>
-                <button
-                  onClick={() => handleRemove(item)}
-                  className="text-[10px] px-1.5 py-0.5 rounded"
-                  style={{ color: "#F87171", border: "1px solid rgba(248,113,113,0.4)" }}
-                >
+                <button type="button" onClick={() => handleRemove(item)} className={styles.danger}>
                   Move
                 </button>
-                <button
-                  onClick={() => setConfirmKey(null)}
-                  className="text-[10px] px-1.5 py-0.5 rounded"
-                  style={{ color: "var(--ink-faint)" }}
-                >
+                <button type="button" onClick={() => setConfirmKey(null)}>
                   Cancel
                 </button>
               </>
@@ -397,39 +367,28 @@ export function ZoteroLibrary({ onDocumentLoaded, activeDocName, isOpen, onToggl
           event.dataTransfer.setData("text/plain", item.key);
         }}
         onDragEnd={() => { setDragPaper(null); setDropTargetKey(null); }}
-        className="group/item w-full flex items-center transition-colors"
+        className={styles.item}
+        data-active={isActive || undefined}
+        data-dragging={dragPaper?.key === item.key || undefined}
+        data-filing={filing === item.key || undefined}
+        style={indentStyle}
         title={!canDrag ? undefined : sourceCollection ? "Drag onto a collection to move this paper there" : "Drag onto a collection to file this paper there"}
-        style={{
-          borderLeft: isActive ? "2px solid var(--accent)" : "2px solid transparent",
-          background: isActive ? "var(--accent-dim)" : "transparent",
-          opacity: dragPaper?.key === item.key ? 0.4 : filing === item.key ? 0.6 : 1,
-          cursor: filing === item.key ? "progress" : undefined,
-        }}
-        onMouseEnter={(e) => { if (!isActive) (e.currentTarget as HTMLElement).style.background = "rgba(230,237,243,0.05)"; }}
-        onMouseLeave={(e) => { if (!isActive) (e.currentTarget as HTMLElement).style.background = "transparent"; }}
       >
-        <button
-          onClick={() => handleOpen(item)}
-          disabled={openingKey !== null}
-          className="min-w-0 flex-1 text-left py-1.5 pr-1 disabled:opacity-50"
-          style={{ paddingLeft: `${indent}rem` }}
-        >
-          <p className="text-[11px] leading-snug" style={{ color: "var(--ink)" }}>
+        <button type="button" onClick={() => handleOpen(item)} disabled={openingKey !== null} className={styles.open}>
+          <span className={styles.title}>
             {item.title}
-            {opening && <span className="ml-1.5 text-[10px]" style={{ color: "var(--accent)" }}>opening…</span>}
-          </p>
-          <p className="text-[10px] mt-0.5" style={{ color: "var(--ink-faint)" }}>
-            {[item.creators, item.year].filter(Boolean).join(" · ") || item.itemType}
-          </p>
+            {opening && <span className={styles.opening}>opening…</span>}
+          </span>
+          <span className={styles.meta}>{[item.creators, item.year].filter(Boolean).join(" · ") || item.itemType}</span>
         </button>
         <button
+          type="button"
           onClick={() => setConfirmKey(item.key)}
-          className="btn-icon w-5 h-5 mr-1.5 text-[10px] shrink-0 opacity-0 group-hover/item:opacity-100 focus:opacity-100 transition-opacity"
-          style={{ color: "#F87171" }}
+          className={styles.trash}
           title="Move this item to the Zotero trash"
           aria-label={`Move “${item.title}” to the Zotero trash`}
         >
-          🗑
+          <TrashIcon />
         </button>
       </div>
     );
@@ -446,6 +405,10 @@ export function ZoteroLibrary({ onDocumentLoaded, activeDocName, isOpen, onToggl
     const takesPaper = !!dragPaper && dragPaper.from !== collection.key;
     const isDropTarget =
       dropTargetKey === collection.key && (takesPaper || (depth === 0 && dragKey !== collection.key));
+    // Reordering inserts *before* a collection, so it marks the edge; filing a
+    // paper goes *into* one, so it lights the whole row.
+    const drop = isDropTarget ? (dragPaper ? "into" : "edge") : undefined;
+    const childIndent = 1.375 + depth * 0.75;
     return (
       <div key={collection.key} data-collection-key={collection.key}>
         <div
@@ -480,48 +443,43 @@ export function ZoteroLibrary({ onDocumentLoaded, activeDocName, isOpen, onToggl
             setDropTargetKey(null);
           }}
           onDragEnd={depth === 0 ? () => { setDragKey(null); setDropTargetKey(null); } : undefined}
-          className="group w-full text-left flex items-center gap-1.5 py-1.5 pr-2 transition-colors cursor-pointer select-none"
-          style={{
-            paddingLeft: `${0.625 + depth * 0.75}rem`,
-            // Reordering inserts *before* a collection, so it marks the edge;
-            // filing a paper goes *into* one, so it lights the whole row.
-            boxShadow: isDropTarget && !dragPaper ? "inset 0 2px 0 var(--accent)" : "none",
-            outline: isDropTarget && dragPaper ? "1px solid var(--accent)" : "none",
-            outlineOffset: "-1px",
-            background: isDropTarget && dragPaper ? "var(--accent-dim)" : undefined,
-            opacity: dragKey === collection.key ? 0.4 : 1,
-          }}
-          onMouseEnter={(e) => { if (!dragPaper) (e.currentTarget as HTMLElement).style.background = "rgba(230,237,243,0.05)"; }}
-          onMouseLeave={(e) => { if (!dragPaper) (e.currentTarget as HTMLElement).style.background = "transparent"; }}
+          className={styles.collection}
+          data-open={isExpanded || undefined}
+          data-drop={drop}
+          data-dragging={dragKey === collection.key || undefined}
+          style={{ "--depth": depth } as CSSProperties}
           title={dragPaper ? `File “${dragPaper.title}” into ${collection.name}` : depth === 0 ? "Drag to reorder" : undefined}
         >
-          <span className="text-[9px] shrink-0" style={{ color: "var(--accent)" }}>{isExpanded ? "▾" : "▸"}</span>
-          <span className="text-xs truncate" style={{ color: "var(--ink-muted)" }}>
-            {isPinned && <span title="Pinned" style={{ color: "var(--accent)" }}>⭑ </span>}
-            {collection.name}
-          </span>
-          <span className="ml-auto text-[10px] shrink-0 tabular-nums" style={{ color: "var(--ink-faint)" }}>
-            {collection.numItems > 0 ? collection.numItems : ""}
-          </span>
+          <Chevron />
+          <svg className={styles.folder} viewBox="0 0 16 16" aria-hidden="true">
+            <path d="M1.75 4.25c0-.69.56-1.25 1.25-1.25h3.04l1.5 1.6H13c.69 0 1.25.56 1.25 1.25v6.4c0 .69-.56 1.25-1.25 1.25H3c-.69 0-1.25-.56-1.25-1.25z" />
+          </svg>
+          <span className={styles.name}>{collection.name}</span>
+          {collection.numItems > 0 && <span className={styles.count}>{collection.numItems}</span>}
           {depth === 0 && (
             <button
+              type="button"
               onClick={(e) => { e.stopPropagation(); togglePin(collection.key); }}
-              className="btn-icon w-4 h-4 text-[10px] shrink-0 opacity-0 group-hover:opacity-100 transition-opacity"
-              style={isPinned ? { color: "var(--accent)", opacity: 1 } : {}}
+              className={styles.pin}
+              aria-pressed={isPinned}
               title={isPinned ? "Unpin" : "Pin to top"}
-            >⭑</button>
+            >
+              <svg viewBox="0 0 16 16" aria-hidden="true">
+                <path d="m8 2.25 1.7 3.55 3.9.5-2.85 2.7.72 3.85L8 11l-3.47 1.85.72-3.85L2.4 6.3l3.9-.5z" />
+              </svg>
+            </button>
           )}
         </div>
         {isExpanded && (
           <div>
             {children.map((c) => renderCollection(c, depth + 1))}
             {isLoading && (
-              <p className="text-[10px] py-1" style={{ color: "var(--ink-faint)", paddingLeft: `${1.375 + depth * 0.75}rem` }}>loading…</p>
+              <p className={styles.hint} style={{ "--indent": `${childIndent}rem` } as CSSProperties}>loading…</p>
             )}
             {items?.length === 0 && !isLoading && children.length === 0 && (
-              <p className="text-[10px] py-1" style={{ color: "var(--ink-faint)", paddingLeft: `${1.375 + depth * 0.75}rem` }}>no papers</p>
+              <p className={styles.hint} style={{ "--indent": `${childIndent}rem` } as CSSProperties}>no papers</p>
             )}
-            {items?.map((item) => renderItem(item, 1.375 + depth * 0.75, collection.key))}
+            {items?.map((item) => renderItem(item, childIndent, collection.key))}
           </div>
         )}
       </div>
@@ -535,76 +493,61 @@ export function ZoteroLibrary({ onDocumentLoaded, activeDocName, isOpen, onToggl
   const showSearch = query.trim().length > 0;
 
   return (
-    <div className="flex flex-col overflow-hidden" style={{ width: `${width}px`, minWidth: 170, borderRight: "1px solid var(--border)", background: "var(--surface)" }}>
-      {/* Header */}
-      <div className="flex items-center h-9 shrink-0 px-2.5" style={{ borderBottom: "1px solid var(--border)" }}>
-        <span className="text-xs font-medium" style={{ color: "var(--ink)", fontFamily: "var(--font-lora), Georgia, serif" }}>
-          Zotero Library
-        </span>
-        <button
-          onClick={reloadLibrary}
-          className="btn-icon ml-auto w-6 h-6 text-[11px]"
-          title="Refresh library"
-        >
-          ↻
+    <div className={styles.panel} style={{ width }}>
+      <div className={styles.head}>
+        <strong>Zotero library</strong>
+        <button type="button" onClick={reloadLibrary} className={styles.iconButton} title="Refresh library">
+          <svg viewBox="0 0 16 16" aria-hidden="true">
+            <path d="M13.25 8a5.25 5.25 0 1 1-1.54-3.71" />
+            <path d="M13.25 2.5v3.25H10" />
+          </svg>
         </button>
-        <button onClick={onToggle} className="btn-icon w-6 h-6 text-xs" title="Collapse">
-          ‹
+        <button type="button" onClick={onToggle} className={styles.iconButton} title="Collapse">
+          <svg viewBox="0 0 16 16" aria-hidden="true">
+            <path d="M10 3.5 5.5 8l4.5 4.5" />
+          </svg>
         </button>
       </div>
 
-      {/* Search */}
-      <div className="px-2.5 py-2 shrink-0" style={{ borderBottom: "1px solid var(--border-light)" }}>
-        <div className="relative">
-          <span
-            className="absolute left-2.5 top-1/2 -translate-y-1/2 text-sm leading-none pointer-events-none"
-            style={{ color: "var(--ink-faint)" }}
-          >
-            ⌕
-          </span>
-          <GrowingTextarea
-            value={query}
-            placeholder="Search papers…"
-            onChange={(e) => handleSearch(e.target.value)}
-            // A query is one line; Enter must not put a newline in it
-            onKeyDown={(e) => { if (e.key === "Enter") e.preventDefault(); }}
-            className="w-full text-xs pl-7 pr-2.5 py-1.5 rounded-md focus:outline-none transition-colors resize-none"
-            style={{ border: "1px solid var(--border)", background: "var(--paper)", color: "var(--ink)" }}
-            onFocus={(e) => (e.currentTarget.style.borderColor = "var(--accent)")}
-            onBlur={(e) => (e.currentTarget.style.borderColor = "var(--border)")}
-          />
-        </div>
+      <div className={styles.search}>
+        <svg viewBox="0 0 16 16" aria-hidden="true">
+          <circle cx="7" cy="7" r="4.25" />
+          <path d="m10.25 10.25 3.25 3.25" />
+        </svg>
+        <GrowingTextarea
+          value={query}
+          placeholder="Search papers…"
+          aria-label="Search the Zotero library"
+          onChange={(e) => handleSearch(e.target.value)}
+          // A query is one line; Enter must not put a newline in it
+          onKeyDown={(e) => { if (e.key === "Enter") e.preventDefault(); }}
+        />
       </div>
 
       {notice && (
-        <div className="mx-2.5 mt-2 px-2.5 py-1.5 rounded text-[10px] leading-relaxed flex items-start gap-1.5"
-             style={{ background: "var(--accent-dim)", color: "var(--ink-muted)" }}>
-          <span className="flex-1">{notice}</span>
-          <button onClick={() => setNotice(null)} className="shrink-0" style={{ color: "var(--ink-faint)" }} title="Dismiss">✕</button>
+        <div className={styles.notice}>
+          <span>{notice}</span>
+          <button type="button" onClick={() => setNotice(null)} title="Dismiss">✕</button>
         </div>
       )}
 
       {/* Tree / search results */}
-      <div className="flex-1 overflow-y-auto py-1">
+      <div className={styles.tree}>
         {error && (
-          <div className="m-2.5 px-2.5 py-2 rounded text-[11px] leading-relaxed" style={{ background: "rgba(248,113,113,0.08)", border: "1px solid rgba(248,113,113,0.3)", color: "#F87171" }}>
+          <div className={styles.error}>
             {error}
-            <button onClick={() => { setError(null); setLoaded(false); }} className="block mt-1.5 underline" style={{ color: "#F87171" }}>
+            <button type="button" onClick={() => { setError(null); setLoaded(false); }}>
               Try again
             </button>
           </div>
         )}
 
-        {!loaded && !error && (
-          <p className="text-xs text-center py-6" style={{ color: "var(--ink-faint)" }}>Loading library…</p>
-        )}
+        {!loaded && !error && <p className={styles.status}>Loading library…</p>}
 
         {showSearch ? (
           <>
-            {searching && <p className="text-xs text-center py-4" style={{ color: "var(--ink-faint)" }}>Searching…</p>}
-            {!searching && searchResults?.length === 0 && (
-              <p className="text-xs text-center py-4 px-3" style={{ color: "var(--ink-faint)" }}>No papers match your search</p>
-            )}
+            {searching && <p className={styles.status}>Searching…</p>}
+            {!searching && searchResults?.length === 0 && <p className={styles.status}>No papers match your search</p>}
             {!searching && searchResults?.map((item) => renderItem(item, 0.625, null, false))}
           </>
         ) : (
@@ -613,26 +556,48 @@ export function ZoteroLibrary({ onDocumentLoaded, activeDocName, isOpen, onToggl
               {orderedRoots.map((c) => renderCollection(c, 0))}
 
               {/* All papers — mirrors Zotero's "My Library" root */}
-              <button
-                onClick={() => toggleCollection("__all__")}
-                className="w-full text-left flex items-center gap-1.5 py-1.5 px-2.5 transition-colors mt-1"
-                style={{ borderTop: "1px solid var(--border-light)" }}
-                onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.background = "rgba(230,237,243,0.05)"; }}
-                onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.background = "transparent"; }}
-              >
-                <span className="text-[9px] shrink-0" style={{ color: "var(--accent)" }}>{expanded.has("__all__") ? "▾" : "▸"}</span>
-                <span className="text-xs" style={{ color: "var(--ink-muted)" }}>All papers (recent)</span>
-              </button>
-              {expanded.has("__all__") && (
-                <div>
-                  {loadingKeys.has("__all__") && <p className="text-[10px] py-1 pl-5" style={{ color: "var(--ink-faint)" }}>loading…</p>}
-                  {itemsByCollection["__all__"]?.map((item) => renderItem(item, 1.375))}
-                </div>
-              )}
+              <div className={styles.all}>
+                <button
+                  type="button"
+                  onClick={() => toggleCollection("__all__")}
+                  className={styles.collection}
+                  data-open={expanded.has("__all__") || undefined}
+                >
+                  <Chevron />
+                  <svg className={styles.library} viewBox="0 0 16 16" aria-hidden="true">
+                    <path d="M5.25 1.75h5.5l2.5 2.5v8.5h-8z" />
+                    <path d="M10.75 1.75v2.5h2.5" />
+                    <path d="M2.75 4.25v10h7.5" />
+                  </svg>
+                  <span className={styles.name}>All papers (recent)</span>
+                </button>
+                {expanded.has("__all__") && (
+                  <div>
+                    {loadingKeys.has("__all__") && <p className={styles.hint}>loading…</p>}
+                    {itemsByCollection["__all__"]?.map((item) => renderItem(item, 1.375))}
+                  </div>
+                )}
+              </div>
             </>
           )
         )}
       </div>
     </div>
+  );
+});
+
+function Chevron() {
+  return (
+    <svg className={styles.chevron} viewBox="0 0 10 10" aria-hidden="true">
+      <path d="M3.5 1.75 6.75 5 3.5 8.25" />
+    </svg>
+  );
+}
+
+function TrashIcon() {
+  return (
+    <svg viewBox="0 0 16 16" aria-hidden="true">
+      <path d="M2.75 4.5h10.5M6.25 4.5V3.25a1 1 0 0 1 1-1h1.5a1 1 0 0 1 1 1V4.5M4.25 4.5l.6 8.4a1 1 0 0 0 1 .93h4.3a1 1 0 0 0 1-.93l.6-8.4M6.75 7v4.25M9.25 7v4.25" />
+    </svg>
   );
 }

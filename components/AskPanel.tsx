@@ -9,6 +9,7 @@ import { trace, traceEnabled, describeForTrace } from "@/lib/panel-trace";
 import { withQuotes, quotePreview, quoteLabel, parseQuotes, addQuote as pushQuote, type Quote, type QuotedPassage } from "@/lib/quotes";
 import { clearMarks, markTextInContainer } from "@/lib/highlight-dom";
 import { GrowingTextarea } from "./GrowingTextarea";
+import { CollapsedRail } from "./ResizablePanel";
 
 type Props = {
   annotations: Annotation[];
@@ -1304,32 +1305,7 @@ export const ExplainPanel = memo(function ExplainPanel({ annotations, activeId, 
   const mode: "followup" | "new" = target ? composeMode : "new";
 
   if (!isOpen) {
-    return (
-      <button
-        onClick={onToggle}
-        className="flex flex-col items-center shrink-0 cursor-pointer transition-colors hover:bg-[rgba(230,237,243,0.05)]"
-        style={{ width: "2.25rem", borderLeft: "1px solid var(--border)", background: "var(--surface)" }}
-        title="Show the conversation"
-      >
-        <span className="flex items-center justify-center h-9 w-full shrink-0" style={{ borderBottom: "1px solid var(--border)" }}>
-          <span className="rotate-90 text-xs" style={{ color: "var(--ink-faint)" }}>≡</span>
-        </span>
-        <span
-          className="mt-3 text-[10px] uppercase tracking-widest select-none"
-          style={{ color: "var(--ink-faint)", writingMode: "vertical-rl" }}
-        >
-          Ask
-        </span>
-        {annotations.length > 0 && (
-          <span
-            className="mt-2 text-[10px] font-medium rounded px-1 py-0.5 tabular-nums"
-            style={{ background: "var(--accent-dim)", color: "var(--accent)" }}
-          >
-            {annotations.length}
-          </span>
-        )}
-      </button>
-    );
+    return <CollapsedRail label="Ask" side="right" onExpand={onToggle} title="Show the conversation" count={annotations.length} />;
   }
 
   // The follow-up bar sits outside the scrolling list, flush above the paper
@@ -1755,7 +1731,7 @@ export const ExplainPanel = memo(function ExplainPanel({ annotations, activeId, 
               style={{
                 background: "var(--surface)",
                 border: lit ? "1px solid var(--accent)" : "1px solid var(--border)",
-                boxShadow: lit ? "0 0 0 1px var(--accent), 0 4px 20px rgba(232,120,76,0.15)" : "var(--shadow-card)",
+                boxShadow: lit ? "0 0 0 1px var(--accent), 0 4px 20px rgba(225,195,105,0.15)" : "var(--shadow-card)",
               }}
             >
               {/* Card header — doubles as the collapse toggle */}

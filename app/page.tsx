@@ -1582,22 +1582,26 @@ export default function Home() {
               onRevealCollection={revealInLibrary}
             />
           ) : (
-            <div className="flex-1 flex flex-col items-center justify-center gap-4" style={{ background: "var(--parchment)" }}>
-              <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" style={{ color: "var(--ink-faint)" }}>
-                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-                <polyline points="14 2 14 8 20 8"/>
-                <line x1="16" y1="13" x2="8" y2="13"/>
-                <line x1="16" y1="17" x2="8" y2="17"/>
-                <polyline points="10 9 9 9 8 9"/>
-              </svg>
-              <p className="text-sm" style={{ color: "var(--ink-muted)" }}>Open a PDF, or pick a paper from your Zotero library on the left</p>
-              <label className="btn-primary cursor-pointer text-sm px-5 py-2">
-                Open PDF
-                <input type="file" accept=".pdf" onChange={handlePdfUpload} className="hidden" />
-              </label>
-              <p className="text-xs" style={{ color: "var(--ink-faint)" }}>or</p>
-              <label className="btn-ghost cursor-pointer text-xs px-3 py-1.5">
-                Load a previous session
+            <div className="pr-reader-empty">
+              <span aria-hidden="true">
+                <svg viewBox="0 0 24 24">
+                  <path d="M14 2.75H6.5a2 2 0 0 0-2 2v14.5a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2V8.25z" />
+                  <path d="M14 2.75v5.5h5.5M8.5 13h7M8.5 16.5h7M8.5 9.5h2" />
+                </svg>
+              </span>
+              <h2>Open a paper to read</h2>
+              <p>Open a PDF or a web page, or pick a paper from your Zotero library on the left. Select any passage to have it explained.</p>
+              <div className="pr-reader-empty-actions">
+                <label className="pr-reader-empty-primary">
+                  Open PDF
+                  <input type="file" accept=".pdf" onChange={handlePdfUpload} className="hidden" />
+                </label>
+                <button type="button" onClick={() => setUrlModalOpen(true)} className="pr-reader-empty-secondary">
+                  Open URL
+                </button>
+              </div>
+              <label className="pr-reader-empty-link">
+                or load a previous session
                 <input type="file" accept=".json,application/json" onChange={handleLoadSession} className="hidden" />
               </label>
             </div>

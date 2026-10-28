@@ -3,6 +3,7 @@ import { useState, useRef, useEffect, memo } from "react";
 import { Mindmap, MindmapNode, ConceptEntry, Highlight } from "@/types/session";
 import { isSubmitKey } from "@/lib/keys";
 import { GrowingTextarea } from "./GrowingTextarea";
+import { CollapsedRail } from "./ResizablePanel";
 
 // How long a note entry stays lit after jumping to it from the paper
 const ENTRY_FLASH_MS = 1600;
@@ -157,7 +158,7 @@ function ConceptCard({
       data-lit={lit ? "" : undefined}
       className="rounded px-2 py-1.5 transition-colors group/concept"
       style={{
-        background: lit ? "rgba(232,120,76,0.07)" : "rgba(230,237,243,0.03)",
+        background: lit ? "rgba(225,195,105,0.07)" : "rgba(230,237,243,0.03)",
         border: lit ? "1px solid var(--accent)" : "1px solid var(--border-light)",
         boxShadow: lit ? "0 0 0 1px var(--accent)" : undefined,
       }}
@@ -324,7 +325,7 @@ function NodeView({ node, depth, onJump, onAsk }: { node: MindmapNode; depth: nu
       <div
         className="rounded-lg transition-all"
         style={{ background: "var(--surface)", border: "1px solid var(--border)", boxShadow: "var(--shadow-card)" }}
-        onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.borderColor = "rgba(232,120,76,0.35)"; }}
+        onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.borderColor = "rgba(225,195,105,0.35)"; }}
         onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.borderColor = "var(--border)"; }}
       >
         <div
@@ -484,24 +485,7 @@ export const MindmapSidebar = memo(function MindmapSidebar({
   }, [tab, focusedConversation]);
 
   if (!isOpen) {
-    return (
-      <button
-        onClick={onToggle}
-        className="flex flex-col items-center shrink-0 cursor-pointer transition-colors hover:bg-[rgba(230,237,243,0.05)]"
-        style={{ width: "2.25rem", borderLeft: "1px solid var(--border)", background: "var(--surface)" }}
-        title="Show the notebook"
-      >
-        <span className="flex items-center justify-center h-9 w-full shrink-0" style={{ borderBottom: "1px solid var(--border)" }}>
-          <span className="rotate-90 text-xs" style={{ color: "var(--ink-faint)" }}>≡</span>
-        </span>
-        <span
-          className="mt-3 text-[10px] uppercase tracking-widest select-none"
-          style={{ color: "var(--ink-faint)", writingMode: "vertical-rl" }}
-        >
-          Notebook
-        </span>
-      </button>
-    );
+    return <CollapsedRail label="Notebook" side="right" onExpand={onToggle} title="Show the notebook" />;
   }
 
   return (
@@ -516,7 +500,7 @@ export const MindmapSidebar = memo(function MindmapSidebar({
             style={{
               color: tab === id ? "var(--ink)" : "var(--ink-faint)",
               boxShadow: tab === id ? "inset 0 -2px 0 var(--accent)" : "inset 0 -2px 0 transparent",
-              background: tab === id ? "linear-gradient(180deg, transparent 60%, rgba(232,120,76,0.07))" : "transparent",
+              background: tab === id ? "linear-gradient(180deg, transparent 60%, rgba(225,195,105,0.07))" : "transparent",
             }}
           >
             {label}
