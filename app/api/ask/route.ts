@@ -19,6 +19,8 @@ import {
   writeFigureImage,
   sessionRelativeFile,
   countAsks,
+  readWithdrawn,
+  markWithdrawalsTold,
 } from "@/lib/session-store";
 import { unwrapPartials } from "@/lib/claude-stream";
 import { turnMarker } from "@/lib/citations";
@@ -65,6 +67,7 @@ function teeToThread(source: ReadableStream, opts: TeeOpts): ReadableStream {
       text: finalText,
       kind: opts.kind,
       annotationId: opts.annotationId,
+      turn: opts.turn,
     }).catch(() => {});
   };
   // `cancel` is in the streams standard and in Node, but not yet in the
@@ -106,6 +109,17 @@ export async function POST(req: Request) {
   }
 
   const provider = resolveProvider(model);
+  const requestedSession = typeof session_id === "string" && session_id ? session_id : undefined;
+  const codexResumeId = provider === "codex" ? decodeCodexSessionId(requestedSession) : undefined;
+  const isResume = provider !== "custom" && !!requestedSession && (provider !== "codex" || !!codexResumeId);
+
+  // Turns I deleted that this session has not been told of: it is told now,
+  // once. (One begun after the deletion never saw them, and hears it all the
+  // same — once, harmlessly.) A fresh session is seeded from the record, and a
+  // custom endpoint is sent the thread each time; both already leave them out.
+  const withdrawn = isResume ? await readWithdrawn(paper_id) : null;
+  const untold = withdrawn ? withdrawn.turns.filter((t) => !(withdrawn.told[requestedSession!] ?? []).includes(t)) : [];
+
   let message = buildAskMessage({
     kind,
     selectedText: selected_text,
@@ -114,8 +128,10 @@ export async function POST(req: Request) {
     readUpTo: typeof read_up_to === "number" && read_up_to > 0 ? read_up_to : undefined,
     // null marks a rewrite whose original was never numbered
     rewriteOfTurn: rewrite_of_turn === undefined ? undefined : typeof rewrite_of_turn === "number" ? rewrite_of_turn : null,
+    withdrawnTurns: untold,
   });
   if (!message.trim() && !image_base64) return new Response("empty request", { status: 400 });
+  if (untold.length) markWithdrawalsTold(paper_id, requestedSession!, untold).catch(() => {});
 
   // Web access is a capability of the reader, not a per-message mode. Agentic
   // providers always keep it available; custom HTTP endpoints have no tool
@@ -149,10 +165,6 @@ export async function POST(req: Request) {
     hasImage: !!image_base64,
     imageFile: figureFile ?? undefined,
   }).catch(() => {});
-
-  const requestedSession = typeof session_id === "string" && session_id ? session_id : undefined;
-  const codexResumeId = provider === "codex" ? decodeCodexSessionId(requestedSession) : undefined;
-  const isResume = provider !== "custom" && !!requestedSession && (provider !== "codex" || !!codexResumeId);
 
   // The first message of a provider session carries the bootstrap header —
   // and, when this paper has been talked about before, the record of that

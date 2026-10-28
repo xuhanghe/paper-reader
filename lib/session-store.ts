@@ -9,6 +9,7 @@ import path from "node:path";
 //     paper.md      — extracted text, written once; agentic models read it via file tools
 //     mindmap.json  — the paper map, independent artifact
 //     thread.jsonl  — the fused conversation: every question & answer, append-only
+//     withdrawn.json — the turns of it I deleted, which its readers skip
 // <id> is the Zotero item key when the paper lives in Zotero, else a name slug.
 
 export const SESSIONS_ROOT = homePath(".paper-reader-sessions");
@@ -37,6 +38,9 @@ export type ThreadEntry = {
   // complete without re-injecting image bytes on replay. Relative to the
   // session directory; see resolveSessionFile.
   imageFile?: string;
+  // On an answer, the turn it answers. Answers written before turns could be
+  // withdrawn carry none.
+  turn?: number;
 };
 
 // The session-relative form of a stored reference. References are written
@@ -316,13 +320,15 @@ export async function countAsks(id: string): Promise<number> {
 export async function readThread(id: string, maxEntries = 40, maxChars = 24000): Promise<ThreadEntry[]> {
   try {
     const raw = await readFile(path.join(dirFor(id), "thread.jsonl"), "utf8");
-    const entries = raw
+    const parsed = raw
       .split("\n")
       .filter(Boolean)
       .map((l) => {
         try { return JSON.parse(l) as ThreadEntry; } catch { return null; }
       })
       .filter(Boolean) as ThreadEntry[];
+    // Before the cap, which counts what is kept
+    const entries = withoutWithdrawn(parsed, (await readWithdrawn(id)).turns);
     // newest-biased cap
     const recent = entries.slice(-maxEntries);
     let total = 0;
@@ -336,4 +342,90 @@ export async function readThread(id: string, maxEntries = 40, maxChars = 24000):
   } catch {
     return [];
   }
+}
+
+// ── withdrawn.json ──
+//
+// A question I deleted from a conversation, with its answer, is withdrawn.
+// The thread keeps it: turns are numbered by counting its questions, and an
+// answer still arriving may be appended at any moment, so it is never
+// rewritten. What is withdrawn is listed beside it instead — readers of the
+// thread leave those turns out, and each provider session that saw them is
+// told, once, under the session id it is resumed by (see app/api/ask).
+
+export type Withdrawn = { turns: number[]; told: Record<string, number[]> };
+
+const withdrawnPathFor = (id: string) => path.join(dirFor(id), "withdrawn.json");
+const turnList = (value: unknown): number[] =>
+  Array.isArray(value) ? [...new Set(value.filter((t): t is number => Number.isInteger(t) && t > 0))].sort((a, b) => a - b) : [];
+
+export async function readWithdrawn(id: string): Promise<Withdrawn> {
+  try {
+    const raw = JSON.parse(await readFile(withdrawnPathFor(id), "utf8")) as { turns?: unknown; told?: unknown };
+    const told: Record<string, number[]> = {};
+    if (raw.told && typeof raw.told === "object") {
+      for (const [session, turns] of Object.entries(raw.told)) told[session] = turnList(turns);
+    }
+    return { turns: turnList(raw.turns), told };
+  } catch {
+    return { turns: [], told: {} };
+  }
+}
+
+// One change at a time per paper: two deletions landing together must not
+// each write back a list without the other's turn
+const withdrawnChanges = new Map<string, Promise<void>>();
+function changeWithdrawn(id: string, change: (current: Withdrawn) => Withdrawn): Promise<void> {
+  const run = (withdrawnChanges.get(id) ?? Promise.resolve())
+    .catch(() => {})
+    .then(async () => {
+      await ensureDir(id);
+      await writeAtomic(withdrawnPathFor(id), JSON.stringify(change(await readWithdrawn(id))));
+    });
+  withdrawnChanges.set(id, run);
+  return run.finally(() => {
+    if (withdrawnChanges.get(id) === run) withdrawnChanges.delete(id);
+  });
+}
+
+export function withdrawTurns(id: string, turns: number[]): Promise<void> {
+  return changeWithdrawn(id, (current) => ({ ...current, turns: turnList([...current.turns, ...turns]) }));
+}
+
+export function markWithdrawalsTold(id: string, session: string, turns: number[]): Promise<void> {
+  return changeWithdrawn(id, (current) => ({ ...current, told: { ...current.told, [session]: turnList([...(current.told[session] ?? []), ...turns]) } }));
+}
+
+/**
+ * The thread without its withdrawn turns: each withdrawn question and the
+ * answer it got. A question's turn is its [turn N] marker, or its count for
+ * one from before the markers, as the model knew them. An answer names its
+ * turn since withdrawals existed; an older one is the next answer in the same
+ * conversation — unless that conversation asks again first, since an answer
+ * that came to nothing was never written.
+ */
+export function withoutWithdrawn(entries: ThreadEntry[], turns: Iterable<number>): ThreadEntry[] {
+  const gone = new Set(turns);
+  if (!gone.size) return entries;
+  const kept: ThreadEntry[] = [];
+  // Conversations whose withdrawn question's answer is still to come
+  const awaiting = new Set<string>();
+  let count = 0;
+  for (const entry of entries) {
+    const conversation = entry.annotationId ?? "";
+    if (entry.role === "user") {
+      count += 1;
+      const marker = /^\[turn (\d+)\]/.exec(entry.text);
+      awaiting.delete(conversation);
+      if (gone.has(marker ? Number(marker[1]) : count)) awaiting.add(conversation);
+      else kept.push(entry);
+      continue;
+    }
+    if (entry.turn !== undefined ? gone.has(entry.turn) : awaiting.has(conversation)) {
+      awaiting.delete(conversation);
+      continue;
+    }
+    kept.push(entry);
+  }
+  return kept;
 }

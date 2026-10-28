@@ -22,8 +22,7 @@ type Props = {
   // Rewrite a question already asked and send it again
   onEditMessage?: (annotationId: string, index: number, text: string) => void;
   // Take a follow-up and its answer (messages start to end) out of their
-  // conversation. Only out of the panel: like an edit, it cannot un-ask them
-  // of the provider's own session.
+  // conversation; the host also withdraws its turn from the model's memory
   onDeletePair?: (annotationId: string, start: number, end: number) => void;
   onAskGeneral: (question: string, imageDataUrl?: string, reference?: { key: string; title: string }, webSearch?: boolean) => void;
   onDelete: (annotationId: string) => void;

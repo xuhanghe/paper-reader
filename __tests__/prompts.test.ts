@@ -1,6 +1,6 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
-import { buildTextPrompt, buildImagePrompt, buildAskMessage, buildSessionBootstrap, buildTakeawaysPrompt, isDefinitionQuestion, wantsWholePaper, SYSTEM_PROMPT_TEXT, SYSTEM_PROMPT_IMAGE } from "../lib/prompts.js";
+import { buildTextPrompt, buildImagePrompt, buildAskMessage, buildSessionBootstrap, buildTakeawaysPrompt, isDefinitionQuestion, wantsWholePaper, withdrawnDirective, SYSTEM_PROMPT_TEXT, SYSTEM_PROMPT_IMAGE } from "../lib/prompts.js";
 
 // A reader stuck on a term wants the term, not its place in the argument. The
 // paper-focused default used to answer "what does this mean?" with the latter.
@@ -154,6 +154,27 @@ describe("a question asked again after editing", () => {
 
   test("an ordinary ask carries no such note", () => {
     assert.doesNotMatch(buildAskMessage({ kind: "followup", question: "why?" }), /This replaces/);
+  });
+});
+
+// A question deleted from the panel, with its answer, is still in the
+// provider's own session. The next ask that session gets says so, once.
+describe("questions deleted from a conversation", () => {
+  test("one turn, or several, named with their answers", () => {
+    assert.match(withdrawnDirective([2]), /^First: I have deleted my question in \[turn 2\] and your answer to it from our conversation\. Treat them as withdrawn/);
+    assert.match(withdrawnDirective([2, 4, 5]), /^First: I have deleted my questions in \[turn 2\], \[turn 4\] and \[turn 5\] and your answers to them /);
+    assert.equal(withdrawnDirective([]), "");
+  });
+
+  test("the notice comes first, ahead of a rewrite's", () => {
+    const msg = buildAskMessage({ kind: "followup", question: "so what is the residual?", rewriteOfTurn: 7, withdrawnTurns: [2] });
+    assert.match(msg, /^First: I have deleted my question in \[turn 2\][^\n]*\n\nThis replaces my question in \[turn 7\]/);
+    assert.ok(msg.includes("so what is the residual?"));
+  });
+
+  test("an empty ask stays empty, and an ordinary one carries no notice", () => {
+    assert.equal(buildAskMessage({ kind: "followup", question: "", withdrawnTurns: [2] }), "");
+    assert.doesNotMatch(buildAskMessage({ kind: "followup", question: "why?", withdrawnTurns: [] }), /I have deleted/);
   });
 });
 

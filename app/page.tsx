@@ -1033,6 +1033,24 @@ export default function Home() {
     [session.annotations, replaceMessageFrom, stopAsk, streamAsk, readingPage]
   );
 
+  // Delete a follow-up and its answer. The provider's own session still holds
+  // them, so the server is told the turn is withdrawn: the model hears so on
+  // the next ask, and the record a lost session is rebuilt from leaves it out.
+  // A question from before turns were numbered can only leave the panel.
+  const handleDeletePair = useCallback(
+    (annotationId: string, start: number, end: number) => {
+      const turn = session.annotations.find((a) => a.id === annotationId)?.messages[start]?.turn;
+      removeMessages(annotationId, start, end);
+      if (!paperId || !turn) return;
+      fetch("/api/ask/withdraw", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ paper_id: paperId, turns: [turn] }),
+      }).catch(() => {});
+    },
+    [session.annotations, removeMessages, paperId]
+  );
+
   const handleRemoveZoteroAnnotation = useCallback(
     (key: string) => {
       const forKey = session.zoteroKey;
@@ -1620,7 +1638,7 @@ export default function Home() {
           onFollowUp={handleFollowUp}
           onStop={stopAsk}
           onEditMessage={handleEditMessage}
-          onDeletePair={removeMessages}
+          onDeletePair={handleDeletePair}
           onAskGeneral={handleAskGeneral}
           onDelete={handleDelete}
           onReExplainImage={handleReExplainImage}

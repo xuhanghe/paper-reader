@@ -201,6 +201,16 @@ export function rewriteDirective(turn?: number): string {
   return `This replaces ${which}: I have rewritten it. Answer this version on its own terms, in full, as if the earlier wording and your answer to it had never been given — do not refer back to them or say it was already explained.\n\n`;
 }
 
+// Questions I deleted, with their answers, told to a session that may still
+// remember them. Ahead of the question, as a rewrite's notice is.
+export function withdrawnDirective(turns: number[]): string {
+  if (!turns.length) return "";
+  const named = turns.map((t) => `[turn ${t}]`);
+  const which = named.length === 1 ? `my question in ${named[0]}` : `my questions in ${named.slice(0, -1).join(", ")} and ${named[named.length - 1]}`;
+  const answers = named.length === 1 ? "your answer to it" : "your answers to them";
+  return `First: I have deleted ${which} and ${answers} from our conversation. Treat them as withdrawn — do not rely on them, refer back to them, or cite them.\n\n`;
+}
+
 // A reader checking their understanding as they go does not want to be told
 // what the paper says next. Unless they ask for the paper as a whole, in so
 // many words — these, conservatively; a passing "overall" is not a request
@@ -230,14 +240,17 @@ export function buildAskMessage(opts: {
   readUpTo?: number;
   // The turn this question replaces, when it is a rewrite of one already asked
   rewriteOfTurn?: number | null;
+  // Turns I deleted that the session answering has not yet been told of
+  withdrawnTurns?: number[];
 }): string {
   const body = askBody(opts);
   // An empty follow-up has to stay empty; the caller rejects it
   if (!body.trim()) return body;
+  const withdrawn = withdrawnDirective(opts.withdrawnTurns ?? []);
   const rewrite = opts.rewriteOfTurn !== undefined ? rewriteDirective(opts.rewriteOfTurn ?? undefined) : "";
   // A definition already leaves the paper out altogether
   const reading = opts.kind === "define" ? "" : readingDirective(opts.readUpTo, opts.question);
-  return `${rewrite}${body}${reading}${CITATION_DIRECTIVE}`;
+  return `${withdrawn}${rewrite}${body}${reading}${CITATION_DIRECTIVE}`;
 }
 
 // The same ask for the Workspace agent, whose chat spans a project rather

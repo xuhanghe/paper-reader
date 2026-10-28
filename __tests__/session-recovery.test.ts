@@ -1,7 +1,10 @@
 import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { rm } from "node:fs/promises";
-import { appendThread, dirFor, writeState } from "../lib/session-store.js";
+import { rm, writeFile } from "node:fs/promises";
+import path from "node:path";
+import {
+  appendThread, dirFor, markWithdrawalsTold, readThread, readWithdrawn, withdrawTurns, withoutWithdrawn, writeState, type ThreadEntry,
+} from "../lib/session-store.js";
 import {
   askGist, chatHistorySection, earlierConversation, earlierConversationSection, entriesBefore, freshStartOnLostSession,
   indexThread, LOST_SESSION, parseChatHistory, showsProgress, threadPathFor,
@@ -39,6 +42,12 @@ describe("what each ask was about", () => {
 
   test("the words directing the answer are not the question", () => {
     assert.equal(askGist("[turn 7] This replaces my question in [turn 6]: I have rewritten it. Answer this version on its own terms.\n\nwhat changed?\n\nAnswer in English, matching my question — not the language of the passage.").gist, "what changed?");
+  });
+
+  test("nor is the notice of a deleted turn, alone or ahead of a rewrite's", () => {
+    const withdrawn = "First: I have deleted my question in [turn 2] and your answer to it from our conversation. Treat them as withdrawn — do not rely on them, refer back to them, or cite them.\n\n";
+    assert.equal(askGist(`[turn 5] ${withdrawn}why?\n\nWhere you draw on the paper, link the words themselves.`).gist, "why?");
+    assert.equal(askGist(`[turn 7] ${withdrawn}This replaces my question in [turn 6]: I have rewritten it. Answer this version on its own terms.\n\nwhat changed?`).gist, "what changed?");
   });
 });
 
@@ -85,6 +94,89 @@ describe("the seed for a fresh session", () => {
 
   test("a paper never talked about has no seed", async () => {
     assert.equal(await earlierConversation("__recovery-none__", { beforeTurn: 1 }), null);
+  });
+});
+
+// A question deleted from the panel stays in the append-only thread; the
+// turns listed as withdrawn beside it are left out by whatever reads it back
+describe("withdrawn turns", () => {
+  const u = (turn: number | null, text: string, annotationId: string): ThreadEntry =>
+    ({ ts: 0, role: "user", text: turn === null ? text : marker(turn, text), annotationId });
+  const a = (text: string, annotationId: string, turn?: number): ThreadEntry =>
+    ({ ts: 0, role: "assistant", text, annotationId, ...(turn ? { turn } : {}) });
+  const texts = (entries: ThreadEntry[]) => entries.map((e) => e.text.replace(/^\[turn \d+\] /, ""));
+
+  test("a question goes with its answer: the one naming its turn, or else the next in its conversation", () => {
+    const entries = [u(1, "one", "A"), a("a1", "A"), u(2, "two", "B"), a("a2", "B"), u(3, "three", "A"), a("a3", "A", 3)];
+    assert.deepEqual(texts(withoutWithdrawn(entries, [2])), ["one", "a1", "three", "a3"]);
+    assert.deepEqual(texts(withoutWithdrawn(entries, [3])), ["one", "a1", "two", "a2"]);
+    assert.equal(withoutWithdrawn(entries, []), entries);
+  });
+
+  test("an answer arriving after another conversation's question is still its own", () => {
+    const entries = [u(2, "two", "B"), u(3, "three", "A"), a("a3", "A"), a("a2", "B")];
+    assert.deepEqual(texts(withoutWithdrawn(entries, [2])), ["three", "a3"]);
+    const tagged = [u(2, "two", "A"), u(3, "three", "A"), a("a2", "A", 2), a("a3", "A", 3)];
+    assert.deepEqual(texts(withoutWithdrawn(tagged, [2])), ["three", "a3"]);
+  });
+
+  test("a question whose answer never came takes no later answer with it", () => {
+    const entries = [u(2, "two", "B"), u(4, "four", "B"), a("a4", "B")];
+    assert.deepEqual(texts(withoutWithdrawn(entries, [2])), ["four", "a4"]);
+  });
+
+  test("questions from before the markers are numbered by count", () => {
+    const entries = [u(null, "first", "A"), a("a1", "A"), u(null, "second", "A"), a("a2", "A")];
+    assert.deepEqual(texts(withoutWithdrawn(entries, [2])), ["first", "a1"]);
+  });
+});
+
+describe("withdrawn turns on disk", () => {
+  const W = "__withdrawn-test__";
+  const RACE = "__withdrawn-race-test__";
+  before(async () => {
+    await writeState(W, { pdfName: "Withdrawn.pdf", pdfDataUrl: "", model: "m", annotations: [], highlights: [], concepts: [] });
+    await appendThread(W, { ts: 1, role: "user", text: marker(1, "what is pooling?"), kind: "followup", annotationId: "c1" });
+    await appendThread(W, { ts: 2, role: "assistant", text: "Pooling tests samples as one.", annotationId: "c1", turn: 1 });
+    await appendThread(W, { ts: 3, role: "user", text: marker(2, "test"), kind: "followup", annotationId: "c1" });
+    await appendThread(W, { ts: 4, role: "assistant", text: "A test answer.", annotationId: "c1", turn: 2 });
+    await appendThread(W, { ts: 5, role: "user", text: marker(3, "and the prior?"), kind: "followup", annotationId: "c1" });
+    await appendThread(W, { ts: 6, role: "assistant", text: "The prior carries prevalence.", annotationId: "c1", turn: 3 });
+    await withdrawTurns(W, [2]);
+  });
+  after(async () => {
+    await rm(dirFor(W), { recursive: true, force: true });
+    await rm(dirFor(RACE), { recursive: true, force: true });
+  });
+
+  test("two deletions landing together both count, and whom was told is kept per session", async () => {
+    await Promise.all([withdrawTurns(RACE, [3]), withdrawTurns(RACE, [1]), withdrawTurns(RACE, [3])]);
+    assert.deepEqual((await readWithdrawn(RACE)).turns, [1, 3]);
+    await markWithdrawalsTold(RACE, "session-a", [3]);
+    assert.deepEqual(await readWithdrawn(RACE), { turns: [1, 3], told: { "session-a": [3] } });
+  });
+
+  test("a damaged list is read for what is sound in it", async () => {
+    await writeFile(path.join(dirFor(RACE), "withdrawn.json"), JSON.stringify({ turns: [2, "x", -1, 2.5, 2], told: { s: [1, "y"] } }));
+    assert.deepEqual(await readWithdrawn(RACE), { turns: [2], told: { s: [1] } });
+    await writeFile(path.join(dirFor(RACE), "withdrawn.json"), "{ not json");
+    assert.deepEqual(await readWithdrawn(RACE), { turns: [], told: {} });
+  });
+
+  test("the replay a custom endpoint is sent leaves them out", async () => {
+    assert.deepEqual((await readThread(W)).map((e) => e.text), [marker(1, "what is pooling?"), "Pooling tests samples as one.", marker(3, "and the prior?"), "The prior carries prevalence."]);
+  });
+
+  test("a fresh session's seed leaves them out, and an agent reading the file is told to skip them", async () => {
+    const earlier = await earlierConversation(W, { beforeTurn: 4 });
+    assert.deepEqual(earlier?.index.map((e) => e.turn), [1, 3]);
+    assert.deepEqual(earlier?.withdrawn, [2]);
+    const agentic = earlierConversationSection(earlier!, { agentic: true });
+    assert.ok(/I deleted \[turn 2\] and the answer that followed/.test(agentic) && /skip them/.test(agentic));
+    const inline = earlierConversationSection(earlier!, { agentic: false });
+    assert.ok(!inline.includes("test answer") && !inline.includes("[turn 2]"), inline);
+    // A turn after the cut is not earlier, withdrawn or not
+    assert.deepEqual((await earlierConversation(W, { beforeTurn: 2 }))?.withdrawn, []);
   });
 });
 
