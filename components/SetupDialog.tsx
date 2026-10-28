@@ -90,6 +90,13 @@ export function SetupDialog({ onClose, firstRun = false }: Props) {
   const firstUndone: StepId = STEPS.find((s) => s.id !== "done" && !done[s.id])?.id ?? "done";
   const step: StepId = chosen ?? firstUndone;
 
+  // Escape closes, as clicking outside does
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => { if (e.key === "Escape" && !e.isComposing) onClose(); };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [onClose]);
+
   // Watching: a download finishing, Zotero coming up, a sign-in completing
   useEffect(() => {
     if (!waiting) return;

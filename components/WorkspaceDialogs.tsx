@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { FileIcon, FolderIcon } from "@/components/FileIcon";
 import type { MaterialTab } from "@/components/MaterialTabs";
 import { defaultExportPath } from "@/lib/conversation-export";
@@ -14,12 +14,31 @@ import styles from "./workspace-dialogs.module.css";
 // The Workspace's dialogs: making and removing a workspace, attaching papers,
 // copying them into the folder, and exporting the agent conversation.
 
+// Escape closes a dialog, as the Reader's do — but not while it is doing what
+// it was opened for (creating, removing, exporting, copying): closing then
+// would hide how that ends.
+function useEscapeToClose(active: boolean, close: () => void) {
+  const latest = useRef(close);
+  useEffect(() => { latest.current = close; });
+  useEffect(() => {
+    if (!active) return;
+    const handler = (event: KeyboardEvent) => {
+      // The Escape that ends an input method's composition is the input method's
+      if (event.key !== "Escape" || event.isComposing || event.defaultPrevented) return;
+      latest.current();
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [active]);
+}
+
 export function CreateWorkspaceDialog({ open, onClose, onCreated }: { open: boolean; onClose: () => void; onCreated: (workspace: ResearchWorkspace) => void }) {
   const [name, setName] = useState("");
   const [root, setRoot] = useState("");
   const [error, setError] = useState("");
   const [creating, setCreating] = useState(false);
   const [browsing, setBrowsing] = useState(false);
+  useEscapeToClose(open && !creating, onClose);
 
   if (!open) return null;
   const submit = async () => {
@@ -69,6 +88,7 @@ export function DeleteWorkspaceDialog({ workspace, onClose, onDelete }: { worksp
   const [confirmation, setConfirmation] = useState("");
   const [deleting, setDeleting] = useState<"record" | "directory" | null>(null);
   const [error, setError] = useState("");
+  useEscapeToClose(!deleting, onClose);
   const remove = async (deleteDirectory: boolean) => {
     setDeleting(deleteDirectory ? "directory" : "record"); setError("");
     try { await onDelete(deleteDirectory); }
@@ -162,6 +182,7 @@ export function PaperPicker({ open, papers, existing, onClose, onAdd }: { open: 
   }, [source, query, papers, zoteroPapers, existingIds]);
 
   const close = () => { setSelected({}); setQuery(""); setSource("__all__"); setVisibleCount(100); setError(""); onClose(); };
+  useEscapeToClose(open, close);
   const toggle = (choice: PaperChoice) => setSelected((current) => {
     const next = { ...current };
     if (next[choice.tab.id]) delete next[choice.tab.id]; else next[choice.tab.id] = choice.tab;
@@ -178,7 +199,7 @@ export function PaperPicker({ open, papers, existing, onClose, onAdd }: { open: 
     return next;
   });
   return (
-    <div className={styles.modalBackdrop}>
+    <div className={styles.modalBackdrop} role="presentation">
       <section className={`${styles.modal} ${styles.paperModal}`} role="dialog" aria-modal="true" aria-labelledby="add-papers-title">
         <header><div><small>ZOTERO LIBRARY</small><h2 id="add-papers-title">Attach papers</h2></div><button onClick={close} aria-label="Close">×</button></header>
         <div className={styles.paperPickerToolbar}>
@@ -220,8 +241,9 @@ export function ExportDialog({ open, workspace, messages, model, onClose, onExpo
   const [choosing, setChoosing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
-  if (!open) return null;
   const close = () => { setError(""); onClose(); };
+  useEscapeToClose(open && !saving, close);
+  if (!open) return null;
   const choose = async () => {
     setChoosing(true); setError("");
     try {
@@ -269,8 +291,9 @@ export function CopyPapersDialog({ open, workspace, onClose, onCopied }: { open:
   const [selected, setSelected] = useState<string[]>([]);
   const [copying, setCopying] = useState(false);
   const [error, setError] = useState("");
-  if (!open) return null;
   const close = () => { setSelected([]); setError(""); onClose(); };
+  useEscapeToClose(open && !copying, close);
+  if (!open) return null;
   const copy = async () => {
     setCopying(true); setError("");
     try {
@@ -285,9 +308,9 @@ export function CopyPapersDialog({ open, workspace, onClose, onCopied }: { open:
     finally { setCopying(false); }
   };
   return (
-    <div className={styles.modalBackdrop}>
-      <section className={styles.modal} role="dialog" aria-modal="true">
-        <header><div><small>EXPLICIT FILE COPY</small><h2>Choose PDFs to copy</h2></div><button onClick={close}>×</button></header>
+    <div className={styles.modalBackdrop} role="presentation">
+      <section className={styles.modal} role="dialog" aria-modal="true" aria-labelledby="copy-papers-title">
+        <header><div><small>EXPLICIT FILE COPY</small><h2 id="copy-papers-title">Choose PDFs to copy</h2></div><button onClick={close} aria-label="Close">×</button></header>
         <div className={styles.destination}><span><FolderIcon size={20} /></span><p><strong>Destination</strong><code>{workspace.root}/papers</code></p></div>
         <div className={styles.paperPicker}>{workspace.papers.map((paper) => <label key={paper.id}><input type="checkbox" checked={selected.includes(paper.id)} onChange={() => setSelected((current) => current.includes(paper.id) ? current.filter((id) => id !== paper.id) : [...current, paper.id])} /><span className={styles.kindPdf}><FileIcon kind="pdf" size={22} /></span><p><strong>{paper.name.replace(/\.pdf$/i, "")}</strong><small>Linked source remains unchanged</small></p></label>)}</div>
         {error && <p className={styles.error}>{error}</p>}
