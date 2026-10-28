@@ -105,8 +105,6 @@ export default function Home() {
     setPdf,
     setModel,
     setEffort,
-    setMapModel,
-    setMapEffort,
     setMindmap,
     addHighlight,
     removeHighlight,
@@ -583,7 +581,7 @@ export default function Home() {
         if (!opts.force && !isStale(concept?.summarizedTurns, messages.length)) return;
         const previous = concept?.takeaways ?? [];
         const edited = !!concept?.edited && !opts.force;
-        const model = state.mapModel || state.model;
+        const model = state.model;
         setSummarizing((s) => new Set(s).add(annotationId));
         try {
           const res = await fetch("/api/takeaways", {
@@ -595,7 +593,8 @@ export default function Home() {
               // Asked for again by hand, the list is written afresh
               previous: opts.force ? [] : previous,
               model,
-              effort: state.mapEffort || "low",
+              // A summary, not an answer: the same model, kept quick
+              effort: "low",
             }),
           });
           const data = await res.json();
@@ -1156,15 +1155,14 @@ export default function Home() {
         }
         return;
       }
-      const mapModel = session.mapModel || session.model;
       const res = await fetch("/api/mindmap", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           paper_text: paperText,
           paper_id: paperId,
-          model: mapModel,
-          effort: session.mapEffort || session.effort,
+          model: session.model,
+          effort: session.effort,
         }),
       });
       const data = await res.json();
@@ -1178,7 +1176,7 @@ export default function Home() {
     } finally {
       setMindmapLoading(false);
     }
-  }, [session.model, session.effort, session.mapModel, session.mapEffort, paperId, setMindmap]);
+  }, [session.model, session.effort, paperId, setMindmap]);
 
   // Initialize the paper's context store once per paper: cache the extracted
   // text as paper.md (agentic models read it with file tools), then upload
@@ -1358,21 +1356,12 @@ export default function Home() {
   // not handed a new element — and re-rendered — on every word of an answer
   const explainModelControls = useMemo(() => (
     <AgentPicker
-      label="Model for questions"
+      label="Model for questions and the notebook"
       value={session.model}
       effort={session.effort}
       onChange={(model, effort) => { setModel(model); setEffort(effort); }}
     />
   ), [session.model, session.effort, setModel, setEffort]);
-
-  const mapModelControls = useMemo(() => (
-    <AgentPicker
-      label="Model for the paper map"
-      value={session.mapModel || session.model}
-      effort={session.mapEffort || session.effort}
-      onChange={(model, effort) => { setMapModel(model); setMapEffort(effort); }}
-    />
-  ), [session.mapModel, session.model, session.mapEffort, session.effort, setMapModel, setMapEffort]);
 
   // The panels' handlers, made once: every panel is memoised, and a handler
   // written inline in the JSX would be a new prop on every render
@@ -1683,7 +1672,6 @@ export default function Home() {
           isOpen={sidebarOpen}
           onToggle={toggleNotebook}
           width={mindmapWidth}
-          modelControls={mapModelControls}
         />
       </div>
     </div>

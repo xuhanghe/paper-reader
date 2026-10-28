@@ -111,10 +111,10 @@ export type SessionState = {
   providerSessions?: Record<string, string>;
   annotations: Annotation[];
   concepts: ConceptEntry[];
-  model: Model; // model for the Explain panel (chat)
+  // The one model for the paper: its questions, its takeaways and its map.
+  // Sessions saved before may also hold a mapModel/mapEffort, now unused.
+  model: Model;
   effort?: Effort; // absent in old sessions → "high"
-  mapModel?: Model; // model for paper-map generation (defaults to `model`)
-  mapEffort?: Effort;
   mindmap?: Mindmap | null;
   highlights?: Highlight[];
 };

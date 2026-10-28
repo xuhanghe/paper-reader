@@ -1570,7 +1570,8 @@ export const ExplainPanel = memo(function ExplainPanel({ annotations, activeId, 
   // Two rows, by what they are for. The top row is touched while reading:
   // how the view follows an answer, folding every conversation, hiding the
   // panel. The row under it is set once and left: the text size, the model
-  // and its effort.
+  // and its effort. The top row is the notebook's tab row beside it — the
+  // same height, its line at the same height — so the two read as one bar.
   const followControl = annotations.length > 0 && (
     <span className="inline-flex shrink-0 items-center gap-1" role="group" aria-label="Follow">
       <span className="text-[10px] uppercase tracking-widest mr-0.5" style={{ color: "var(--ink-faint)" }}>Follow</span>
@@ -1596,8 +1597,8 @@ export const ExplainPanel = memo(function ExplainPanel({ annotations, activeId, 
     </span>
   );
   const toolbar = (
-    <div className="pr-explain-toolbar shrink-0 px-3 py-1.5 space-y-1" style={{ background: "var(--paper)", borderBottom: "1px solid var(--border)" }}>
-      <div className="flex flex-wrap items-center gap-1">
+    <div className="pr-explain-toolbar shrink-0" style={{ background: "var(--paper)", borderBottom: "1px solid var(--border)" }}>
+      <div className="flex flex-wrap items-center content-center gap-1 min-h-9 px-3 py-1" style={{ borderBottom: "1px solid var(--border)" }}>
         {followControl || <span className="text-[10px] uppercase tracking-widest" style={{ color: "var(--ink-faint)" }}>Ask</span>}
         <span className="ml-auto inline-flex shrink-0 items-center gap-1">
           {annotations.length > 1 && (
@@ -1614,7 +1615,7 @@ export const ExplainPanel = memo(function ExplainPanel({ annotations, activeId, 
           </button>
         </span>
       </div>
-      <div className="flex flex-wrap items-center gap-1">
+      <div className="flex flex-wrap items-center gap-1 px-3 py-1.5">
         <span className="inline-flex shrink-0 items-center gap-0.5">
           <span className="text-[10px] uppercase tracking-widest mr-1" style={{ color: "var(--ink-faint)" }}>Text</span>
           <button

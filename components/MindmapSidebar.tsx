@@ -56,7 +56,6 @@ type Props = {
   isOpen: boolean;
   onToggle: () => void;
   width?: number;
-  modelControls?: React.ReactNode;
 };
 
 // The paper text a node stands for — used as the quoted context when asking
@@ -421,7 +420,6 @@ export const MindmapSidebar = memo(function MindmapSidebar({
   isOpen,
   onToggle,
   width = 336,
-  modelControls,
 }: Props) {
   // Entry whose note is being written; clicking a card opens its editor
   const [notingId, setNotingId] = useState<string | null>(null);
@@ -530,12 +528,6 @@ export const MindmapSidebar = memo(function MindmapSidebar({
       {/* Map tab */}
       {tab === "map" && (
         <div className="flex-1 overflow-y-auto p-3">
-          {modelControls && (
-            <div className="flex items-center gap-1.5 mb-2">
-              <span className="text-[10px] uppercase tracking-widest" style={{ color: "var(--ink-faint)" }}>Map model</span>
-              {modelControls}
-            </div>
-          )}
           {!hasPdf && (
             <p className="text-xs text-center mt-6 px-3" style={{ color: "var(--ink-faint)" }}>
               Open a PDF to map the paper&apos;s flow

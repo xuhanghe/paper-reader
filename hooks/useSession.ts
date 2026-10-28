@@ -429,14 +429,6 @@ export function useSession() {
     setSession((s) => ({ ...s, effort }));
   }, []);
 
-  const setMapModel = useCallback((mapModel: Model) => {
-    setSession((s) => ({ ...s, mapModel }));
-  }, []);
-
-  const setMapEffort = useCallback((mapEffort: Effort | undefined) => {
-    setSession((s) => ({ ...s, mapEffort }));
-  }, []);
-
   // Fused per-paper conversation: one provider-native session id per provider
   const setProviderSession = useCallback((provider: string, id: string, forPaper?: string) => {
     applyTo(forPaper, (s) => ({ ...s, providerSessions: { ...s.providerSessions, [provider]: id } }));
@@ -585,8 +577,6 @@ export function useSession() {
     setPdf,
     setModel,
     setEffort,
-    setMapModel,
-    setMapEffort,
     setMindmap,
     addHighlight,
     removeHighlight,
