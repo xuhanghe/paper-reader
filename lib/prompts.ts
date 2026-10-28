@@ -81,7 +81,7 @@ export function buildSessionBootstrap(opts: {
   paperTextInline?: string; // fallback for tool-less providers
 }): string {
   const parts = [
-    `You are a reading companion for one academic paper. This conversation covers ALL of my questions about it — selected passages, figures, and general questions. Build on earlier answers; never repeat yourself.
+    `You are a reading companion for one academic paper. This conversation covers ALL of my questions about it — selected passages, figures, and general questions. Build on earlier answers where they bear on what I ask; never repeat yourself.
 
 Ground rules:
 - LANGUAGE — decide this before anything else, on every single reply:
@@ -90,6 +90,7 @@ Ground rules:
   3. Ignore the language of the paper and the language of these instructions. They are in English because the app writes them, which tells you nothing about what I want.
   Re-decide this each turn; I may switch languages mid-conversation and you should switch with me.
 - Explain plainly with no assumed knowledge; be direct and factual; do not judge the paper's claims.
+- Bring up an earlier question only when it bears on this one. When this question has nothing to do with what I asked before, answer it on its own: do not point out that it is unrelated, set it apart from an earlier topic, or add a "by the way" about something I asked earlier.
 - READ ALONG WITH ME. I read the paper in order, checking my understanding as I go, and each ask says where I am (a page). Stand on what comes before that point — the paper up to there, and general knowledge (the web, when I ask for something outside the paper). What the paper says after that point stays out: I have not read it yet, and being told it is not what I asked. Where a question can only be settled by something later, say only that the paper comes to it later, naming the section or page, without explaining it. The one exception is when I ask for the paper as a whole — "overall", "in the whole paper", "整篇" — and then all of it is fair game.
 - When I give you a selected passage, explain the idea itself first — self-contained, as if I had never opened this paper — and only then, briefly, what it is doing at this point, given what came before. When I ask what something *is* or *means*, the idea itself is the whole answer: leave the paper out unless I ask about it.
 - When I give you a figure, explain how to read it and what it shows.
@@ -158,7 +159,7 @@ function languageDirective(question?: string, passage?: string): string {
 // about it, and on any long conversation the rule is thousands of tokens back.
 // Same reasoning as the language directive above, same remedy.
 export const CITATION_DIRECTIVE =
-  "\n\nWhere you draw on the paper, link the words themselves: the link text is the quote, copied off the page character for character, e.g. [shared load bank conflicts = 20,666,167](paper:12) — never a description like [verbatim excerpt](paper:12), and never the quote sitting next to the link instead of inside it. Where you build on something earlier in our conversation, link it: [short phrase](turn:N), N being the number in my [turn N] marker. Those numbers are only for you to keep your place: I never see them, so never write one to me — no \"turn 49\", no \"第 49 轮\" — and name an earlier question by what it asked instead. Only where it genuinely helps.";
+  "\n\nWhere you draw on the paper, link the words themselves: the link text is the quote, copied off the page character for character, e.g. [shared load bank conflicts = 20,666,167](paper:12) — never a description like [verbatim excerpt](paper:12), and never the quote sitting next to the link instead of inside it. Where you build on something earlier in our conversation, link it: [short phrase](turn:N), N being the number in my [turn N] marker. Those numbers are only for you to keep your place: I never see them, so never write one to me — no \"turn 49\", no \"第 49 轮\" — and name an earlier question by what it asked instead. Only where it genuinely helps. Bring up an earlier question only when it bears on this one; when none does, say nothing about them — not even that they are unrelated.";
 
 // What the reader wants from a turn. The bootstrap carries the general
 // manners; the intent decides the shape of one answer, and travels on the
@@ -234,7 +235,7 @@ export function buildAskMessage(opts: {
   // A definition already leaves the paper out altogether
   const reading = opts.kind === "define" ? "" : readingDirective(opts.readUpTo, opts.question);
   const follows = opts.followsOn
-    ? `\n\nThis follows on from my question in [turn ${opts.followsOn.turn}] (${opts.followsOn.gist}), in the same conversation — not from the question I asked just before this one, which was about something else.`
+    ? `\n\nThis follows on from my question in [turn ${opts.followsOn.turn}] (${opts.followsOn.gist}), in the same conversation. The questions I asked in between belong to other conversations: leave them out of this answer.`
     : "";
   return `${body}${follows}${reading}${CITATION_DIRECTIVE}`;
 }

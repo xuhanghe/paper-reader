@@ -76,7 +76,9 @@ export function overviewSection(conversations: ConversationSummary[], opts: { to
   const how = opts.tools
     ? "Each is named by an id in brackets: read_conversation with it gives every question and answer of that one. The ids are only for you; never write one to me."
     : "The ids in brackets are only for you; never write one to me.";
-  return `Our conversations about this paper so far, and what each worked out (▶ marks the one I am asking in):\n${lines.join("\n")}\n${how}`;
+  // A list of what else was asked invites remarks about it; it is a map
+  const use = "The list is for finding your way: bring one of them up only when it bears on my question, and never to say it does not.";
+  return `Our conversations about this paper so far, and what each worked out (▶ marks the one I am asking in):\n${lines.join("\n")}\n${how} ${use}`;
 }
 
 /**

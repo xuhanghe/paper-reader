@@ -35,6 +35,7 @@ describe("the paper's conversations", () => {
     assert.ok(text.includes("    · Latency converges past 8 KB"));
     assert.match(text, /read_conversation with it/);
     assert.match(text, /never write one to me/);
+    assert.match(text, /bring one of them up only when it bears on my question, and never to say it does not/);
     assert.equal(overviewSection([], { tools: true }), "");
   });
 });

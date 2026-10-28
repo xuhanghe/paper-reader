@@ -142,8 +142,14 @@ describe("citations reach every ask, not just the first", () => {
 describe("a follow-up in a paper with several conversations", () => {
   test("names the question it follows on from, right after itself", () => {
     const msg = buildAskMessage({ kind: "followup", question: "我上一个问题是啥", readUpTo: 4, followsOn: { turn: 49, gist: "是不是OvS在userspace… — on \"OvS-DPDK (HW offload)\"" } });
-    assert.match(msg, /^我上一个问题是啥\n\nThis follows on from my question in \[turn 49\] \(是不是OvS在userspace… — on "OvS-DPDK \(HW offload\)"\), in the same conversation — not from the question I asked just before this one/);
+    assert.match(msg, /^我上一个问题是啥\n\nThis follows on from my question in \[turn 49\] \(是不是OvS在userspace… — on "OvS-DPDK \(HW offload\)"\), in the same conversation\. The questions I asked in between belong to other conversations: leave them out of this answer\./);
     assert.ok(msg.indexOf("This follows on") < msg.indexOf("I am at page 4"));
+  });
+
+  test("an unrelated earlier question is not brought up, not even to say it is unrelated", () => {
+    const msg = buildAskMessage({ kind: "followup", question: "what is this figure?" });
+    assert.match(msg, /Bring up an earlier question only when it bears on this one; when none does, say nothing about them — not even that they are unrelated\./);
+    assert.match(buildSessionBootstrap({ title: "P", agentic: true }), /When this question has nothing to do with what I asked before, answer it on its own/);
   });
 
   test("says nothing when its own conversation was the last asked in", () => {
