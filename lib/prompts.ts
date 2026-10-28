@@ -95,7 +95,7 @@ Ground rules:
 - Point to specific parts of the paper (sections/pages) when relevant.
 - CITE WHAT YOU ARE POINTING AT, as a markdown link. Two kinds, and only these two:
   - The paper: the link text IS the quote — 4 to 15 words copied character for character off the page, no paraphrase, no ellipsis, nothing added. It is searched for on the page, so anything else lands nowhere. Written out, a citation of the line "shared load bank conflicts = 20,666,167" on page 12 is exactly \`[shared load bank conflicts = 20,666,167](paper:12)\`, and the sentence reads around it. Never put a description in the link text — not "verbatim excerpt", not "this passage", not "see page 12" — and never quote the passage next to the link instead of inside it. N is the page from the \`[page N]\` markers; a document with no markers is \`paper:1\`.
-  - This conversation: \`[short phrase](turn:N)\` — N is the number in the \`[turn N]\` marker on the message of mine you are pointing back at. Use it instead of repeating an answer you already gave.
+  - This conversation: \`[short phrase](turn:N)\` — N is the number in the \`[turn N]\` marker on the message of mine you are pointing back at. Use it instead of repeating an answer you already gave. The numbers are only for you to keep your place: I never see them, so never write one to me ("turn 49", "第 49 轮") — name an earlier question by what it asked.
   Cite where you actually rely on a passage, or where you are building on something already settled. Do not decorate every sentence, and never cite something you have not read — a link that lands nowhere is worse than no link.
   Ordinary links (a textbook, a Wikipedia article) stay ordinary links; these two schemes are reserved.
 
@@ -153,7 +153,7 @@ function languageDirective(question?: string, passage?: string): string {
 // about it, and on any long conversation the rule is thousands of tokens back.
 // Same reasoning as the language directive above, same remedy.
 export const CITATION_DIRECTIVE =
-  "\n\nWhere you draw on the paper, link the words themselves: the link text is the quote, copied off the page character for character, e.g. [shared load bank conflicts = 20,666,167](paper:12) — never a description like [verbatim excerpt](paper:12), and never the quote sitting next to the link instead of inside it. Where you build on something earlier in our conversation, link it: [short phrase](turn:N), N being the number in my [turn N] marker. Only where it genuinely helps.";
+  "\n\nWhere you draw on the paper, link the words themselves: the link text is the quote, copied off the page character for character, e.g. [shared load bank conflicts = 20,666,167](paper:12) — never a description like [verbatim excerpt](paper:12), and never the quote sitting next to the link instead of inside it. Where you build on something earlier in our conversation, link it: [short phrase](turn:N), N being the number in my [turn N] marker. Those numbers are only for you to keep your place: I never see them, so never write one to me — no \"turn 49\", no \"第 49 轮\" — and name an earlier question by what it asked instead. Only where it genuinely helps.";
 
 // What the reader wants from a turn. The bootstrap carries the general
 // manners; the intent decides the shape of one answer, and travels on the

@@ -178,10 +178,11 @@ export function CitationAnchor({
         type="button"
         onClick={() => cite.current.turn?.(citation.turn)}
         className="pr-cite pr-cite-turn"
-        title={`Go back to turn ${citation.turn} of this conversation`}
+        // The reader never sees turn numbers, so the tag carries none
+        title="Go back to that question"
       >
         {label}
-        <span className="pr-cite-tag">↩{citation.turn}</span>
+        <span className="pr-cite-tag">↩</span>
       </button>
     );
   }
