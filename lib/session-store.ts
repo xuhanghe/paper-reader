@@ -345,8 +345,10 @@ const entriesOf = (lines: { entry: ThreadEntry | null }[]) => lines.flatMap((l) 
 
 export function appendThread(id: string, entry: ThreadEntry): Promise<void> {
   return writingThread(id, async () => {
-    // The answer to a question deleted while it was being answered
-    if (entry.role === "assistant" && entry.turn !== undefined && (await readWithdrawn(id)).includes(entry.turn)) return;
+    // What arrives for a question, or a card, deleted while it was being answered
+    const deleted = await readDeleted(id);
+    if (entry.annotationId && deleted.conversations.includes(entry.annotationId)) return;
+    if (entry.role === "assistant" && entry.turn !== undefined && deleted.turns.includes(entry.turn)) return;
     await ensureDir(id);
     await appendFile(threadPathFor(id), JSON.stringify(entry) + "\n");
   });
@@ -362,15 +364,20 @@ export async function countAsks(id: string): Promise<number> {
 // numbered after it, so no number is given out twice — not even a deleted
 // one, which an agent resumed by session id may still remember by it.
 export async function lastTurn(id: string): Promise<number> {
+  const asked = numberedQuestions(entriesOf(await threadLines(id))).map((q) => q.turn);
+  return Math.max(0, ...asked, ...(await readWithdrawn(id)));
+}
+
+// Each question with its number as the model knew it: its [turn N] marker,
+// or its count for one from before the markers
+function numberedQuestions(entries: ThreadEntry[]): { entry: ThreadEntry; turn: number }[] {
   let count = 0;
-  let last = 0;
-  for (const entry of entriesOf(await threadLines(id))) {
-    if (entry.role !== "user") continue;
+  return entries.flatMap((entry) => {
+    if (entry.role !== "user") return [];
     count += 1;
     const marker = /^\[turn (\d+)\]/.exec(entry.text);
-    last = Math.max(last, marker ? Number(marker[1]) : count);
-  }
-  return Math.max(last, ...(await readWithdrawn(id)));
+    return [{ entry, turn: marker ? Number(marker[1]) : count }];
+  });
 }
 
 export async function readThread(id: string, maxEntries = 40, maxChars = 24000): Promise<ThreadEntry[]> {
@@ -395,18 +402,29 @@ export async function readThread(id: string, maxEntries = 40, maxChars = 24000):
 // whole card — is deleted from the thread too: the question, its answer, and
 // any figure only it used, as though it had never been asked. The model is
 // told nothing. Its number is kept in withdrawn.json, so that it is never
-// given out again, and so that an answer still arriving for it is dropped.
+// given out again, and so that an answer still arriving for it is dropped;
+// so is a deleted card's id, for whatever of it arrives without a number.
+//
+// A card or an edit deletes by conversation rather than by the numbers the
+// panel holds: a question still being asked has none there yet, and some
+// older cards never had them.
 
 const withdrawnPathFor = (id: string) => path.join(dirFor(id), "withdrawn.json");
 const turnList = (value: unknown): number[] =>
   Array.isArray(value) ? [...new Set(value.filter((t): t is number => Number.isInteger(t) && t > 0))].sort((a, b) => a - b) : [];
 
-export async function readWithdrawn(id: string): Promise<number[]> {
+async function readDeleted(id: string): Promise<{ turns: number[]; conversations: string[] }> {
   try {
-    return turnList((JSON.parse(await readFile(withdrawnPathFor(id), "utf8")) as { turns?: unknown }).turns);
+    const raw = JSON.parse(await readFile(withdrawnPathFor(id), "utf8")) as { turns?: unknown; conversations?: unknown };
+    const conversations = Array.isArray(raw.conversations) ? raw.conversations.filter((c): c is string => typeof c === "string" && !!c) : [];
+    return { turns: turnList(raw.turns), conversations: [...new Set(conversations)] };
   } catch {
-    return [];
+    return { turns: [], conversations: [] };
   }
+}
+
+export async function readWithdrawn(id: string): Promise<number[]> {
+  return (await readDeleted(id)).turns;
 }
 
 // A rewrite deleted takes the question it replaced with it: the panel showed
@@ -429,14 +447,29 @@ function withReplaced(entries: ThreadEntry[], turns: number[]): number[] {
   return turnList([...gone]);
 }
 
-export function withdrawTurns(id: string, turns: number[]): Promise<void> {
+/**
+ * Deletes from the thread the turns named and, for a conversation, its turns
+ * from `fromTurn` on — or, with no turn given, all of it, a question still
+ * being asked included.
+ */
+export function deleteFromThread(id: string, what: { turns?: number[]; conversation?: string; fromTurn?: number }): Promise<void> {
   return writingThread(id, async () => {
     const lines = await threadLines(id);
     const entries = entriesOf(lines);
-    const gone = withReplaced(entries, turnList([...(await readWithdrawn(id)), ...turns]));
+    const deleted = await readDeleted(id);
+    const turns = [...deleted.turns, ...(what.turns ?? [])];
+    const conversations = [...deleted.conversations];
+    if (what.conversation) {
+      for (const { entry, turn } of numberedQuestions(entries)) {
+        if (entry.annotationId === what.conversation && turn >= (what.fromTurn ?? 0)) turns.push(turn);
+      }
+      if (what.fromTurn === undefined) conversations.push(what.conversation);
+    }
+    const gone = withReplaced(entries, turnList(turns));
+    const goneConversations = [...new Set(conversations)];
     await ensureDir(id);
-    await writeAtomic(withdrawnPathFor(id), JSON.stringify({ turns: gone }));
-    const kept = new Set(withoutWithdrawn(entries, gone));
+    await writeAtomic(withdrawnPathFor(id), JSON.stringify({ turns: gone, ...(goneConversations.length ? { conversations: goneConversations } : {}) }));
+    const kept = new Set(withoutWithdrawn(entries, gone).filter((e) => !e.annotationId || !goneConversations.includes(e.annotationId)));
     if (kept.size === entries.length) return;
     const remaining = lines.filter((l) => !l.entry || kept.has(l.entry));
     await writeAtomic(threadPathFor(id), remaining.map((l) => `${l.line}\n`).join(""));
@@ -449,6 +482,10 @@ export function withdrawTurns(id: string, turns: number[]): Promise<void> {
       if (!used.has(ref) && file.startsWith(figuresDirFor(id) + path.sep)) await unlink(file).catch(() => {});
     }
   });
+}
+
+export function withdrawTurns(id: string, turns: number[]): Promise<void> {
+  return deleteFromThread(id, { turns });
 }
 
 /**

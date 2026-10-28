@@ -19,7 +19,7 @@ import {
   writeFigureImage,
   readFigureDataUrl,
   lastTurn,
-  withdrawTurns,
+  deleteFromThread,
 } from "@/lib/session-store";
 import { unwrapPartials } from "@/lib/claude-stream";
 import { turnMarker } from "@/lib/citations";
@@ -134,9 +134,15 @@ export async function POST(req: Request) {
   const last = await lastTurn(paper_id);
   // An edited question: its old version and what followed it in its
   // conversation are deleted from the thread first, so neither the record
-  // nor a replay of it holds them. The model is not told of the edit.
+  // nor a replay of it holds them — by conversation, from the edited turn
+  // on, so a question there still unnumbered in the panel goes too. The
+  // model is not told of the edit.
   const replaced = Array.isArray(replaces_turns) ? replaces_turns.filter((t): t is number => Number.isInteger(t) && t >= 1 && t <= last) : [];
-  if (replaced.length) await withdrawTurns(paper_id, replaced);
+  if (replaced.length) {
+    await deleteFromThread(paper_id, typeof annotation_id === "string" && annotation_id
+      ? { turns: replaced, conversation: annotation_id, fromTurn: Math.min(...replaced) }
+      : { turns: replaced });
+  }
   const turn = last + 1;
   message = `${turnMarker(turn)} ${message}`;
 

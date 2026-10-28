@@ -546,25 +546,26 @@ export default function Home() {
   // What the panel deletes is deleted from the paper's thread too, so nothing
   // sent to a model later carries it. The model is told nothing. A question
   // from before turns were numbered can only leave the panel.
-  const deleteTurns = useCallback((turns: (number | undefined)[]) => {
-    const numbered = turns.filter((t): t is number => !!t);
-    if (!paperId || !numbered.length) return;
+  // A whole card goes by its id, which also takes a question of it not yet
+  // numbered.
+  const deleteFromThread = useCallback((what: { turns?: (number | undefined)[]; conversation?: string }) => {
+    const turns = (what.turns ?? []).filter((t): t is number => !!t);
+    if (!paperId || (!turns.length && !what.conversation)) return;
     fetch("/api/ask/withdraw", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ paper_id: paperId, turns: numbered }),
+      body: JSON.stringify({ paper_id: paperId, turns, annotation_id: what.conversation }),
     }).catch(() => {});
   }, [paperId]);
 
   const handleDelete = useCallback((id: string) => {
-    const annotation = session.annotations.find((a) => a.id === id);
     // An answer still arriving is stopped: it has nowhere to go
     abortControllers.current.get(id)?.controller.abort();
     removeAnnotation(id);
     if (activeAnnotationId === id) setActiveAnnotationId(null);
     delete annotationRefs.current[id];
-    deleteTurns(annotation?.messages.map((m) => m.turn) ?? []);
-  }, [session.annotations, removeAnnotation, activeAnnotationId, deleteTurns]);
+    deleteFromThread({ conversation: id });
+  }, [removeAnnotation, activeAnnotationId, deleteFromThread]);
 
   const stopAsk = useCallback((annotationId: string) => {
     abortControllers.current.get(annotationId)?.controller.abort();
@@ -1051,9 +1052,9 @@ export default function Home() {
     (annotationId: string, start: number, end: number) => {
       const turn = session.annotations.find((a) => a.id === annotationId)?.messages[start]?.turn;
       removeMessages(annotationId, start, end);
-      deleteTurns([turn]);
+      deleteFromThread({ turns: [turn] });
     },
-    [session.annotations, removeMessages, deleteTurns]
+    [session.annotations, removeMessages, deleteFromThread]
   );
 
   const handleRemoveZoteroAnnotation = useCallback(

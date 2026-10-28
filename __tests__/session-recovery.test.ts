@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
-  appendThread, countAsks, dirFor, lastTurn, readFigureDataUrl, readThread, readWithdrawn, withdrawTurns, withoutWithdrawn, writeState, type ThreadEntry,
+  appendThread, countAsks, deleteFromThread, dirFor, lastTurn, readFigureDataUrl, readThread, readWithdrawn, withdrawTurns, withoutWithdrawn, writeState, type ThreadEntry,
 } from "../lib/session-store.js";
 import {
   askGist, chatHistorySection, earlierConversation, earlierConversationSection, entriesBefore, freshStartOnLostSession,
@@ -130,6 +130,7 @@ describe("deleted turns on disk", () => {
   const W = "__withdrawn-test__";
   const RACE = "__withdrawn-race-test__";
   const LEGACY = "__withdrawn-legacy-test__";
+  const CARD = "__withdrawn-card-test__";
   const PNG = Buffer.from("89504e470d0a1a0a0000000d49484452", "hex");
   const fileLines = async (id: string) => (await readFile(threadPathFor(id), "utf8")).trim().split("\n").map((l) => JSON.parse(l) as ThreadEntry);
   before(async () => {
@@ -146,7 +147,7 @@ describe("deleted turns on disk", () => {
     await withdrawTurns(W, [2]);
   });
   after(async () => {
-    for (const id of [W, RACE, LEGACY]) await rm(dirFor(id), { recursive: true, force: true });
+    for (const id of [W, RACE, LEGACY, CARD]) await rm(dirFor(id), { recursive: true, force: true });
   });
 
   test("the question, its answer and the figure only it used are gone from the file", async () => {
@@ -172,6 +173,33 @@ describe("deleted turns on disk", () => {
     await withdrawTurns(RACE, [3]);
     assert.deepEqual((await fileLines(RACE)).map((e) => e.text), [marker(1, "keep"), "kept"]);
     assert.deepEqual(await readWithdrawn(RACE), [2, 3]);
+  });
+
+  test("a card goes by its id: all of it, what has no number too, and whatever of it arrives later", async () => {
+    await appendThread(CARD, { ts: 1, role: "user", text: marker(1, "keep this"), annotationId: "keep" });
+    await appendThread(CARD, { ts: 2, role: "assistant", text: "kept", annotationId: "keep", turn: 1 });
+    await appendThread(CARD, { ts: 3, role: "user", text: marker(2, "explain"), annotationId: "card" });
+    await appendThread(CARD, { ts: 4, role: "assistant", text: "an answer from before answers were numbered", annotationId: "card" });
+    await appendThread(CARD, { ts: 5, role: "user", text: marker(3, "still being asked"), annotationId: "card" });
+    await deleteFromThread(CARD, { conversation: "card" });
+    assert.deepEqual((await fileLines(CARD)).map((e) => e.text), [marker(1, "keep this"), "kept"]);
+    await appendThread(CARD, { ts: 6, role: "assistant", text: "the in-flight answer, arriving late", annotationId: "card" });
+    assert.equal((await fileLines(CARD)).length, 2, "nothing of a deleted card is appended later");
+    assert.equal(await lastTurn(CARD), 3);
+  });
+
+  test("an edit deletes its conversation from the edited turn on, a question there not yet numbered in the panel too", async () => {
+    await appendThread(CARD, { ts: 7, role: "user", text: marker(4, "first"), annotationId: "edit" });
+    await appendThread(CARD, { ts: 8, role: "assistant", text: "a4", annotationId: "edit", turn: 4 });
+    await appendThread(CARD, { ts: 9, role: "user", text: marker(5, "to be edited"), annotationId: "edit" });
+    await appendThread(CARD, { ts: 10, role: "assistant", text: "a5", annotationId: "edit", turn: 5 });
+    await appendThread(CARD, { ts: 11, role: "user", text: marker(6, "elsewhere"), annotationId: "keep" });
+    await appendThread(CARD, { ts: 12, role: "user", text: marker(7, "asked after, its number not back yet"), annotationId: "edit" });
+    await deleteFromThread(CARD, { turns: [5], conversation: "edit", fromTurn: 5 });
+    assert.deepEqual((await fileLines(CARD)).map((e) => e.text), [marker(1, "keep this"), "kept", marker(4, "first"), "a4", marker(6, "elsewhere")]);
+    // Editing is not deleting the card: the conversation goes on
+    await appendThread(CARD, { ts: 13, role: "user", text: marker(8, "the new version"), annotationId: "edit" });
+    assert.equal((await fileLines(CARD)).at(-1)?.text, marker(8, "the new version"));
   });
 
   test("two deletions landing together both count, and a damaged list is read for what is sound in it", async () => {
