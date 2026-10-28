@@ -136,6 +136,21 @@ describe("citations reach every ask, not just the first", () => {
   });
 });
 
+// A paper's conversations share one thread in time order. A follow-up in one
+// asked after a question in another named that other one as "the question
+// before", and answered about it.
+describe("a follow-up in a paper with several conversations", () => {
+  test("names the question it follows on from, right after itself", () => {
+    const msg = buildAskMessage({ kind: "followup", question: "我上一个问题是啥", readUpTo: 4, followsOn: { turn: 49, gist: "是不是OvS在userspace… — on \"OvS-DPDK (HW offload)\"" } });
+    assert.match(msg, /^我上一个问题是啥\n\nThis follows on from my question in \[turn 49\] \(是不是OvS在userspace… — on "OvS-DPDK \(HW offload\)"\), in the same conversation — not from the question I asked just before this one/);
+    assert.ok(msg.indexOf("This follows on") < msg.indexOf("I am at page 4"));
+  });
+
+  test("says nothing when its own conversation was the last asked in", () => {
+    assert.doesNotMatch(buildAskMessage({ kind: "followup", question: "why?" }), /follows on/);
+  });
+});
+
 // A reader checking their understanding page by page does not want the
 // paper's later sections in the answer: the ask says where they are, and the
 // model stands on what came before it plus general knowledge — unless the

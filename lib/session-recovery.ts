@@ -24,6 +24,7 @@ const DIRECTIVE_STARTS = [
   "\n\nAnswer in ",
   "\n\nI am at page ",
   "\n\nHere I am asking about the paper as a whole",
+  "\n\nThis follows on from my question in [turn",
 ];
 // Edited questions were once sent with a note saying what they replaced;
 // records written then still hold it

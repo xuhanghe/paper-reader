@@ -219,13 +219,19 @@ export function buildAskMessage(opts: {
   // The page the reader has read up to: the passage's page, the page a
   // conversation started on, or the page in view for a general question
   readUpTo?: number;
+  // The question in this one's own conversation that it follows on from,
+  // when another conversation has been asked in since
+  followsOn?: { turn: number; gist: string };
 }): string {
   const body = askBody(opts);
   // An empty follow-up has to stay empty; the caller rejects it
   if (!body.trim()) return body;
   // A definition already leaves the paper out altogether
   const reading = opts.kind === "define" ? "" : readingDirective(opts.readUpTo, opts.question);
-  return `${body}${reading}${CITATION_DIRECTIVE}`;
+  const follows = opts.followsOn
+    ? `\n\nThis follows on from my question in [turn ${opts.followsOn.turn}] (${opts.followsOn.gist}), in the same conversation — not from the question I asked just before this one, which was about something else.`
+    : "";
+  return `${body}${follows}${reading}${CITATION_DIRECTIVE}`;
 }
 
 // The same ask for the Workspace agent, whose chat spans a project rather

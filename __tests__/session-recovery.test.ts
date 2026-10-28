@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
-  appendThread, countAsks, deleteFromThread, dirFor, lastTurn, readFigureDataUrl, readThread, readWithdrawn, withdrawTurns, withoutWithdrawn, writeState, type ThreadEntry,
+  appendThread, conversationTurns, countAsks, deleteFromThread, dirFor, lastTurn, readFigureDataUrl, readThread, readWithdrawn, withdrawTurns, withoutWithdrawn, writeState, type ThreadEntry,
 } from "../lib/session-store.js";
 import {
   askGist, chatHistorySection, earlierConversation, earlierConversationSection, entriesBefore, freshStartOnLostSession,
@@ -38,6 +38,10 @@ describe("what each ask was about", () => {
     assert.deepEqual(askGist("[turn 4] I captured the attached figure from the paper. My question: what is on the x axis?"), { gist: "a captured figure — what is on the x axis?" });
     assert.deepEqual(askGist(marker(5, "and if the prior is wrong?\n\nLive web search is available.")), { gist: "and if the prior is wrong?" });
     assert.deepEqual(askGist("[turn 6] Passages I selected from the paper, labelled so I can refer to them:\n\n[1] from the paper, page 3\n> pooled samples\n\nDo [1] and the abstract agree?\n\nWhere you draw on the paper, link the words."), { gist: "Do [1] and the abstract agree?" });
+  });
+
+  test("nor is the line naming the question a follow-up continues", () => {
+    assert.equal(askGist("[turn 58] test\n\nThis follows on from my question in [turn 49] (OvS… — on \"x\"), in the same conversation — not from the question I asked just before this one.\n\nI am at page 4 of the paper.").gist, "test");
   });
 
   test("the words directing the answer are not the question", () => {
@@ -273,6 +277,26 @@ describe("the thread sent to a custom endpoint", () => {
     } finally {
       await rm(dirFor(F), { recursive: true, force: true });
     }
+  });
+});
+
+// A paper's conversations share one thread, in time order
+describe("a conversation among others in the thread", () => {
+  const T = "__conversation-test__";
+  before(async () => {
+    await appendThread(T, { ts: 1, role: "user", text: marker(1, "the OvS question"), annotationId: "ovs" });
+    await appendThread(T, { ts: 2, role: "assistant", text: "about OvS", annotationId: "ovs", turn: 1 });
+    for (let n = 2; n <= 6; n++) {
+      await appendThread(T, { ts: n * 10, role: "user", text: marker(n, `figure question ${n}`), annotationId: "fig" });
+      await appendThread(T, { ts: n * 10 + 1, role: "assistant", text: `about figure ${n}`, annotationId: "fig", turn: n });
+    }
+  });
+  after(() => rm(dirFor(T), { recursive: true, force: true }));
+
+  test("knows its own last question, and that another conversation was asked in since", async () => {
+    assert.deepEqual(await conversationTurns(T, "ovs"), { previous: { turn: 1, text: marker(1, "the OvS question") }, latest: 6 });
+    assert.equal((await conversationTurns(T, "fig")).previous?.turn, 6);
+    assert.deepEqual(await conversationTurns(T, "new"), { previous: undefined, latest: 6 });
   });
 });
 

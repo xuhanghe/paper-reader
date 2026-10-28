@@ -20,11 +20,12 @@ import {
   readFigureDataUrl,
   lastTurn,
   deleteFromThread,
+  conversationTurns,
 } from "@/lib/session-store";
 import { unwrapPartials } from "@/lib/claude-stream";
 import { turnMarker } from "@/lib/citations";
 import { selectedSkillPaths } from "@/lib/skills";
-import { earlierConversation, earlierConversationSection, freshStartOnLostSession, LOST_SESSION, replayForEndpoint } from "@/lib/session-recovery";
+import { askGist, earlierConversation, earlierConversationSection, freshStartOnLostSession, LOST_SESSION, replayForEndpoint } from "@/lib/session-recovery";
 import { decodeCodexSessionId } from "@/lib/codex-runtime";
 
 export const runtime = "nodejs";
@@ -108,12 +109,36 @@ export async function POST(req: Request) {
   }
 
   const provider = resolveProvider(model);
+  const conversation = typeof annotation_id === "string" && annotation_id ? annotation_id : undefined;
+
+  const last = await lastTurn(paper_id);
+  // An edited question: its old version and what followed it in its
+  // conversation are deleted from the thread first, so neither the record
+  // nor a replay of it holds them — by conversation, from the edited turn
+  // on, so a question there still unnumbered in the panel goes too. The
+  // model is not told of the edit.
+  const replaced = Array.isArray(replaces_turns) ? replaces_turns.filter((t): t is number => Number.isInteger(t) && t >= 1 && t <= last) : [];
+  if (replaced.length) {
+    await deleteFromThread(paper_id, conversation
+      ? { turns: replaced, conversation, fromTurn: Math.min(...replaced) }
+      : { turns: replaced });
+  }
+
+  // The thread runs in time order across every conversation about the paper,
+  // so when another conversation has been asked in since, the question just
+  // before this one is not its own. It names the one it follows on from.
+  const turns = conversation ? await conversationTurns(paper_id, conversation) : null;
+  const followsOn = turns?.previous && turns.previous.turn !== turns.latest
+    ? { turn: turns.previous.turn, gist: askGist(turns.previous.text).gist }
+    : undefined;
+
   let message = buildAskMessage({
     kind,
     selectedText: selected_text,
     question,
     pageNumber: page_number,
     readUpTo: typeof read_up_to === "number" && read_up_to > 0 ? read_up_to : undefined,
+    followsOn,
   });
   if (!message.trim() && !image_base64) return new Response("empty request", { status: 400 });
 
@@ -131,18 +156,6 @@ export async function POST(req: Request) {
   // Every ask is numbered, and the number travels on the message itself: on a
   // resumed session the bootstrap explaining the scheme is thousands of tokens
   // behind, but the marker is right there in front of the model
-  const last = await lastTurn(paper_id);
-  // An edited question: its old version and what followed it in its
-  // conversation are deleted from the thread first, so neither the record
-  // nor a replay of it holds them — by conversation, from the edited turn
-  // on, so a question there still unnumbered in the panel goes too. The
-  // model is not told of the edit.
-  const replaced = Array.isArray(replaces_turns) ? replaces_turns.filter((t): t is number => Number.isInteger(t) && t >= 1 && t <= last) : [];
-  if (replaced.length) {
-    await deleteFromThread(paper_id, typeof annotation_id === "string" && annotation_id
-      ? { turns: replaced, conversation: annotation_id, fromTurn: Math.min(...replaced) }
-      : { turns: replaced });
-  }
   const turn = last + 1;
   message = `${turnMarker(turn)} ${message}`;
 

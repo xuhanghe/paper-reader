@@ -396,6 +396,15 @@ export async function readThread(id: string, maxEntries = 40, maxChars = 24000):
   return kept;
 }
 
+// Where a conversation stands: its last question, and the last question of
+// the whole thread, whichever conversation that was asked in
+export async function conversationTurns(id: string, conversation: string): Promise<{ previous?: { turn: number; text: string }; latest?: number }> {
+  const deleted = new Set(await readWithdrawn(id));
+  const questions = numberedQuestions(entriesOf(await threadLines(id))).filter((q) => !deleted.has(q.turn));
+  const own = questions.filter((q) => q.entry.annotationId === conversation).at(-1);
+  return { previous: own ? { turn: own.turn, text: own.entry.text } : undefined, latest: questions.at(-1)?.turn };
+}
+
 // ── Deleting turns ──
 //
 // A question deleted in the panel — on its own with its answer, or with its
