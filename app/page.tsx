@@ -124,6 +124,7 @@ export default function Home() {
     editTakeaways,
     readPaper,
     replaceMessageFrom,
+    removeMessages,
     saveSession,
     loadSession,
   } = useSession();
@@ -1619,6 +1620,7 @@ export default function Home() {
           onFollowUp={handleFollowUp}
           onStop={stopAsk}
           onEditMessage={handleEditMessage}
+          onDeletePair={removeMessages}
           onAskGeneral={handleAskGeneral}
           onDelete={handleDelete}
           onReExplainImage={handleReExplainImage}

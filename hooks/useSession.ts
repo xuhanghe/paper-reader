@@ -403,6 +403,17 @@ export function useSession() {
     }));
   }, []);
 
+  // Take a question and its answer out of a conversation; what came after
+  // them moves up
+  const removeMessages = useCallback((annotationId: string, start: number, end: number) => {
+    setSession((s) => ({
+      ...s,
+      annotations: s.annotations.map((a) =>
+        a.id === annotationId ? { ...a, messages: [...a.messages.slice(0, start), ...a.messages.slice(end)] } : a
+      ),
+    }));
+  }, []);
+
   // forName pins the map to the paper it was generated for — if the user
   // switched papers while generation ran, the result is discarded instead of
   // landing on (and autosaving into) the wrong paper's session
@@ -593,6 +604,7 @@ export function useSession() {
     editTakeaways,
     readPaper,
     replaceMessageFrom,
+    removeMessages,
     saveSession,
     loadSession,
   };

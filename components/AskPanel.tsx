@@ -21,6 +21,10 @@ type Props = {
   onStop?: (annotationId: string) => void;
   // Rewrite a question already asked and send it again
   onEditMessage?: (annotationId: string, index: number, text: string) => void;
+  // Take a follow-up and its answer (messages start to end) out of their
+  // conversation. Only out of the panel: like an edit, it cannot un-ask them
+  // of the provider's own session.
+  onDeletePair?: (annotationId: string, start: number, end: number) => void;
   onAskGeneral: (question: string, imageDataUrl?: string, reference?: { key: string; title: string }, webSearch?: boolean) => void;
   onDelete: (annotationId: string) => void;
   onReExplainImage: (annotationId: string) => void;
@@ -167,7 +171,7 @@ const COLLAPSE_CHARS = 300;
 // Workspace and back
 const composerImageMemory = new Map<string, string>();
 
-export const ExplainPanel = memo(function ExplainPanel({ annotations, activeId, model, streamingIds, onFollowUp, onStop, onEditMessage, onAskGeneral, onDelete, onReExplainImage, onViewInPdf, onFocusedChange, onCitePaper, annotationRefs, scrollHandle, isOpen, onToggle, width = 460, modelControls, positionKey, askSeq }: Props) {
+export const ExplainPanel = memo(function ExplainPanel({ annotations, activeId, model, streamingIds, onFollowUp, onStop, onEditMessage, onDeletePair, onAskGeneral, onDelete, onReExplainImage, onViewInPdf, onFocusedChange, onCitePaper, annotationRefs, scrollHandle, isOpen, onToggle, width = 460, modelControls, positionKey, askSeq }: Props) {
   // One composer for both kinds of question. What is typed is kept across
   // the switch, so flipping it never loses a draft.
   // What is being typed, kept per paper: see lib/drafts
@@ -265,6 +269,9 @@ export const ExplainPanel = memo(function ExplainPanel({ annotations, activeId, 
   // Questions whose quoted passages are folded away, by "conversation:index"
   const [foldedQuotes, setFoldedQuotes] = useState<Set<string>>(() => new Set());
   const [editDraft, setEditDraft] = useState("");
+  // The pair whose delete button has been pressed once and asks to be
+  // pressed again, by "conversation:index"
+  const [confirmingDelete, setConfirmingDelete] = useState<string | null>(null);
   // Passages lifted out of the conversations, waiting to be quoted into the
   // next question — wherever it is asked
   const [quotes, setQuotes] = useState<Quote[]>(() => loadDraft(draftKey)?.quotes ?? []);
@@ -1120,6 +1127,34 @@ export const ExplainPanel = memo(function ExplainPanel({ annotations, activeId, 
     goTo("question", id, index);
   }, [setFollowing, goTo]);
 
+  // Delete a follow-up and its answer. Whatever here names a pair or a
+  // message by its index moves up with the messages after it; the deleted
+  // pair's focus goes to the pair before it, without scrolling there.
+  const deletePair = useCallback((id: string, start: number, end: number) => {
+    const conversation = annotations.find((a) => a.id === id);
+    if (!onDeletePair || !conversation) return;
+    const count = end - start;
+    const before = pairsOf(conversation).filter((p) => p.start < start).pop()?.start ?? 0;
+    const moved = (index: number) => (index >= end ? index - count : index);
+    const f = followRef.current;
+    if (f.id === id && f.index !== null && f.index >= start) {
+      setFollowing(f.index < end ? { id, index: before, mode: "free" } : { ...f, index: moved(f.index) }, "pair deleted");
+    }
+    setViewPair((v) => (v && v.id === id && v.index >= start ? (v.index < end ? null : { id, index: moved(v.index) }) : v));
+    setEditing((e) => (e && e.id === id && e.index >= start ? (e.index < end ? null : { ...e, index: moved(e.index) }) : e));
+    setFoldedQuotes((prev) => {
+      const next = new Set<string>();
+      for (const key of prev) {
+        const [owner, at] = [key.slice(0, key.lastIndexOf(":")), Number(key.slice(key.lastIndexOf(":") + 1))];
+        if (owner !== id || at < start) next.add(key);
+        else if (at >= end) next.add(`${id}:${moved(at)}`);
+      }
+      return next;
+    });
+    setConfirmingDelete(null);
+    onDeletePair(id, start, end);
+  }, [annotations, onDeletePair, setFollowing]);
+
   // Follow answer: the end of the pair is kept at the bottom edge as the
   // answer grows — in both directions, so the browser's own shifts are
   // undone too. Not while the reader's hand is on the list or a glide of ours
@@ -1899,7 +1934,7 @@ export const ExplainPanel = memo(function ExplainPanel({ annotations, activeId, 
                         focusPair(annotation.id, pair.start);
                       }}
                     >
-                      {annotation.messages.slice(pair.start, pair.end).map((m, k) => renderMessage(m, pair.start + k))}
+                      {annotation.messages.slice(pair.start, pair.end).map((m, k) => renderMessage(m, pair.start + k, pair))}
                       {/* Stop belongs to the pair being answered, inside its box */}
                       {pair.end === annotation.messages.length && streamingIds.has(annotation.id) && onStop && (
                         <div className="pt-0.5">
@@ -1921,8 +1956,15 @@ export const ExplainPanel = memo(function ExplainPanel({ annotations, activeId, 
               </>)}
             </div>
           );
-          function renderMessage(msg: Message, i: number) {
+          function renderMessage(msg: Message, i: number, pair: { start: number; end: number }) {
                   const isUser = msg.role === "user";
+                  // A follow-up can be deleted with its answer — not the
+                  // conversation's opening, which goes with the card, and not
+                  // while its answer is still arriving
+                  const deletable =
+                    !!onDeletePair && isUser && i === pair.start && pair.start > 0 &&
+                    !(pair.end === annotation.messages.length && streamingIds.has(annotation.id));
+                  const deleteKey = `${annotation.id}:${pair.start}`;
                   // Every ask seeds an empty assistant message before streaming,
                   // so the newest one is where the reply is about to land
                   const isEditing = editing?.id === annotation.id && editing.index === i;
@@ -2058,6 +2100,30 @@ export const ExplainPanel = memo(function ExplainPanel({ annotations, activeId, 
                                   ✎
                                 </button>
                               )}
+                              {deletable && (confirmingDelete === deleteKey ? (
+                                // Pressed once: asks to be pressed again, so a
+                                // slip off the pencil does not lose an answer
+                                <button
+                                  autoFocus
+                                  onClick={() => deletePair(annotation.id, pair.start, pair.end)}
+                                  onMouseLeave={() => setConfirmingDelete(null)}
+                                  onBlur={() => setConfirmingDelete(null)}
+                                  className="shrink-0 h-5 px-1.5 rounded text-[10px] font-medium"
+                                  style={{ border: "1px solid #F87171", color: "#F87171" }}
+                                  title="Delete this question and its answer"
+                                >
+                                  Delete
+                                </button>
+                              ) : (
+                                <button
+                                  onClick={() => setConfirmingDelete(deleteKey)}
+                                  className="btn-icon shrink-0 w-5 h-5 text-[10px] opacity-0 group-hover/msg:opacity-100 focus:opacity-100 transition-opacity"
+                                  title="Delete this question and its answer"
+                                  aria-label="Delete this question and its answer"
+                                >
+                                  ✕
+                                </button>
+                              ))}
                             </div>
                           )}
                         </>
