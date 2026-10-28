@@ -5,8 +5,8 @@
 
 .app { height: 100vh; display: flex; flex-direction: column; overflow: hidden; background: #0d1115; color: var(--ink); }
 .app :global(.pr-app-bar) { grid-template-columns: minmax(240px, 1fr) auto minmax(520px, 1fr); padding: 0 20px; background: #0d1115; }
-.workspaceName { max-width: 240px; display: flex; align-items: center; gap: 8px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: #b5bdc5; font-size: 12px; font-weight: 550; }
-.workspaceName i { width: 7px; height: 7px; flex: 0 0 auto; border-radius: 50%; background: #79bc98; box-shadow: 0 0 0 3px rgba(121, 188, 152, .1); }
+.workspaceName { --tile-hue: 150; max-width: 240px; display: flex; align-items: center; gap: 8px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: #b5bdc5; font-size: 12px; font-weight: 550; }
+.workspaceName i { width: 7px; height: 7px; flex: 0 0 auto; border-radius: 50%; background: hsl(var(--tile-hue) 50% 64%); box-shadow: 0 0 0 3px hsl(var(--tile-hue) 50% 64% / .14); }
 .shell { min-height: 0; flex: 1; display: flex; overflow: hidden; }
 
 /* ── Rail: one tile per workspace ───────────────────────────────── */
@@ -16,6 +16,9 @@
 .rail button.active { border-color: rgba(225, 195, 105, .5); background: rgba(225, 195, 105, .12); color: var(--accent-bright); }
 .rail button.active::before { content: ""; position: absolute; left: -11px; width: 3px; height: 22px; border-radius: 0 3px 3px 0; background: var(--accent); }
 .rail b { font-size: 12px; font-weight: 700; letter-spacing: .02em; }
+.rail button.workspaceTile { --tile-hue: 212; border-color: hsl(var(--tile-hue) 36% 38% / .55); background: linear-gradient(150deg, hsl(var(--tile-hue) 42% 27%), hsl(var(--tile-hue) 38% 17%)); color: hsl(var(--tile-hue) 70% 86%); box-shadow: inset 0 1px 0 rgba(255, 255, 255, .07); }
+.rail button.workspaceTile:hover { border-color: hsl(var(--tile-hue) 48% 58% / .75); color: #fff; }
+.rail button.workspaceTile.active { border-color: rgba(225, 195, 105, .75); box-shadow: 0 0 0 3px rgba(225, 195, 105, .14), inset 0 1px 0 rgba(255, 255, 255, .08); }
 /* The name, beside the tile on hover */
 .rail button > span { position: absolute; left: 50px; z-index: 80; display: none; width: max-content; max-width: 250px; padding: 7px 10px; border: 1px solid #3a4550; border-radius: 8px; background: #1b2228; color: var(--ink); box-shadow: 0 10px 30px rgba(0, 0, 0, .45); font-size: 12px; font-weight: 550; pointer-events: none; }
 .rail button:hover > span, .rail button:focus-visible > span { display: block; }
@@ -37,6 +40,7 @@
    goes, matching the Zotero sidebar's affordance in the Reader. */
 .collapsePanel { width: 26px; height: 26px; flex: 0 0 auto; display: grid; place-items: center; border: 1px solid transparent; border-radius: 7px; background: transparent; padding: 0; color: var(--ink-faint); font-size: 14px; line-height: 1; }
 .collapsePanel:hover { border-color: var(--border); background: rgba(230, 237, 243, .05); color: var(--ink); }
+.collapsePanel svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
 .tree { min-height: 0; flex: 1; overflow-y: auto; overscroll-behavior: contain; padding: 6px 0 12px; }
 .tree section { margin-bottom: 10px; }
 /* VS Code-style section header: one row, the whole width toggles, and the
@@ -45,7 +49,7 @@
 .tree h3:hover { color: #c9d0d5; }
 .tree h3 > strong { min-width: 0; display: flex; align-items: center; gap: 6px; overflow: hidden; white-space: nowrap; font: inherit; cursor: pointer; }
 .tree h3 small { min-width: 18px; height: 16px; display: inline-grid; place-items: center; padding: 0 5px; border-radius: 8px; background: #1c2329; color: #8d979f; font-size: 10px; font-weight: 600; letter-spacing: 0; }
-.tree h3 > button.sectionChevron { width: 18px; height: 100%; padding: 0; border: 0; background: none; color: #8d979f; font-size: 12px; line-height: 1; text-align: center; }
+.tree h3 > button.sectionChevron { width: 18px; height: 100%; display: grid; place-items: center; padding: 0; border: 0; background: none; color: #8d979f; }
 .tree h3 > button.sectionChevron:hover { color: var(--ink); }
 .headerActions { display: flex; align-items: center; gap: 1px; opacity: 0; transition: opacity .12s ease; }
 .tree h3:hover .headerActions, .headerActions:focus-within { opacity: 1; }
@@ -80,9 +84,12 @@
 .explorerRow strong { min-width: 0; flex: 1; }
 .indentGuides { width: calc(var(--tree-depth) * 14px); align-self: stretch; display: flex; flex: 0 0 auto; overflow: hidden; }
 .indentGuides i { width: 14px; height: 100%; flex: 0 0 14px; border-left: 1px solid #262e35; }
-.explorerChevron { width: 14px; flex: 0 0 auto; display: grid; place-items: center; color: #8d979f; font-size: 12px; line-height: 1; }
-.fileGlyph { width: 15px; height: 15px; flex: 0 0 auto; }
-.folderGlyph { color: #b99a55; }
+.explorerChevron { width: 14px; flex: 0 0 auto; display: grid; place-items: center; color: #7f8a93; }
+.fileGlyph { width: 16px; height: 16px; flex: 0 0 auto; }
+/* Points right, and down once its row or section is open */
+.chevron { width: 10px; height: 10px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; transition: transform .15s ease; }
+.directoryRow[aria-expanded="true"] .chevron, .sectionChevron[aria-expanded="true"] .chevron { transform: rotate(90deg); }
+@media (prefers-reduced-motion: reduce) { .chevron { transition: none; } }
 .directoryRow strong { font-weight: 500; }
 
 /* ── Document stage ─────────────────────────────────────────────── */
@@ -101,7 +108,9 @@
 .pdfStage { min-height: 0; flex: 1; display: flex; overflow: hidden; }
 .pdfStage > div { flex: 1; }
 .editorToolbar { height: 48px; flex: 0 0 auto; display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; gap: 12px; padding: 0 14px 0 18px; border-bottom: 1px solid #222a31; background: #12171b; }
-.editorToolbar > div { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.editorToolbar > div { min-width: 0; display: flex; align-items: center; gap: 10px; }
+.editorToolbar > div > svg { flex: 0 0 auto; }
+.editorToolbar > div > div { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
 .editorToolbar strong, .editorToolbar small { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .editorToolbar strong { font: 12.5px var(--font-geist-mono), ui-monospace, monospace; }
 .editorToolbar small { color: var(--ink-faint); font-size: 11px; }

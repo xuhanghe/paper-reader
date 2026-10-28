@@ -16,6 +16,7 @@ import { SkillsDrawer } from "@/components/SkillsDrawer";
 import { WorkspaceAgent, type AgentAsk, type WorkspaceAgentHandle } from "@/components/WorkspaceAgent";
 import { CopyPapersDialog, CreateWorkspaceDialog, DeleteWorkspaceDialog, PaperPicker } from "@/components/WorkspaceDialogs";
 import { CollapsedRail, ResizeHandle, usePanelWidth } from "@/components/ResizablePanel";
+import { FileIcon, FolderIcon } from "@/components/FileIcon";
 import { useAgentSkills } from "@/hooks/useAgentSkills";
 import { useWorkspaceFiles } from "@/hooks/useWorkspaceFiles";
 import { createZoteroHighlight } from "@/lib/zotero-highlight-api";
@@ -94,36 +95,29 @@ function initials(name: string) {
   return name.split(/\s+/).filter(Boolean).slice(0, 2).map((part) => part[0]).join("").toUpperCase() || "RW";
 }
 
-// One document shape, tinted per type — the tint is the identity, the way a
-// VS Code icon theme's colours are, instead of a lettered badge block.
-const FILE_TINTS: Record<string, string> = {
-  md: "#6cb6ff", markdown: "#6cb6ff",
-  pdf: "#e2a36a",
-  json: "#d9b96c", yaml: "#d9b96c", yml: "#d9b96c", toml: "#d9b96c",
-  png: "#b18ae0", jpg: "#b18ae0", jpeg: "#b18ae0", webp: "#b18ae0", svg: "#b18ae0", gif: "#b18ae0",
-  py: "#8fd18a", ts: "#7fb6e8", tsx: "#7fb6e8", js: "#e8d67f", ipynb: "#e8a87f", sh: "#8fd18a",
-  csv: "#8fd1c0", tsv: "#8fd1c0", tex: "#8fd1c0", bib: "#8fd1c0",
-};
+// A workspace's colour, from its id: the same on every visit, from a short
+// list of hues kept clear of the gold that marks the open one
+const TILE_HUES = [8, 120, 168, 208, 262, 318];
+function workspaceHue(id: string): number {
+  let hash = 0;
+  for (let i = 0; i < id.length; i++) hash = (hash * 31 + id.charCodeAt(i)) >>> 0;
+  return TILE_HUES[hash % TILE_HUES.length];
+}
+const hueStyle = (id: string) => ({ "--tile-hue": workspaceHue(id) }) as CSSProperties;
 
-function FileGlyph({ extension }: { extension?: string }) {
-  const tint = FILE_TINTS[(extension || "").toLowerCase()] || "#98a2ab";
+// Points right; turned down by its row's CSS when the row is open
+function Chevron() {
   return (
-    <svg className={styles.fileGlyph} viewBox="0 0 16 16" width={15} height={15} aria-hidden="true" style={{ color: tint }}>
-      <path d="M4 1.75h5.2l2.8 2.8v9.7H4z" fill="none" stroke="currentColor" strokeWidth="1.15" strokeLinejoin="round" />
-      <path d="M9.2 1.75v2.8H12" fill="none" stroke="currentColor" strokeWidth="1.15" strokeLinejoin="round" />
+    <svg className={styles.chevron} viewBox="0 0 10 10" aria-hidden="true">
+      <path d="M3.5 1.75 6.75 5 3.5 8.25" />
     </svg>
   );
 }
 
-function FolderGlyph({ open }: { open: boolean }) {
-  return (
-    <svg className={`${styles.fileGlyph} ${styles.folderGlyph}`} viewBox="0 0 16 16" width={15} height={15} aria-hidden="true">
-      {open
-        ? <path d="M1.75 12.25v-8.5h4.3l1.5 1.9h5.2v1.6M1.75 12.25l1.6-5h11l-1.6 5z" fill="none" stroke="currentColor" strokeWidth="1.15" strokeLinejoin="round" />
-        : <path d="M1.75 3.75h4.3l1.5 1.9h6.7v6.6h-12.5z" fill="none" stroke="currentColor" strokeWidth="1.15" strokeLinejoin="round" />}
-    </svg>
-  );
-}
+// Paper tabs carry no extension in their names; everything else is named for
+// what it is
+const tabIcon = (tab: MaterialTab) =>
+  tab.kind === "file" ? <FileIcon name={tab.name} size={14} /> : <FileIcon kind="pdf" size={14} />;
 
 // The end of a long path, which is the part that tells folders apart
 function shortPath(path: string) {
@@ -628,7 +622,7 @@ export function WorkspaceShell() {
       <header className="pr-app-bar">
         <div className="pr-brand"><span>P</span><strong>Paper Reader</strong></div>
         <nav className="pr-surface-switch" aria-label="Application surface"><Link href="/">Reader</Link><Link href="/workspace" className="active" aria-current="page">Workspace</Link></nav>
-        <div className="pr-reader-actions"><button className="pr-capability-button" onClick={() => setSkillsOpen(true)} title="Choose agent skills"><i aria-hidden>◆</i><span>Skills</span>{activeSkillIds.length > 0 && <small>{activeSkillIds.length}</small>}</button>{activeWorkspace && <span className={styles.workspaceName}><i />{activeWorkspace.name}</span>}</div>
+        <div className="pr-reader-actions"><button className="pr-capability-button" onClick={() => setSkillsOpen(true)} title="Choose agent skills"><i aria-hidden>◆</i><span>Skills</span>{activeSkillIds.length > 0 && <small>{activeSkillIds.length}</small>}</button>{activeWorkspace && <span className={styles.workspaceName} style={hueStyle(activeWorkspace.id)}><i />{activeWorkspace.name}</span>}</div>
       </header>
 
       <main className={styles.shell}>
@@ -636,7 +630,7 @@ export function WorkspaceShell() {
           {workspaces.map((workspace) => {
             const active = workspace.id === activeWorkspace?.id;
             return (
-              <button key={workspace.id} type="button" className={active ? styles.active : ""} onClick={() => switchWorkspace(workspace.id)} aria-label={workspace.name} aria-current={active ? "true" : undefined}>
+              <button key={workspace.id} type="button" className={`${styles.workspaceTile} ${active ? styles.active : ""}`} style={hueStyle(workspace.id)} onClick={() => switchWorkspace(workspace.id)} aria-label={workspace.name} aria-current={active ? "true" : undefined}>
                 <b>{initials(workspace.name)}</b><span aria-hidden="true">{workspace.name}</span>
               </button>
             );
@@ -659,11 +653,11 @@ export function WorkspaceShell() {
               <strong title={activeWorkspace?.name}>{activeWorkspace?.name ?? "No workspace"}</strong>
               <small title={activeWorkspace?.root}>{activeWorkspace ? shortPath(activeWorkspace.root) : "Create one to begin"}</small>
             </div>
-            <button className={styles.collapsePanel} onClick={() => setProjectOpen(false)} title="Hide the workspace panel" aria-label="Hide the workspace panel">‹</button>
+            <button className={styles.collapsePanel} onClick={() => setProjectOpen(false)} title="Hide the workspace panel" aria-label="Hide the workspace panel"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M10 3.5 5.5 8l4.5 4.5" /></svg></button>
           </header>
           <div className={styles.tree}>
             <section>
-              <h3><button type="button" className={styles.sectionChevron} onClick={() => setPapersOpen((open) => !open)} aria-expanded={papersOpen} title={papersOpen ? "Collapse source papers" : "Expand source papers"}>{papersOpen ? "⌄" : "›"}</button><strong className={styles.sectionTitle} onClick={() => setPapersOpen((open) => !open)}>SOURCE PAPERS <small>{activeWorkspace?.papers.length || 0}</small></strong><span className={styles.headerActions}>
+              <h3><button type="button" className={styles.sectionChevron} onClick={() => setPapersOpen((open) => !open)} aria-expanded={papersOpen} title={papersOpen ? "Collapse source papers" : "Expand source papers"}><Chevron /></button><strong className={styles.sectionTitle} onClick={() => setPapersOpen((open) => !open)}>SOURCE PAPERS <small>{activeWorkspace?.papers.length || 0}</small></strong><span className={styles.headerActions}>
                 <button onClick={() => setCopyOpen(true)} disabled={!activeWorkspace?.papers.length} title="Copy PDFs into the workspace folder…" aria-label="Copy PDFs into the workspace folder"><svg viewBox="0 0 16 16" width={15} height={15} aria-hidden="true"><path d="M8 2.5v7.5M5 7.2 8 10.2l3-3M3 11.5v2h10v-2" /></svg></button>
                 <button onClick={() => setPaperPickerOpen(true)} disabled={!activeWorkspace} title="Add papers from Zotero" aria-label="Add papers from Zotero"><svg viewBox="0 0 16 16" width={15} height={15} aria-hidden="true"><path d="M8 3v10M3 8h10" /></svg></button>
               </span></h3>
@@ -671,7 +665,7 @@ export function WorkspaceShell() {
                 const documentId = `paper:${paper.id}`;
                 return <div key={paper.id} className={`${styles.paperRow} ${activeDocId === documentId ? styles.activeRow : ""}`}>
                   <button className={styles.paperOpen} onClick={() => void openDocument({ id: documentId, kind: "paper", paper })} title={`${paper.name} — ${paper.zoteroKey ? "linked from Zotero" : "linked from the Reader"} · zero copy`}>
-                    <FileGlyph extension="pdf" /><strong>{paper.name.replace(/\.pdf$/i, "")}</strong>
+                    <FileIcon kind="pdf" className={styles.fileGlyph} /><strong>{paper.name.replace(/\.pdf$/i, "")}</strong>
                   </button>
                   <button className={styles.detachPaper} onClick={() => detachPaper(paper)} title="Detach from workspace" aria-label={`Detach ${paper.name.replace(/\.pdf$/i, "")} from this workspace`}>×</button>
                 </div>;
@@ -689,9 +683,9 @@ export function WorkspaceShell() {
                 onDragOver={(event) => { if (draggedFilePath) { event.preventDefault(); event.dataTransfer.dropEffect = "move"; setDropTarget(""); } }}
                 onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setDropTarget(null); }}
                 onDrop={(event) => { event.preventDefault(); if (draggedFilePath) void moveFile(draggedFilePath, ""); }}
-              ><button type="button" className={styles.sectionChevron} onClick={() => setFilesOpen((open) => !open)} aria-expanded={filesOpen} title={filesOpen ? "Collapse working files" : "Expand working files"}>{filesOpen ? "⌄" : "›"}</button><strong className={styles.sectionTitle} onClick={() => setFilesOpen((open) => !open)}>WORKING FILES <small>{fileRows.length}</small></strong><span className={styles.headerActions}>
-                <button onClick={createFile} disabled={!activeWorkspace} title="New file" aria-label="New file"><svg viewBox="0 0 16 16" width={15} height={15} aria-hidden="true"><path d="M4 1.75h5.2l2.8 2.8v9.7H4z" /><path d="M9.2 1.75v2.8H12" /><path d="M6.2 9h3.6M8 7.2v3.6" /></svg></button>
-                <button onClick={createDirectory} disabled={!activeWorkspace} title="New folder" aria-label="New folder"><svg viewBox="0 0 16 16" width={15} height={15} aria-hidden="true"><path d="M1.75 3.75h4.3l1.5 1.9h6.7v6.6h-12.5z" /><path d="M6.2 8.7h3.6M8 6.9v3.6" /></svg></button>
+              ><button type="button" className={styles.sectionChevron} onClick={() => setFilesOpen((open) => !open)} aria-expanded={filesOpen} title={filesOpen ? "Collapse working files" : "Expand working files"}><Chevron /></button><strong className={styles.sectionTitle} onClick={() => setFilesOpen((open) => !open)}>WORKING FILES <small>{fileRows.length}</small></strong><span className={styles.headerActions}>
+                <button onClick={createFile} disabled={!activeWorkspace} title="New file" aria-label="New file"><svg viewBox="0 0 16 16" width={15} height={15} aria-hidden="true"><path d="M5 1.5h4.6l2.9 2.9V13a1.5 1.5 0 0 1-1.5 1.5H5A1.5 1.5 0 0 1 3.5 13V3A1.5 1.5 0 0 1 5 1.5z" /><path d="M9.6 1.5v2.9h2.9M6.2 9.6h3.6M8 7.8v3.6" /></svg></button>
+                <button onClick={createDirectory} disabled={!activeWorkspace} title="New folder" aria-label="New folder"><svg viewBox="0 0 16 16" width={15} height={15} aria-hidden="true"><path d="M1.5 4A1.5 1.5 0 0 1 3 2.5h3.2c.4 0 .78.16 1.06.44L8.4 4.1H13a1.5 1.5 0 0 1 1.5 1.5v6.9A1.5 1.5 0 0 1 13 14H3a1.5 1.5 0 0 1-1.5-1.5z" /><path d="M6.2 9h3.6M8 7.2v3.6" /></svg></button>
                 <button onClick={refreshFiles} disabled={!activeWorkspace || filesLoading} title="Refresh" aria-label="Refresh working files"><svg viewBox="0 0 16 16" width={15} height={15} aria-hidden="true"><path d="M13 8a5 5 0 1 1-1.5-3.6M13 2.8v2.9h-2.9" /></svg></button>
               </span></h3>
               {filesOpen && filesLoading && !files.length && <p className={styles.treeNote}>Reading the folder…</p>}
@@ -721,8 +715,8 @@ export function WorkspaceShell() {
                       title={`${entry.path} · drop a file here to move it`}
                     >
                       <span className={styles.indentGuides} aria-hidden="true">{Array.from({ length: depth }, (_, index) => <i key={index} />)}</span>
-                      <span className={styles.explorerChevron} aria-hidden="true">{expanded ? "⌄" : "›"}</span>
-                      <FolderGlyph open={expanded} />
+                      <span className={styles.explorerChevron} aria-hidden="true"><Chevron /></span>
+                      <FolderIcon open={expanded} className={styles.fileGlyph} />
                       <strong>{entry.name}</strong>
                     </button>;
                   }
@@ -742,7 +736,7 @@ export function WorkspaceShell() {
                   >
                     <span className={styles.indentGuides} aria-hidden="true">{Array.from({ length: depth }, (_, index) => <i key={index} />)}</span>
                     <span className={styles.explorerChevron} aria-hidden="true" />
-                    <FileGlyph extension={entry.extension} />
+                    <FileIcon name={entry.name} className={styles.fileGlyph} />
                     <strong>{entry.name}</strong>
                   </button>;
                 })}
@@ -765,6 +759,7 @@ export function WorkspaceShell() {
             onClose={closeDocument}
             onReorder={(ordered) => setOpenDocs(ordered.map((tab) => openDocs.find((doc) => doc.id === tab.id)!).filter(Boolean))}
             rememberAs="workspace"
+            renderIcon={tabIcon}
           />
           {!activeDoc && (
             <div className={styles.emptyDocument}>
@@ -799,7 +794,7 @@ export function WorkspaceShell() {
                 // surfaces read the same paper for different ends
                 positionKey={`workspace:${activeDoc.kind === "paper" ? activeDoc.paper.id : activeDoc.path}`}
               /> : <div className={styles.emptyDocument}><p>Loading PDF…</p></div>}</div>}
-          {activeDoc?.kind === "file" && <><header className={styles.editorToolbar}><div><strong>{activeDoc.path}</strong><small>{activeDoc.extension === "md" ? "Markdown" : "Text"} · editable workspace file</small></div>{activeDoc.extension === "md" && <span role="group" aria-label="View"><button className={!preview ? styles.selected : ""} aria-pressed={!preview} onClick={() => setPreview(false)}>Edit</button><button className={preview ? styles.selected : ""} aria-pressed={preview} onClick={() => setPreview(true)}>Preview</button></span>}<p><small className={editorContent === savedContent ? "" : styles.unsaved}>{editorContent === savedContent ? "Saved" : "Unsaved"}</small><button onClick={() => void saveFile()} disabled={editorContent === savedContent} title="Save (⌘S)">Save</button></p></header><div className={styles.editorStage}>{preview && activeDoc.extension === "md" && activeWorkspace ? <MarkdownPreview root={activeWorkspace.root} path={activeDoc.path} content={editorContent} /> : <textarea value={editorContent} onChange={(event) => setEditorContent(event.target.value)} onKeyDown={(event) => { if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") { event.preventDefault(); void saveFile(); } }} spellCheck={false} aria-label={`Edit ${activeDoc.path}`} />}</div></>}
+          {activeDoc?.kind === "file" && <><header className={styles.editorToolbar}><div><FileIcon name={activeDoc.name} size={20} /><div><strong>{activeDoc.path}</strong><small>{activeDoc.extension === "md" ? "Markdown" : "Text"} · editable workspace file</small></div></div>{activeDoc.extension === "md" && <span role="group" aria-label="View"><button className={!preview ? styles.selected : ""} aria-pressed={!preview} onClick={() => setPreview(false)}>Edit</button><button className={preview ? styles.selected : ""} aria-pressed={preview} onClick={() => setPreview(true)}>Preview</button></span>}<p><small className={editorContent === savedContent ? "" : styles.unsaved}>{editorContent === savedContent ? "Saved" : "Unsaved"}</small><button onClick={() => void saveFile()} disabled={editorContent === savedContent} title="Save (⌘S)">Save</button></p></header><div className={styles.editorStage}>{preview && activeDoc.extension === "md" && activeWorkspace ? <MarkdownPreview root={activeWorkspace.root} path={activeDoc.path} content={editorContent} /> : <textarea value={editorContent} onChange={(event) => setEditorContent(event.target.value)} onKeyDown={(event) => { if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") { event.preventDefault(); void saveFile(); } }} spellCheck={false} aria-label={`Edit ${activeDoc.path}`} />}</div></>}
         </section>
 
         <ResizeHandle onDrag={dragAgent} onStart={startAgent} onEnd={endAgent} />

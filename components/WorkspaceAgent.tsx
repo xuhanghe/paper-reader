@@ -291,7 +291,7 @@ export const WorkspaceAgent = memo(forwardRef<WorkspaceAgentHandle, Props>(funct
   return (
     <aside className={styles.panel} style={{ width }} aria-label="Workspace agent">
       <header className={styles.head}>
-        <button type="button" className={styles.iconButton} onClick={onCollapse} title="Hide the workspace agent" aria-label="Hide the workspace agent">›</button>
+        <button type="button" className={styles.iconButton} onClick={onCollapse} title="Hide the workspace agent" aria-label="Hide the workspace agent"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 3.5 10.5 8 6 12.5" /></svg></button>
         <p className={styles.title}>
           <strong>Agent</strong>
           <small title={documentLabel ?? undefined}>{documentLabel ? `Working with ${documentLabel}` : "Workspace context"}</small>

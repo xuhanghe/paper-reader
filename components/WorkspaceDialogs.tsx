@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useMemo, useState } from "react";
+import { FileIcon, FolderIcon } from "@/components/FileIcon";
 import type { MaterialTab } from "@/components/MaterialTabs";
 import { defaultExportPath } from "@/lib/conversation-export";
 import { loadPaperData, safePdfName } from "@/lib/paper-data";
@@ -55,7 +56,7 @@ export function CreateWorkspaceDialog({ open, onClose, onCreated }: { open: bool
         <label><span>NAME</span><input autoFocus value={name} onChange={(event) => setName(event.target.value)} placeholder="e.g. Efficient inference evaluation" /></label>
         <label><span>WORKING DIRECTORY</span><div className={styles.pathInput}><input value={root} readOnly placeholder="Choose with the macOS folder picker" /><button type="button" onClick={browse} disabled={browsing}>{browsing ? "Opening…" : "Choose / create…"}</button></div></label>
         <p className={styles.nativePickerNote}>Select an existing repository, or use New Folder in the macOS dialog.</p>
-        <div className={styles.lockNote}><span>⌘</span><p><strong>This directory is fixed after creation.</strong><small>Create another workspace if you later need a different project root.</small></p></div>
+        <div className={styles.lockNote}><span><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3.5" y="7" width="9" height="6.5" rx="1.5" /><path d="M5.5 7V5.25a2.5 2.5 0 0 1 5 0V7" /></svg></span><p><strong>This directory is fixed after creation.</strong><small>Create another workspace if you later need a different project root.</small></p></div>
         <p className={styles.zeroPaperNote}>The directory is attached in place. The workspace starts with 0 linked papers; add them any time with <strong>Add papers</strong>.</p>
         {error && <p className={styles.error}>{error}</p>}
         <footer><button onClick={onClose}>Cancel</button><button className={styles.primary} onClick={submit} disabled={creating}>{creating ? "Creating…" : "Create workspace"}</button></footer>
@@ -194,7 +195,7 @@ export function PaperPicker({ open, papers, existing, onClose, onAdd }: { open: 
         </div>
         <div className={styles.paperPicker}>
           {!loading && choices.length === 0 && <p className={styles.empty}>{error || (query ? "No matching papers." : "No unattached papers in this source.")}</p>}
-          {choices.slice(0, visibleCount).map((choice) => <label key={choice.tab.id}><input type="checkbox" checked={!!selected[choice.tab.id]} onChange={() => toggle(choice)} /><span className={styles.kindPdf}>PDF</span><p><strong>{choice.tab.name.replace(/\.pdf$/i, "")}</strong><small>{choice.detail}</small></p></label>)}
+          {choices.slice(0, visibleCount).map((choice) => <label key={choice.tab.id}><input type="checkbox" checked={!!selected[choice.tab.id]} onChange={() => toggle(choice)} /><span className={styles.kindPdf}><FileIcon kind="pdf" size={22} /></span><p><strong>{choice.tab.name.replace(/\.pdf$/i, "")}</strong><small>{choice.detail}</small></p></label>)}
           {choices.length > visibleCount && <button className={styles.loadMore} onClick={() => setVisibleCount((count) => count + 100)}>Show 100 more <small>{choices.length - visibleCount} remaining</small></button>}
         </div>
         {error && choices.length > 0 && <p className={styles.error}>{error}</p>}
@@ -287,8 +288,8 @@ export function CopyPapersDialog({ open, workspace, onClose, onCopied }: { open:
     <div className={styles.modalBackdrop}>
       <section className={styles.modal} role="dialog" aria-modal="true">
         <header><div><small>EXPLICIT FILE COPY</small><h2>Choose PDFs to copy</h2></div><button onClick={close}>×</button></header>
-        <div className={styles.destination}><span>⌘</span><p><strong>Destination</strong><code>{workspace.root}/papers</code></p></div>
-        <div className={styles.paperPicker}>{workspace.papers.map((paper) => <label key={paper.id}><input type="checkbox" checked={selected.includes(paper.id)} onChange={() => setSelected((current) => current.includes(paper.id) ? current.filter((id) => id !== paper.id) : [...current, paper.id])} /><span className={styles.kindPdf}>PDF</span><p><strong>{paper.name.replace(/\.pdf$/i, "")}</strong><small>Linked source remains unchanged</small></p></label>)}</div>
+        <div className={styles.destination}><span><FolderIcon size={20} /></span><p><strong>Destination</strong><code>{workspace.root}/papers</code></p></div>
+        <div className={styles.paperPicker}>{workspace.papers.map((paper) => <label key={paper.id}><input type="checkbox" checked={selected.includes(paper.id)} onChange={() => setSelected((current) => current.includes(paper.id) ? current.filter((id) => id !== paper.id) : [...current, paper.id])} /><span className={styles.kindPdf}><FileIcon kind="pdf" size={22} /></span><p><strong>{paper.name.replace(/\.pdf$/i, "")}</strong><small>Linked source remains unchanged</small></p></label>)}</div>
         {error && <p className={styles.error}>{error}</p>}
         <footer><button onClick={close}>Cancel</button><button className={styles.primary} onClick={copy} disabled={!selected.length || copying}>{copying ? "Copying…" : `Copy ${selected.length || "selected"} PDF${selected.length === 1 ? "" : "s"}`}</button></footer>
       </section>

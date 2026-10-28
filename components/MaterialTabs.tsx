@@ -1,5 +1,5 @@
 "use client";
-import { useCallback, useEffect, useRef, useState, memo } from "react";
+import { useCallback, useEffect, useRef, useState, memo, type ReactNode } from "react";
 import { DocType } from "@/types/session";
 
 export type MaterialTab = {
@@ -25,6 +25,9 @@ type Props = {
   // crossing to the Workspace and back — and the tab you left is the tab
   // you find
   rememberAs?: string;
+  // What marks each tab before its name — the Workspace shows what kind of
+  // file it is. Without it, a dot says which tab is open or loading.
+  renderIcon?: (tab: MaterialTab) => ReactNode;
 };
 
 // Where the bar should scroll so the active tab is in view: null when it
@@ -79,7 +82,7 @@ export function reorderMaterialTabs(tabs: MaterialTab[], fromId: string, toId: s
 // Open materials, switchable like browser tabs. Each tab keeps its own
 // conversation, paper map and highlights — switching restores that paper's
 // session rather than starting over.
-export const MaterialTabs = memo(function MaterialTabs({ tabs, activeId, loadingId, onSelect, onClose, onReorder, rememberAs }: Props) {
+export const MaterialTabs = memo(function MaterialTabs({ tabs, activeId, loadingId, onSelect, onClose, onReorder, rememberAs, renderIcon }: Props) {
   const [dragId, setDragId] = useState<string | null>(null);
   // The slot the dragged tab would land in, while it is over the bar
   const [slot, setSlot] = useState<number | null>(null);
@@ -231,18 +234,22 @@ export const MaterialTabs = memo(function MaterialTabs({ tabs, activeId, loading
               if (!isActive) (e.currentTarget as HTMLElement).style.background = "transparent";
             }}
           >
-            <span
-              className="w-1.5 h-1.5 rounded-full shrink-0"
-              style={{
-                background: isLoading
-                  ? "var(--badge-text-fg)"
-                  : isActive
-                    ? "var(--accent)"
-                    : tab.kind === "file" || tab.docType === "html"
-                      ? "var(--badge-fig-fg)"
-                      : "var(--ink-faint)",
-              }}
-            />
+            {renderIcon ? (
+              <span className="shrink-0 flex" style={{ opacity: isActive ? 1 : 0.8 }}>{renderIcon(tab)}</span>
+            ) : (
+              <span
+                className="w-1.5 h-1.5 rounded-full shrink-0"
+                style={{
+                  background: isLoading
+                    ? "var(--badge-text-fg)"
+                    : isActive
+                      ? "var(--accent)"
+                      : tab.kind === "file" || tab.docType === "html"
+                        ? "var(--badge-fig-fg)"
+                        : "var(--ink-faint)",
+                }}
+              />
+            )}
             <span
               className="text-[11px] truncate"
               style={{ color: isActive ? "var(--ink)" : "var(--ink-muted)" }}
