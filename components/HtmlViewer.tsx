@@ -1,6 +1,6 @@
 "use client";
 import type { SelectionIntent } from "@/lib/prompts";
-import { useRef, useState, useCallback, useEffect, forwardRef, useImperativeHandle } from "react";
+import { useRef, useState, useCallback, useEffect, forwardRef, useImperativeHandle, memo } from "react";
 import { SelectionPopover } from "./SelectionPopover";
 import { CollectionChip } from "./CollectionChip";
 import { loadReadingPosition, saveReadingPosition } from "@/lib/reading-position";
@@ -82,7 +82,7 @@ mark.pr-mark-flash { animation: pr-mark-flash 0.55s ease-in-out 3; }
 // Renders a Zotero HTML snapshot in a sandboxed iframe (scripts disabled).
 // Selection events are read from the iframe document and mapped to viewport
 // coordinates so the same explain/ask/highlight popovers work as for PDFs.
-export const HtmlViewer = forwardRef<PdfViewerHandle, Props>(function HtmlViewer(
+export const HtmlViewer = memo(forwardRef<PdfViewerHandle, Props>(function HtmlViewer(
   {
     html,
     onTextSelected,
@@ -400,4 +400,4 @@ export const HtmlViewer = forwardRef<PdfViewerHandle, Props>(function HtmlViewer
       />
     </div>
   );
-});
+}));

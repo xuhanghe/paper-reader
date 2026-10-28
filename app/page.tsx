@@ -3,7 +3,7 @@ import type { AskKind, SelectionIntent } from "@/lib/prompts";
 import { useRef, useState, useCallback, useEffect, useMemo, useSyncExternalStore } from "react";
 import { extractZoteroItemText } from "@/lib/extract-text";
 import { isStale, mergeTakeaways } from "@/lib/takeaways";
-import type { PdfRects } from "@/types/session";
+import type { Highlight, PdfRects } from "@/types/session";
 import dynamic from "next/dynamic";
 import { useSession, sessionIdFor } from "@/hooks/useSession";
 import { MindmapSidebar } from "@/components/MindmapSidebar";
@@ -31,6 +31,7 @@ import { cacheDocument, forgetDocument, getCachedDocument } from "@/lib/document
 import { fetchZoteroDocument } from "@/lib/paper-data";
 import { useAgentSkills } from "@/hooks/useAgentSkills";
 import { ResizeHandle, usePanelWidth } from "@/components/ResizablePanel";
+import { sameItems, useStableValue } from "@/hooks/useStableValue";
 import Link from "next/link";
 
 const PdfViewer = dynamic(() => import("@/components/PdfViewer").then((m) => m.PdfViewer), {
@@ -77,6 +78,18 @@ function loadLayout(): Layout {
 // renders once we're on the client. Avoids a hydration mismatch.
 const NO_SUBSCRIBE = () => () => {};
 const useIsClient = () => useSyncExternalStore(NO_SUBSCRIBE, () => true, () => false);
+
+// Nothing, as one value: a fresh [] on every render reads as a change to every
+// memoised panel it is handed to
+const NO_HIGHLIGHTS: Highlight[] = [];
+const NO_NOTES: { key: string; html: string }[] = [];
+
+// A passage keeps everything it marks on the page from the moment it is
+// asked; only its conversation goes on changing
+const samePassage = (a: AskedPassage, b: AskedPassage) =>
+  a.id === b.id && a.text === b.text && a.pageNumber === b.pageNumber && a.label === b.label &&
+  a.kind === b.kind && a.occurrence === b.occurrence && a.position === b.position && a.positions === b.positions;
+const samePassages = (a: AskedPassage[], b: AskedPassage[]) => sameItems(a, b, samePassage);
 
 
 
@@ -421,7 +434,7 @@ export default function Home() {
   }, [session.zoteroKey, loadZoteroNotes]);
 
   const zoteroLive = session.zoteroKey && zoteroNotesState?.forKey === session.zoteroKey ? zoteroNotesState : null;
-  const zoteroNotes = zoteroLive?.notes ?? [];
+  const zoteroNotes = zoteroLive?.notes ?? NO_NOTES;
   const zoteroAnnotations = useMemo(() => zoteroLive?.annotations ?? [], [zoteroLive]);
 
   // Annotations this session already wrote to Zotero are dropped from the
@@ -469,7 +482,7 @@ export default function Home() {
   // an annotation on the paper.
   const [citedPassages, setCitedPassages] = useState<AskedPassage[]>([]);
 
-  const askedPassages = useMemo<AskedPassage[]>(
+  const askedNow = useMemo<AskedPassage[]>(
     () =>
       session.annotations
         .filter((a) => a.type === "text" && a.selectedText?.trim())
@@ -486,6 +499,11 @@ export default function Home() {
         .concat(citedPassages),
     [session.annotations, citedPassages]
   );
+  // An answer streaming in rebuilds its conversation on every word, and with
+  // it this list — while the passages themselves stay as they were. Handed
+  // over as the same list until one does change, or the viewer repaints every
+  // mark on every rendered page for every word of the answer.
+  const askedPassages = useStableValue(askedNow, samePassages);
 
   const annotationRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const pdfViewerRef = useRef<PdfViewerHandle>(null);
@@ -616,19 +634,27 @@ export default function Home() {
   );
 
   // Opening the Concepts tab: catch up threads never summarised, one at a
-  // time. A named thread is written afresh whatever its state.
+  // time. A named thread is written afresh whatever its state. Reads the
+  // conversations as they stand when it runs, so it is one function for the
+  // life of the page and the map panel need not re-render for every word.
+  const takeawaysSource = useRef({ annotations: session.annotations, concepts: session.concepts, streamingIds, paperId });
+  useEffect(() => {
+    takeawaysSource.current = { annotations: session.annotations, concepts: session.concepts, streamingIds, paperId };
+  });
   const refreshTakeaways = useCallback(async (only?: string) => {
+    const { annotations, concepts, streamingIds: streaming, paperId: forPaper } = takeawaysSource.current;
     if (only) {
-      await summarizeThread(only, paperId ?? undefined, { force: true });
+      await summarizeThread(only, forPaper ?? undefined, { force: true });
       return;
     }
-    for (const a of session.annotations) {
-      const concept = session.concepts.find((c) => c.annotationId === a.id);
+    for (const a of annotations) {
+      const concept = concepts.find((c) => c.annotationId === a.id);
       if (concept?.edited || !isStale(concept?.summarizedTurns, a.messages.length)) continue;
-      if (streamingIds.has(a.id)) continue;
-      await summarizeThread(a.id, paperId ?? undefined);
+      if (streaming.has(a.id)) continue;
+      await summarizeThread(a.id, forPaper ?? undefined);
     }
-  }, [session.annotations, session.concepts, streamingIds, paperId, summarizeThread]);
+  }, [summarizeThread]);
+  const resummarize = useCallback((id: string) => void refreshTakeaways(id), [refreshTakeaways]);
 
   // Every question — selection explain, figure, general, follow-up — goes
   // through the fused per-paper conversation on /api/ask. The provider's
@@ -1298,7 +1324,7 @@ export default function Home() {
       reader.readAsDataURL(file);
       e.target.value = "";
     },
-    [setPdf]
+    [openMaterial]
   );
 
   const handleLoadSession = useCallback(
@@ -1309,23 +1335,41 @@ export default function Home() {
     [loadSession]
   );
 
-  const explainModelControls = (
+  // Built once per change of what they show, so the panels they sit in are
+  // not handed a new element — and re-rendered — on every word of an answer
+  const explainModelControls = useMemo(() => (
     <AgentPicker
       label="Model for questions"
       value={session.model}
       effort={session.effort}
       onChange={(model, effort) => { setModel(model); setEffort(effort); }}
     />
-  );
+  ), [session.model, session.effort, setModel, setEffort]);
 
-  const mapModelControls = (
+  const mapModelControls = useMemo(() => (
     <AgentPicker
       label="Model for the paper map"
       value={session.mapModel || session.model}
       effort={session.mapEffort || session.effort}
       onChange={(model, effort) => { setMapModel(model); setMapEffort(effort); }}
     />
-  );
+  ), [session.mapModel, session.model, session.mapEffort, session.effort, setMapModel, setMapEffort]);
+
+  // The panels' handlers, made once: every panel is memoised, and a handler
+  // written inline in the JSX would be a new prop on every render
+  const toggleLibrary = useCallback(() => setZoteroOpen((v) => !v), []);
+  const toggleConversation = useCallback(() => setExplainOpen((v) => !v), []);
+  const toggleNotebook = useCallback(() => setSidebarOpen((v) => !v), []);
+  const revealInLibrary = useCallback((key: string) => {
+    setZoteroOpen(true);
+    setRevealCollection({ key, nonce: Date.now() });
+  }, []);
+  const citePaper = useCallback((page: number, quote: string, fromAnnotationId?: string) => {
+    void followCitation(page, quote, fromAnnotationId);
+  }, [followCitation]);
+  const jumpToSource = useCallback((page: number, quote: string) => {
+    void pdfViewerRef.current?.highlightText(page, quote);
+  }, []);
 
   if (!isClient) {
     return <div className="h-screen" style={{ background: "var(--paper)" }} />;
@@ -1485,7 +1529,7 @@ export default function Home() {
           onDocumentLoaded={openMaterial}
           activeDocName={session.pdfName}
           isOpen={zoteroOpen}
-          onToggle={() => setZoteroOpen((v) => !v)}
+          onToggle={toggleLibrary}
           width={zoteroWidth}
           refreshSignal={libraryRefresh}
           revealCollection={revealCollection}
@@ -1512,10 +1556,7 @@ export default function Home() {
               reloading={reloading}
               zoteroKey={session.zoteroKey}
               positionKey={paperId ?? undefined}
-              onRevealCollection={(key) => {
-                setZoteroOpen(true);
-                setRevealCollection({ key, nonce: Date.now() });
-              }}
+              onRevealCollection={revealInLibrary}
             />
           ) : session.pdfDataUrl ? (
             <PdfViewer
@@ -1538,10 +1579,7 @@ export default function Home() {
               reloading={reloading}
               zoteroKey={session.zoteroKey}
               positionKey={paperId ?? undefined}
-              onRevealCollection={(key) => {
-                setZoteroOpen(true);
-                setRevealCollection({ key, nonce: Date.now() });
-              }}
+              onRevealCollection={revealInLibrary}
             />
           ) : (
             <div className="flex-1 flex flex-col items-center justify-center gap-4" style={{ background: "var(--parchment)" }}>
@@ -1582,13 +1620,11 @@ export default function Home() {
           onReExplainImage={handleReExplainImage}
           onViewInPdf={handleViewInPdf}
           onFocusedChange={setFocusedAnnotationId}
-          onCitePaper={(page: number, quote: string, fromAnnotationId?: string) => {
-            void followCitation(page, quote, fromAnnotationId);
-          }}
+          onCitePaper={citePaper}
           annotationRefs={annotationRefs}
           scrollHandle={panelScroll}
           isOpen={explainOpen}
-          onToggle={() => setExplainOpen((v) => !v)}
+          onToggle={toggleConversation}
           width={explainWidth}
           modelControls={explainModelControls}
           positionKey={paperId ?? undefined}
@@ -1602,17 +1638,17 @@ export default function Home() {
           mindmapError={mindmapError}
           hasPdf={!!session.pdfDataUrl}
           onGenerateMindmap={handleGenerateMindmap}
-          onJumpToSource={(page, quote) => { pdfViewerRef.current?.highlightText(page, quote); }}
+          onJumpToSource={jumpToSource}
           onJumpToHighlight={jumpToHighlight}
           onAskAboutNode={handleAskAboutSelection}
           onQuote={handleQuoteSelection}
           concepts={session.concepts}
-          onSelectConcept={(id) => setActiveAnnotationId(id)}
+          onSelectConcept={setActiveAnnotationId}
           summarizingIds={summarizing}
           onConceptsShown={refreshTakeaways}
-          onResummarize={(id: string) => refreshTakeaways(id)}
+          onResummarize={resummarize}
           onEditTakeaways={editTakeaways}
-          highlights={session.highlights || []}
+          highlights={session.highlights || NO_HIGHLIGHTS}
           onRemoveHighlight={handleRemoveHighlight}
           onEditNote={handleEditNote}
           focusNote={focusNote}
@@ -1621,7 +1657,7 @@ export default function Home() {
           zoteroAnnotations={visibleZoteroAnnotations}
           onRemoveZoteroAnnotation={handleRemoveZoteroAnnotation}
           isOpen={sidebarOpen}
-          onToggle={() => setSidebarOpen((v) => !v)}
+          onToggle={toggleNotebook}
           width={mindmapWidth}
           modelControls={mapModelControls}
         />

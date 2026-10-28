@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, memo } from "react";
 import type { AgentSkill } from "@/hooks/useAgentSkills";
 
 type Props = {
@@ -11,7 +11,7 @@ type Props = {
   loading?: boolean;
 };
 
-export function SkillsDrawer({ open, onClose, skills, activeIds, onToggle, loading }: Props) {
+export const SkillsDrawer = memo(function SkillsDrawer({ open, onClose, skills, activeIds, onToggle, loading }: Props) {
   const [query, setQuery] = useState("");
   const [showAll, setShowAll] = useState(false);
   const visible = useMemo(() => {
@@ -65,4 +65,4 @@ export function SkillsDrawer({ open, onClose, skills, activeIds, onToggle, loadi
       </aside>
     </>
   );
-}
+});

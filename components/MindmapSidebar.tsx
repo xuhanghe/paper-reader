@@ -1,5 +1,5 @@
 "use client";
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, memo } from "react";
 import { Mindmap, MindmapNode, ConceptEntry, Highlight } from "@/types/session";
 import { isSubmitKey } from "@/lib/keys";
 import { GrowingTextarea } from "./GrowingTextarea";
@@ -393,7 +393,7 @@ function NodeView({ node, depth, onJump, onAsk }: { node: MindmapNode; depth: nu
   );
 }
 
-export function MindmapSidebar({
+export const MindmapSidebar = memo(function MindmapSidebar({
   mindmap,
   mindmapLoading,
   mindmapError,
@@ -844,4 +844,4 @@ export function MindmapSidebar({
 
     </div>
   );
-}
+});

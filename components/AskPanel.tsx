@@ -166,7 +166,7 @@ const COLLAPSE_CHARS = 300;
 // Workspace and back
 const composerImageMemory = new Map<string, string>();
 
-export function ExplainPanel({ annotations, activeId, model, streamingIds, onFollowUp, onStop, onEditMessage, onAskGeneral, onDelete, onReExplainImage, onViewInPdf, onFocusedChange, onCitePaper, annotationRefs, scrollHandle, isOpen, onToggle, width = 460, modelControls, positionKey, askSeq }: Props) {
+export const ExplainPanel = memo(function ExplainPanel({ annotations, activeId, model, streamingIds, onFollowUp, onStop, onEditMessage, onAskGeneral, onDelete, onReExplainImage, onViewInPdf, onFocusedChange, onCitePaper, annotationRefs, scrollHandle, isOpen, onToggle, width = 460, modelControls, positionKey, askSeq }: Props) {
   // One composer for both kinds of question. What is typed is kept across
   // the switch, so flipping it never loses a draft.
   // What is being typed, kept per paper: see lib/drafts
@@ -2128,4 +2128,4 @@ export function ExplainPanel({ annotations, activeId, model, streamingIds, onFol
       {composer}
     </div>
   );
-}
+});

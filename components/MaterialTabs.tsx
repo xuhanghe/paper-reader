@@ -1,5 +1,5 @@
 "use client";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, memo } from "react";
 import { DocType } from "@/types/session";
 
 export type MaterialTab = {
@@ -79,7 +79,7 @@ export function reorderMaterialTabs(tabs: MaterialTab[], fromId: string, toId: s
 // Open materials, switchable like browser tabs. Each tab keeps its own
 // conversation, paper map and highlights — switching restores that paper's
 // session rather than starting over.
-export function MaterialTabs({ tabs, activeId, loadingId, onSelect, onClose, onReorder, rememberAs }: Props) {
+export const MaterialTabs = memo(function MaterialTabs({ tabs, activeId, loadingId, onSelect, onClose, onReorder, rememberAs }: Props) {
   const [dragId, setDragId] = useState<string | null>(null);
   // The slot the dragged tab would land in, while it is over the bar
   const [slot, setSlot] = useState<number | null>(null);
@@ -261,4 +261,4 @@ export function MaterialTabs({ tabs, activeId, loadingId, onSelect, onClose, onR
       })}
     </div>
   );
-}
+});

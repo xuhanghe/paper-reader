@@ -1,7 +1,7 @@
 "use client";
 import type { SelectionIntent } from "@/lib/prompts";
 import { trace, traceEnabled } from "@/lib/panel-trace";
-import { useRef, useState, useCallback, useEffect, forwardRef, useImperativeHandle } from "react";
+import { useRef, useState, useCallback, useEffect, forwardRef, useImperativeHandle, memo } from "react";
 import { AnnotationEditorType, AnnotationMode, getDocument, GlobalWorkerOptions } from "pdfjs-dist";
 import type { PDFDocumentProxy } from "pdfjs-dist";
 import { EventBus, PDFViewer as PdfJsViewer, PDFLinkService, PDFFindController } from "pdfjs-dist/web/pdf_viewer.mjs";
@@ -704,7 +704,7 @@ export type PdfViewerHandle = {
 // Built on the official PDF.js viewer component (the same one Overleaf uses):
 // virtualized page rendering, cursor-anchored CSS-first zoom with delayed
 // redraw, and a find controller for jump-and-highlight.
-export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
+export const PdfViewer = memo(forwardRef<PdfViewerHandle, Props>(function PdfViewer(
   { pdfDataUrl, onTextSelected, onAskAboutSelection, onQuoteSelection, onRegionCaptured, onHighlight, onNote, onRemoveHighlight, onRecolorHighlight, onEditHighlightNote, onHighlightClick, highlights = [], askedPassages = [], onAskedClick, onReload, reloading, zoteroKey, onRevealCollection, positionKey },
   ref
 ) {
@@ -3104,4 +3104,4 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
       </div>
     </div>
   );
-});
+}));
