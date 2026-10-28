@@ -31,6 +31,10 @@ before(() => {
   const holder = (globalThis as { __paperReaderCatalog?: { groups: Map<string, CatalogGroup> } }).__paperReaderCatalog!;
   holder.groups.set("claude", known);
   holder.groups.set("codex", codexKnown);
+  // OpenCode lists nothing, and has just been asked: an effort check would
+  // otherwise ask it in the background, starting the real `opencode serve`,
+  // whose process keeps this file from ever finishing
+  holder.groups.set("opencode", { key: "opencode", provider: "opencode", label: "OpenCode", status: "error", detail: "not asked in tests", models: [], fetchedAt: Date.now() });
 });
 
 describe("parsing what each backend says it has", () => {
