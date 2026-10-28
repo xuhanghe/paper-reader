@@ -691,8 +691,11 @@ export default function Home() {
         selected_text?: string;
         question?: string;
         page_number?: number;
-        // Where I have read up to; the model answers from there back
+        // Where I have read up to; the model answers from there back. The
+        // page in view is added to every ask, and this is never less than it.
         read_up_to?: number;
+        // The page of the card a follow-up is asked in
+        card_page?: number;
         image_base64?: string;
         web_search?: boolean;
       }
@@ -712,6 +715,7 @@ export default function Home() {
       let failed = false;
       try {
         const provider = providerIdFor(session.model);
+        const inView = readingPage();
         const res = await fetch("/api/ask", {
           method: "POST",
           signal: controller.signal,
@@ -720,6 +724,11 @@ export default function Home() {
             paper_id: paperId,
             paper_title: session.pdfName,
             ...ask,
+            // Where I am looking now, and how far I have read: a follow-up in a
+            // card about page 4 asked while looking at page 2 has read to 4,
+            // and is looking at 2
+            current_page: inView,
+            read_up_to: Math.max(ask.read_up_to ?? 0, inView ?? 0) || undefined,
             annotation_id: annotationId,
             model: session.model,
             effort: session.effort,
@@ -789,7 +798,7 @@ export default function Home() {
         }
       }
     },
-    [session.model, session.effort, session.pdfName, session.providerSessions, paperId, activeSkillIds, updateLastAssistantMessage, setProviderSession, markTurn, summarizeThread]
+    [session.model, session.effort, session.pdfName, session.providerSessions, paperId, activeSkillIds, updateLastAssistantMessage, setProviderSession, markTurn, summarizeThread, readingPage]
   );
 
   // Following a citation the model wrote.
@@ -1053,6 +1062,7 @@ export default function Home() {
         page_number: opening ? annotation.pageNumber : undefined,
         image_base64: previous.imageDataUrl,
         read_up_to: annotation.pageNumber ?? readingPage(),
+        card_page: annotation.pageNumber,
         replaces_turns: annotation.messages.slice(index).map((m) => m.turn).filter((t): t is number => !!t),
       });
     },
@@ -1341,7 +1351,7 @@ export default function Home() {
 
       // Follow-ups continue the fused paper conversation — the model already
       // has this card's context from earlier turns
-      streamAsk(annotationId, { kind: "followup", question, image_base64: imageDataUrl, read_up_to: annotation.pageNumber ?? readingPage() });
+      streamAsk(annotationId, { kind: "followup", question, image_base64: imageDataUrl, read_up_to: annotation.pageNumber ?? readingPage(), card_page: annotation.pageNumber });
     },
     [appendMessage, session.annotations, streamAsk, readingPage]
   );

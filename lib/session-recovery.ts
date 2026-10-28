@@ -23,6 +23,9 @@ const DIRECTIVE_STARTS = [
   "\n\nUse these user-selected skills",
   "\n\nAnswer in ",
   "\n\nI am at page ",
+  "\n\nI am looking at page ",
+  "\n\nThis conversation is about page ",
+  "\n\nI have read up to page ",
   "\n\nHere I am asking about the paper as a whole",
   "\n\nThis follows on from my question in [turn",
 ];

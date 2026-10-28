@@ -211,9 +211,17 @@ export function wantsWholePaper(question: string | undefined): boolean {
 
 // Where the reader is, restated on the message: the bootstrap's rule is far
 // behind on a long conversation, and this is what actually holds.
-export function readingDirective(readUpTo: number | undefined, question: string | undefined): string {
+export function readingDirective(readUpTo: number | undefined, question: string | undefined, inView?: number, cardPage?: number): string {
   if (wantsWholePaper(question)) return "\n\nHere I am asking about the paper as a whole: draw on all of it.";
   if (!readUpTo) return "";
+  // The page the conversation is about, the page in view and how far I have
+  // read part company when I ask on in a card about one page while looking
+  // at another, or look back after reading further: then all are said
+  const card = cardPage && cardPage !== inView ? `This conversation is about page ${cardPage} of the paper. ` : "";
+  if (card || (inView && inView !== readUpTo)) {
+    const looking = inView ? `I am looking at page ${inView}${card ? "" : " of the paper"} now, and have` : "I have";
+    return `\n\n${card}${looking} read up to page ${readUpTo}, the furthest I have asked about. Stand on the paper up to the end of page ${readUpTo} and on general knowledge; leave what it says after that out — if the answer needs something later, say only that it comes later and where.`;
+  }
   return `\n\nI am at page ${readUpTo} of the paper. Stand on what comes before this point in the paper and on general knowledge; leave what the paper says after it out — if the answer needs something later, say only that it comes later and where.`;
 }
 
@@ -225,6 +233,9 @@ export function buildAskMessage(opts: {
   // The page the reader has read up to: the passage's page, the page a
   // conversation started on, or the page in view for a general question
   readUpTo?: number;
+  // The page in view as I ask, and the page of the card a follow-up is in
+  currentPage?: number;
+  cardPage?: number;
   // The question in this one's own conversation that it follows on from,
   // when another conversation has been asked in since
   followsOn?: { turn: number; gist: string };
@@ -233,7 +244,7 @@ export function buildAskMessage(opts: {
   // An empty follow-up has to stay empty; the caller rejects it
   if (!body.trim()) return body;
   // A definition already leaves the paper out altogether
-  const reading = opts.kind === "define" ? "" : readingDirective(opts.readUpTo, opts.question);
+  const reading = opts.kind === "define" ? "" : readingDirective(opts.readUpTo, opts.question, opts.currentPage, opts.cardPage);
   const follows = opts.followsOn
     ? `\n\nThis follows on from my question in [turn ${opts.followsOn.turn}] (${opts.followsOn.gist}), in the same conversation. The questions I asked in between belong to other conversations: leave them out of this answer.`
     : "";

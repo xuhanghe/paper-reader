@@ -396,6 +396,23 @@ export async function readThread(id: string, maxEntries = 40, maxChars = 24000):
   return kept;
 }
 
+// The furthest page any question so far was asked from or about: read off
+// the lines that place each ask ("I am at page 7", "have read up to page 7")
+// and the passages' pages ("About this passage (page 7)"). Reading has got
+// at least that far, however far back the reader is looking now.
+const PAGE_MARKS = /I am at page (\d+)|have read up to page (\d+)|\(page (\d+)\)/g;
+export async function furthestPageAsked(id: string): Promise<number | undefined> {
+  const entries = withoutWithdrawn(entriesOf(await threadLines(id)), await readWithdrawn(id));
+  let furthest = 0;
+  for (const entry of entries) {
+    if (entry.role !== "user") continue;
+    for (const match of entry.text.matchAll(PAGE_MARKS)) {
+      furthest = Math.max(furthest, Number(match[1] ?? match[2] ?? match[3]));
+    }
+  }
+  return furthest || undefined;
+}
+
 // Every entry of one conversation, in order
 export async function conversationEntries(id: string, conversation: string): Promise<ThreadEntry[]> {
   return withoutWithdrawn(entriesOf(await threadLines(id)), await readWithdrawn(id)).filter((e) => e.annotationId === conversation);

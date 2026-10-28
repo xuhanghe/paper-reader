@@ -136,6 +136,33 @@ describe("citations reach every ask, not just the first", () => {
   });
 });
 
+// A follow-up in a card about page 4, asked while looking back at page 2:
+// the reader has read to page 4, and is on page 2. Told "I am at page 4",
+// the model said Figure 1 on page 2 was behind them.
+describe("where the reader is looking, and how far they have read", () => {
+  test("the card's page, the page in view and the furthest page asked about, when they differ", () => {
+    const msg = buildAskMessage({ kind: "followup", question: "figure 1 (a)是什么内容", readUpTo: 6, currentPage: 2, cardPage: 4 });
+    assert.match(msg, /\n\nThis conversation is about page 4 of the paper\. I am looking at page 2 now, and have read up to page 6, the furthest I have asked about\. Stand on the paper up to the end of page 6/);
+  });
+
+  test("looking back after reading further, with no card", () => {
+    const msg = buildAskMessage({ kind: "question", question: "what is a DPU?", readUpTo: 6, currentPage: 2 });
+    assert.match(msg, /\n\nI am looking at page 2 of the paper now, and have read up to page 6, the furthest I have asked about\./);
+  });
+
+  test("a card on the page in view is not said twice", () => {
+    const msg = buildAskMessage({ kind: "followup", question: "why?", readUpTo: 6, currentPage: 4, cardPage: 4 });
+    assert.ok(!msg.includes("This conversation is about page"));
+    assert.match(msg, /I am looking at page 4 of the paper now, and have read up to page 6/);
+  });
+
+  test("one page, when they are the same or the page in view is not known", () => {
+    for (const currentPage of [4, undefined]) {
+      assert.match(buildAskMessage({ kind: "followup", question: "why?", readUpTo: 4, currentPage }), /\n\nI am at page 4 of the paper\. Stand on what comes before this point/);
+    }
+  });
+});
+
 // A paper's conversations share one thread in time order. A follow-up in one
 // asked after a question in another named that other one as "the question
 // before", and answered about it.

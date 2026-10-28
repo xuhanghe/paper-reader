@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
-  appendThread, conversationTurns, countAsks, deleteFromThread, dirFor, lastTurn, readFigureDataUrl, readThread, readWithdrawn, withdrawTurns, withoutWithdrawn, writeState, type ThreadEntry,
+  appendThread, conversationTurns, countAsks, deleteFromThread, dirFor, furthestPageAsked, lastTurn, readFigureDataUrl, readThread, readWithdrawn, withdrawTurns, withoutWithdrawn, writeState, type ThreadEntry,
 } from "../lib/session-store.js";
 import {
   askGist, chatHistorySection, earlierConversation, earlierConversationSection, entriesBefore, freshStartOnLostSession,
@@ -297,6 +297,22 @@ describe("a conversation among others in the thread", () => {
     assert.deepEqual(await conversationTurns(T, "ovs"), { previous: { turn: 1, text: marker(1, "the OvS question") }, latest: 6 });
     assert.equal((await conversationTurns(T, "fig")).previous?.turn, 6);
     assert.deepEqual(await conversationTurns(T, "new"), { previous: undefined, latest: 6 });
+  });
+});
+
+// Looking back at page 2 after asking about page 6 has not unread pages 3–6
+describe("the furthest page asked about", () => {
+  const P = "__furthest-test__";
+  after(() => rm(dirFor(P), { recursive: true, force: true }));
+
+  test("read off where each ask said the reader was, and the passages' pages; a deleted question no longer counts", async () => {
+    assert.equal(await furthestPageAsked(P), undefined);
+    await appendThread(P, { ts: 1, role: "user", text: marker(1, 'About this passage (page 4):\n\n"OvS"\n\nMy question: why?\n\nI am at page 4 of the paper.'), annotationId: "a" });
+    await appendThread(P, { ts: 2, role: "user", text: marker(2, "Figure 4(b)?\n\nI am at page 6 of the paper."), annotationId: "b" });
+    await appendThread(P, { ts: 3, role: "user", text: marker(3, "and this?\n\nI am looking at page 2 of the paper now, and have read up to page 6, the furthest I have asked about."), annotationId: "a" });
+    assert.equal(await furthestPageAsked(P), 6);
+    await withdrawTurns(P, [2, 3]);
+    assert.equal(await furthestPageAsked(P), 4);
   });
 });
 

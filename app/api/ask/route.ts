@@ -24,6 +24,7 @@ import {
   lastTurn,
   deleteFromThread,
   conversationTurns,
+  furthestPageAsked,
 } from "@/lib/session-store";
 import { unwrapPartials } from "@/lib/claude-stream";
 import { turnMarker } from "@/lib/citations";
@@ -103,7 +104,7 @@ function teeToThread(source: ReadableStream, opts: TeeOpts): ReadableStream {
 
 export async function POST(req: Request) {
   const {
-    paper_id, paper_title, kind, selected_text, question, page_number, read_up_to, replaces_turns,
+    paper_id, paper_title, kind, selected_text, question, page_number, read_up_to, current_page, card_page, replaces_turns,
     image_base64, annotation_id, model, effort, custom, session_id, skills,
   } = await req.json();
 
@@ -135,12 +136,23 @@ export async function POST(req: Request) {
     ? { turn: turns.previous.turn, gist: askGist(turns.previous.text).gist }
     : undefined;
 
+  // Where the reader is: the page of the card a follow-up is asked in (an
+  // opening ask names its passage's page itself), the page in view, and how
+  // far they have read — as far as this ask, or any question so far, reached:
+  // looking back at page 2 has not unread pages 3 to 6
+  const page = (value: unknown) => (typeof value === "number" && value > 0 ? value : undefined);
+  const inView = page(current_page);
+  const cardPage = kind === "followup" ? page(card_page) : undefined;
+  const readUpTo = Math.max(page(read_up_to) ?? 0, cardPage ?? 0, inView ?? 0, (await furthestPageAsked(paper_id)) ?? 0) || undefined;
+
   let message = buildAskMessage({
     kind,
     selectedText: selected_text,
     question,
     pageNumber: page_number,
-    readUpTo: typeof read_up_to === "number" && read_up_to > 0 ? read_up_to : undefined,
+    readUpTo,
+    currentPage: inView,
+    cardPage,
     followsOn,
   });
   if (!message.trim() && !image_base64) return new Response("empty request", { status: 400 });
@@ -256,7 +268,6 @@ export async function POST(req: Request) {
     const cfg = await customConfigFor(model, custom);
     if (!cfg) return new Response("custom API is not configured", { status: 400 });
     const vision = !!cfg.vision;
-    const readUpTo = typeof read_up_to === "number" && read_up_to > 0 ? read_up_to : undefined;
     const wholePaper = wantsWholePaper(typeof question === "string" ? question : undefined);
     const mindmap = await readMindmapFile(paper_id);
     const conversations = conversationsOf(await readState(paper_id), conversation);
