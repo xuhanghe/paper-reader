@@ -543,11 +543,28 @@ export default function Home() {
     panelScroll.current?.reveal(annotationId);
   }, []);
 
+  // What the panel deletes is deleted from the paper's thread too, so nothing
+  // sent to a model later carries it. The model is told nothing. A question
+  // from before turns were numbered can only leave the panel.
+  const deleteTurns = useCallback((turns: (number | undefined)[]) => {
+    const numbered = turns.filter((t): t is number => !!t);
+    if (!paperId || !numbered.length) return;
+    fetch("/api/ask/withdraw", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ paper_id: paperId, turns: numbered }),
+    }).catch(() => {});
+  }, [paperId]);
+
   const handleDelete = useCallback((id: string) => {
+    const annotation = session.annotations.find((a) => a.id === id);
+    // An answer still arriving is stopped: it has nowhere to go
+    abortControllers.current.get(id)?.controller.abort();
     removeAnnotation(id);
     if (activeAnnotationId === id) setActiveAnnotationId(null);
     delete annotationRefs.current[id];
-  }, [removeAnnotation, activeAnnotationId]);
+    deleteTurns(annotation?.messages.map((m) => m.turn) ?? []);
+  }, [session.annotations, removeAnnotation, activeAnnotationId, deleteTurns]);
 
   const stopAsk = useCallback((annotationId: string) => {
     abortControllers.current.get(annotationId)?.controller.abort();
@@ -664,9 +681,9 @@ export default function Home() {
       annotationId: string,
       ask: {
         kind: AskKind;
-        // Present when the question replaces one already asked: the turn it
-        // replaces, or null when that one was never numbered
-        rewrite_of_turn?: number | null;
+        // An edited question's turn and those after it in its conversation,
+        // deleted from the thread before the new version is asked
+        replaces_turns?: number[];
         selected_text?: string;
         question?: string;
         page_number?: number;
@@ -998,12 +1015,11 @@ export default function Home() {
   );
 
   // Edit a question already asked and send it again, dropping the answer it
-  // got and anything after it — the chat-box gesture.
-  //
-  // What this cannot do is un-ask it: the CLI providers hold their own
-  // conversation history server-side and are resumed by session id, so the
-  // model still remembers the original wording and reads the edit as a
-  // correction. The panel shows only the edited version.
+  // got and anything after it — the chat-box gesture. What was dropped from
+  // the panel is deleted from the thread too, before the new version is
+  // asked, and the model is told nothing of the edit: what it is sent from
+  // here on never holds the old wording. (A CLI provider resumed by session
+  // id may still remember it; it is not pointed at it.)
   const handleEditMessage = useCallback(
     (annotationId: string, index: number, text: string) => {
       const annotation = session.annotations.find((a) => a.id === annotationId);
@@ -1024,30 +1040,20 @@ export default function Home() {
         page_number: opening ? annotation.pageNumber : undefined,
         image_base64: previous.imageDataUrl,
         read_up_to: annotation.pageNumber ?? readingPage(),
-        // The provider session still holds the first wording and its answer;
-        // the model is told this replaces them rather than repeats them
-        rewrite_of_turn: previous.turn ?? null,
+        replaces_turns: annotation.messages.slice(index).map((m) => m.turn).filter((t): t is number => !!t),
       });
     },
     [session.annotations, replaceMessageFrom, stopAsk, streamAsk, readingPage]
   );
 
-  // Delete a follow-up and its answer. The provider's own session still holds
-  // them, so the server is told the turn is withdrawn: the model hears so on
-  // the next ask, and the record a lost session is rebuilt from leaves it out.
-  // A question from before turns were numbered can only leave the panel.
+  // Delete a follow-up and its answer, from the panel and the thread
   const handleDeletePair = useCallback(
     (annotationId: string, start: number, end: number) => {
       const turn = session.annotations.find((a) => a.id === annotationId)?.messages[start]?.turn;
       removeMessages(annotationId, start, end);
-      if (!paperId || !turn) return;
-      fetch("/api/ask/withdraw", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ paper_id: paperId, turns: [turn] }),
-      }).catch(() => {});
+      deleteTurns([turn]);
     },
-    [session.annotations, removeMessages, paperId]
+    [session.annotations, removeMessages, deleteTurns]
   );
 
   const handleRemoveZoteroAnnotation = useCallback(

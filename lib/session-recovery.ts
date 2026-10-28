@@ -25,8 +25,9 @@ const DIRECTIVE_STARTS = [
   "\n\nI am at page ",
   "\n\nHere I am asking about the paper as a whole",
 ];
+// Edited questions were once sent with a note saying what they replaced;
+// records written then still hold it
 const REWRITE = /^This replaces (?:my question in \[turn \d+\]|an earlier question of mine): I have rewritten it\.[^\n]*\n\n/;
-const WITHDRAWN = /^First: I have deleted my questions? in \[turn \d+\][^\n]*\n\n/;
 
 function withoutDirectives(text: string): string {
   let cut = text.length;
@@ -34,7 +35,7 @@ function withoutDirectives(text: string): string {
     const at = text.indexOf(directive);
     if (at >= 0 && at < cut) cut = at;
   }
-  return text.slice(0, cut).replace(WITHDRAWN, "").replace(REWRITE, "").trim();
+  return text.slice(0, cut).replace(REWRITE, "").trim();
 }
 
 const tidy = (text: string, max = 110) => {
@@ -128,18 +129,17 @@ export type EarlierConversation = {
   takeaways: string[];
   // The most recent part, for a provider without file tools
   recent: ThreadEntry[];
-  // Turns I deleted: left out of the above, but still in the file
-  withdrawn: number[];
 };
 
 const RECENT_ENTRIES = 24;
 const RECENT_CHARS = 16000;
 
 export async function earlierConversation(id: string, opts: { beforeTurn: number }): Promise<EarlierConversation | null> {
-  const withdrawn = (await readWithdrawn(id)).turns.filter((t) => t < opts.beforeTurn);
-  // Cut before the withdrawn turns go: a question from before the markers is
-  // numbered by its place in the whole thread
-  const entries = withoutWithdrawn(entriesBefore(await readWholeThread(id), opts.beforeTurn), withdrawn);
+  // Turns deleted before deletion rewrote the thread are still in it, only
+  // listed as deleted. Cut before they go: a question from before the markers
+  // is numbered by its place in the whole thread.
+  const deleted = (await readWithdrawn(id)).filter((t) => t < opts.beforeTurn);
+  const entries = withoutWithdrawn(entriesBefore(await readWholeThread(id), opts.beforeTurn), deleted);
   const index = indexThread(entries);
   if (!index.length) return null;
   const state = await readState(id);
@@ -152,7 +152,7 @@ export async function earlierConversation(id: string, opts: { beforeTurn: number
     if (chars > RECENT_CHARS && recent.length) break;
     recent.unshift(entry);
   }
-  return { threadPath: threadPathFor(id), index, takeaways, recent, withdrawn };
+  return { threadPath: threadPathFor(id), index, takeaways, recent };
 }
 
 const FORMAT = "one JSON object per line ({ts, role, text, kind, annotationId, imageFile}), in order, each message of mine carrying its [turn N] marker";
@@ -163,10 +163,6 @@ export function earlierConversationSection(earlier: EarlierConversation, opts: {
     parts.push(
       `We have talked about this paper before. Your own memory of that conversation is gone, but the record of it is complete, in this file — ${FORMAT}:\n${earlier.threadPath}\nWhen I refer to something we discussed, or you build on an earlier answer, read that file first: find the turn by its marker or by its words (grep works), then read my message and the answer that follows it. Do not guess at what was said. Turn numbers continue from where they left off.`
     );
-    if (earlier.withdrawn.length) {
-      const named = earlier.withdrawn.map((t) => `[turn ${t}]`).join(", ");
-      parts.push(`I deleted ${named} and the ${earlier.withdrawn.length === 1 ? "answer" : "answers"} that followed from our conversation. The file still holds them; skip them, as if they had never been asked — do not rely on them or cite them.`);
-    }
   } else {
     parts.push("We have talked about this paper before. Your own memory of that conversation is gone; the app keeps the record, and the most recent part of it is below, oldest first. Turn numbers continue from where they left off.");
   }

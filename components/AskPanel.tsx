@@ -22,7 +22,7 @@ type Props = {
   // Rewrite a question already asked and send it again
   onEditMessage?: (annotationId: string, index: number, text: string) => void;
   // Take a follow-up and its answer (messages start to end) out of their
-  // conversation; the host also withdraws its turn from the model's memory
+  // conversation; the host deletes it from the paper's thread as well
   onDeletePair?: (annotationId: string, start: number, end: number) => void;
   onAskGeneral: (question: string, imageDataUrl?: string, reference?: { key: string; title: string }, webSearch?: boolean) => void;
   onDelete: (annotationId: string) => void;

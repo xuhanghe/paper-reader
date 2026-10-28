@@ -8,8 +8,9 @@ import path from "node:path";
 //     document.dataurl — a local paper's document (not in Zotero), see writeState
 //     paper.md      — extracted text, written once; agentic models read it via file tools
 //     mindmap.json  — the paper map, independent artifact
-//     thread.jsonl  — the fused conversation: every question & answer, append-only
-//     withdrawn.json — the turns of it I deleted, which its readers skip
+//     thread.jsonl  — the fused conversation: every question & answer, appended
+//                     to, and rewritten only to delete what the panel deleted
+//     withdrawn.json — the numbers of the turns deleted from it
 // <id> is the Zotero item key when the paper lives in Zotero, else a name slug.
 
 export const SESSIONS_ROOT = homePath(".paper-reader-sessions");
@@ -315,108 +316,139 @@ export async function readMindmapFile(id: string): Promise<unknown | null> {
 
 // ── thread.jsonl ──
 
-export async function appendThread(id: string, entry: ThreadEntry) {
-  await ensureDir(id);
-  await appendFile(path.join(dirFor(id), "thread.jsonl"), JSON.stringify(entry) + "\n");
+const threadPathFor = (id: string) => path.join(dirFor(id), "thread.jsonl");
+
+// Every write to a paper's thread, one at a time: an answer arriving while a
+// deletion rewrites the file lands in the new file rather than being lost
+const threadWrites = new Map<string, Promise<unknown>>();
+function writingThread<T>(id: string, write: () => Promise<T>): Promise<T> {
+  const key = safeId(id);
+  const run = (threadWrites.get(key) ?? Promise.resolve()).catch(() => {}).then(write);
+  threadWrites.set(key, run);
+  return run.finally(() => {
+    if (threadWrites.get(key) === run) threadWrites.delete(key);
+  });
 }
 
-// How many questions this paper's thread already holds. Every ask is numbered
-// with it, so an answer can point back at one of them by number.
-export async function countAsks(id: string): Promise<number> {
+// Each line with what it holds; a half-written line holds nothing
+async function threadLines(id: string): Promise<{ line: string; entry: ThreadEntry | null }[]> {
   try {
-    const raw = await readFile(path.join(dirFor(id), "thread.jsonl"), "utf8");
-    let n = 0;
-    for (const line of raw.split("\n")) {
-      if (!line.trim()) continue;
-      try {
-        if ((JSON.parse(line) as ThreadEntry).role === "user") n++;
-      } catch {
-        // a half-written line is not a question
-      }
-    }
-    return n;
-  } catch {
-    return 0;
-  }
-}
-
-export async function readThread(id: string, maxEntries = 40, maxChars = 24000): Promise<ThreadEntry[]> {
-  try {
-    const raw = await readFile(path.join(dirFor(id), "thread.jsonl"), "utf8");
-    const parsed = raw
-      .split("\n")
-      .filter(Boolean)
-      .map((l) => {
-        try { return JSON.parse(l) as ThreadEntry; } catch { return null; }
-      })
-      .filter(Boolean) as ThreadEntry[];
-    // Before the cap, which counts what is kept
-    const entries = withoutWithdrawn(parsed, (await readWithdrawn(id)).turns);
-    // newest-biased cap
-    const recent = entries.slice(-maxEntries);
-    let total = 0;
-    const kept: ThreadEntry[] = [];
-    for (let i = recent.length - 1; i >= 0; i--) {
-      total += recent[i].text.length;
-      if (total > maxChars && kept.length > 0) break;
-      kept.unshift(recent[i]);
-    }
-    return kept;
+    const raw = await readFile(threadPathFor(id), "utf8");
+    return raw.split("\n").filter((line) => line.trim()).map((line) => {
+      try { return { line, entry: JSON.parse(line) as ThreadEntry }; } catch { return { line, entry: null }; }
+    });
   } catch {
     return [];
   }
 }
+const entriesOf = (lines: { entry: ThreadEntry | null }[]) => lines.flatMap((l) => (l.entry ? [l.entry] : []));
 
-// ── withdrawn.json ──
+export function appendThread(id: string, entry: ThreadEntry): Promise<void> {
+  return writingThread(id, async () => {
+    // The answer to a question deleted while it was being answered
+    if (entry.role === "assistant" && entry.turn !== undefined && (await readWithdrawn(id)).includes(entry.turn)) return;
+    await ensureDir(id);
+    await appendFile(threadPathFor(id), JSON.stringify(entry) + "\n");
+  });
+}
+
+// How many questions this paper's thread holds
+export async function countAsks(id: string): Promise<number> {
+  return entriesOf(await threadLines(id)).filter((e) => e.role === "user").length;
+}
+
+// The highest number an ask has been given: off its [turn N] marker, by count
+// for one from before the markers, or a deleted one's. The next ask is
+// numbered after it, so no number is given out twice — not even a deleted
+// one, which an agent resumed by session id may still remember by it.
+export async function lastTurn(id: string): Promise<number> {
+  let count = 0;
+  let last = 0;
+  for (const entry of entriesOf(await threadLines(id))) {
+    if (entry.role !== "user") continue;
+    count += 1;
+    const marker = /^\[turn (\d+)\]/.exec(entry.text);
+    last = Math.max(last, marker ? Number(marker[1]) : count);
+  }
+  return Math.max(last, ...(await readWithdrawn(id)));
+}
+
+export async function readThread(id: string, maxEntries = 40, maxChars = 24000): Promise<ThreadEntry[]> {
+  // Before the cap, which counts what is kept. Turns deleted before the
+  // thread was rewritten on deletion are only listed as deleted.
+  const entries = withoutWithdrawn(entriesOf(await threadLines(id)), await readWithdrawn(id));
+  // newest-biased cap
+  const recent = entries.slice(-maxEntries);
+  let total = 0;
+  const kept: ThreadEntry[] = [];
+  for (let i = recent.length - 1; i >= 0; i--) {
+    total += recent[i].text.length;
+    if (total > maxChars && kept.length > 0) break;
+    kept.unshift(recent[i]);
+  }
+  return kept;
+}
+
+// ── Deleting turns ──
 //
-// A question I deleted from a conversation, with its answer, is withdrawn.
-// The thread keeps it: turns are numbered by counting its questions, and an
-// answer still arriving may be appended at any moment, so it is never
-// rewritten. What is withdrawn is listed beside it instead — readers of the
-// thread leave those turns out, and each provider session that saw them is
-// told, once, under the session id it is resumed by (see app/api/ask).
-
-export type Withdrawn = { turns: number[]; told: Record<string, number[]> };
+// A question deleted in the panel — on its own with its answer, or with its
+// whole card — is deleted from the thread too: the question, its answer, and
+// any figure only it used, as though it had never been asked. The model is
+// told nothing. Its number is kept in withdrawn.json, so that it is never
+// given out again, and so that an answer still arriving for it is dropped.
 
 const withdrawnPathFor = (id: string) => path.join(dirFor(id), "withdrawn.json");
 const turnList = (value: unknown): number[] =>
   Array.isArray(value) ? [...new Set(value.filter((t): t is number => Number.isInteger(t) && t > 0))].sort((a, b) => a - b) : [];
 
-export async function readWithdrawn(id: string): Promise<Withdrawn> {
+export async function readWithdrawn(id: string): Promise<number[]> {
   try {
-    const raw = JSON.parse(await readFile(withdrawnPathFor(id), "utf8")) as { turns?: unknown; told?: unknown };
-    const told: Record<string, number[]> = {};
-    if (raw.told && typeof raw.told === "object") {
-      for (const [session, turns] of Object.entries(raw.told)) told[session] = turnList(turns);
-    }
-    return { turns: turnList(raw.turns), told };
+    return turnList((JSON.parse(await readFile(withdrawnPathFor(id), "utf8")) as { turns?: unknown }).turns);
   } catch {
-    return { turns: [], told: {} };
+    return [];
   }
 }
 
-// One change at a time per paper: two deletions landing together must not
-// each write back a list without the other's turn
-const withdrawnChanges = new Map<string, Promise<void>>();
-function changeWithdrawn(id: string, change: (current: Withdrawn) => Withdrawn): Promise<void> {
-  const run = (withdrawnChanges.get(id) ?? Promise.resolve())
-    .catch(() => {})
-    .then(async () => {
-      await ensureDir(id);
-      await writeAtomic(withdrawnPathFor(id), JSON.stringify(change(await readWithdrawn(id))));
-    });
-  withdrawnChanges.set(id, run);
-  return run.finally(() => {
-    if (withdrawnChanges.get(id) === run) withdrawnChanges.delete(id);
-  });
+// A rewrite deleted takes the question it replaced with it: the panel showed
+// the rewrite in its place, so neither is there any more. (Edits now delete
+// what they replace when they are asked; this is for records from before.)
+const REWRITE_OF = /^\[turn (\d+)\]\s*This replaces my question in \[turn (\d+)\]/;
+function withReplaced(entries: ThreadEntry[], turns: number[]): number[] {
+  const replaced: [number, number][] = [];
+  for (const entry of entries) {
+    const rewrite = entry.role === "user" ? REWRITE_OF.exec(entry.text) : null;
+    if (rewrite) replaced.push([Number(rewrite[1]), Number(rewrite[2])]);
+  }
+  const gone = new Set(turns);
+  for (let grew = true; grew; ) {
+    grew = false;
+    for (const [rewrite, original] of replaced) {
+      if (gone.has(rewrite) && !gone.has(original)) { gone.add(original); grew = true; }
+    }
+  }
+  return turnList([...gone]);
 }
 
 export function withdrawTurns(id: string, turns: number[]): Promise<void> {
-  return changeWithdrawn(id, (current) => ({ ...current, turns: turnList([...current.turns, ...turns]) }));
-}
-
-export function markWithdrawalsTold(id: string, session: string, turns: number[]): Promise<void> {
-  return changeWithdrawn(id, (current) => ({ ...current, told: { ...current.told, [session]: turnList([...(current.told[session] ?? []), ...turns]) } }));
+  return writingThread(id, async () => {
+    const lines = await threadLines(id);
+    const entries = entriesOf(lines);
+    const gone = withReplaced(entries, turnList([...(await readWithdrawn(id)), ...turns]));
+    await ensureDir(id);
+    await writeAtomic(withdrawnPathFor(id), JSON.stringify({ turns: gone }));
+    const kept = new Set(withoutWithdrawn(entries, gone));
+    if (kept.size === entries.length) return;
+    const remaining = lines.filter((l) => !l.entry || kept.has(l.entry));
+    await writeAtomic(threadPathFor(id), remaining.map((l) => `${l.line}\n`).join(""));
+    // The figures only the deleted entries used
+    const used = new Set(entriesOf(remaining).flatMap((e) => (e.imageFile ? [sessionRelativeFile(id, e.imageFile)] : [])));
+    for (const entry of entries) {
+      if (!entry.imageFile || kept.has(entry)) continue;
+      const ref = sessionRelativeFile(id, entry.imageFile);
+      const file = path.resolve(dirFor(id), ref);
+      if (!used.has(ref) && file.startsWith(figuresDirFor(id) + path.sep)) await unlink(file).catch(() => {});
+    }
+  });
 }
 
 /**

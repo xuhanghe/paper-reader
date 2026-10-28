@@ -1,9 +1,9 @@
 import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
-  appendThread, dirFor, markWithdrawalsTold, readFigureDataUrl, readThread, readWithdrawn, withdrawTurns, withoutWithdrawn, writeState, type ThreadEntry,
+  appendThread, countAsks, dirFor, lastTurn, readFigureDataUrl, readThread, readWithdrawn, withdrawTurns, withoutWithdrawn, writeState, type ThreadEntry,
 } from "../lib/session-store.js";
 import {
   askGist, chatHistorySection, earlierConversation, earlierConversationSection, entriesBefore, freshStartOnLostSession,
@@ -42,12 +42,6 @@ describe("what each ask was about", () => {
 
   test("the words directing the answer are not the question", () => {
     assert.equal(askGist("[turn 7] This replaces my question in [turn 6]: I have rewritten it. Answer this version on its own terms.\n\nwhat changed?\n\nAnswer in English, matching my question — not the language of the passage.").gist, "what changed?");
-  });
-
-  test("nor is the notice of a deleted turn, alone or ahead of a rewrite's", () => {
-    const withdrawn = "First: I have deleted my question in [turn 2] and your answer to it from our conversation. Treat them as withdrawn — do not rely on them, refer back to them, or cite them.\n\n";
-    assert.equal(askGist(`[turn 5] ${withdrawn}why?\n\nWhere you draw on the paper, link the words themselves.`).gist, "why?");
-    assert.equal(askGist(`[turn 7] ${withdrawn}This replaces my question in [turn 6]: I have rewritten it. Answer this version on its own terms.\n\nwhat changed?`).gist, "what changed?");
   });
 });
 
@@ -97,8 +91,7 @@ describe("the seed for a fresh session", () => {
   });
 });
 
-// A question deleted from the panel stays in the append-only thread; the
-// turns listed as withdrawn beside it are left out by whatever reads it back
+// Which entries a deleted turn takes with it: its question and its answer
 describe("withdrawn turns", () => {
   const u = (turn: number | null, text: string, annotationId: string): ThreadEntry =>
     ({ ts: 0, role: "user", text: turn === null ? text : marker(turn, text), annotationId });
@@ -131,52 +124,77 @@ describe("withdrawn turns", () => {
   });
 });
 
-describe("withdrawn turns on disk", () => {
+// A question deleted in the panel is deleted from the thread too, as though
+// never asked; the model is told nothing
+describe("deleted turns on disk", () => {
   const W = "__withdrawn-test__";
   const RACE = "__withdrawn-race-test__";
+  const LEGACY = "__withdrawn-legacy-test__";
+  const PNG = Buffer.from("89504e470d0a1a0a0000000d49484452", "hex");
+  const fileLines = async (id: string) => (await readFile(threadPathFor(id), "utf8")).trim().split("\n").map((l) => JSON.parse(l) as ThreadEntry);
   before(async () => {
     await writeState(W, { pdfName: "Withdrawn.pdf", pdfDataUrl: "", model: "m", annotations: [], highlights: [], concepts: [] });
+    await mkdir(path.join(dirFor(W), "figures"), { recursive: true });
+    await writeFile(path.join(dirFor(W), "figures", "fig-2.png"), PNG);
+    await writeFile(path.join(dirFor(W), "figures", "fig-3.png"), PNG);
     await appendThread(W, { ts: 1, role: "user", text: marker(1, "what is pooling?"), kind: "followup", annotationId: "c1" });
     await appendThread(W, { ts: 2, role: "assistant", text: "Pooling tests samples as one.", annotationId: "c1", turn: 1 });
-    await appendThread(W, { ts: 3, role: "user", text: marker(2, "test"), kind: "followup", annotationId: "c1" });
+    await appendThread(W, { ts: 3, role: "user", text: marker(2, "test"), kind: "followup", annotationId: "c1", imageFile: "figures/fig-2.png" });
     await appendThread(W, { ts: 4, role: "assistant", text: "A test answer.", annotationId: "c1", turn: 2 });
-    await appendThread(W, { ts: 5, role: "user", text: marker(3, "and the prior?"), kind: "followup", annotationId: "c1" });
+    await appendThread(W, { ts: 5, role: "user", text: marker(3, "and the prior?"), kind: "followup", annotationId: "c1", imageFile: "figures/fig-3.png" });
     await appendThread(W, { ts: 6, role: "assistant", text: "The prior carries prevalence.", annotationId: "c1", turn: 3 });
     await withdrawTurns(W, [2]);
   });
   after(async () => {
-    await rm(dirFor(W), { recursive: true, force: true });
-    await rm(dirFor(RACE), { recursive: true, force: true });
+    for (const id of [W, RACE, LEGACY]) await rm(dirFor(id), { recursive: true, force: true });
   });
 
-  test("two deletions landing together both count, and whom was told is kept per session", async () => {
-    await Promise.all([withdrawTurns(RACE, [3]), withdrawTurns(RACE, [1]), withdrawTurns(RACE, [3])]);
-    assert.deepEqual((await readWithdrawn(RACE)).turns, [1, 3]);
-    await markWithdrawalsTold(RACE, "session-a", [3]);
-    assert.deepEqual(await readWithdrawn(RACE), { turns: [1, 3], told: { "session-a": [3] } });
+  test("the question, its answer and the figure only it used are gone from the file", async () => {
+    assert.deepEqual((await fileLines(W)).map((e) => e.text), [marker(1, "what is pooling?"), "Pooling tests samples as one.", marker(3, "and the prior?"), "The prior carries prevalence."]);
+    assert.deepEqual(await readdir(path.join(dirFor(W), "figures")), ["fig-3.png"]);
+    assert.equal(await countAsks(W), 2);
   });
 
-  test("a damaged list is read for what is sound in it", async () => {
-    await writeFile(path.join(dirFor(RACE), "withdrawn.json"), JSON.stringify({ turns: [2, "x", -1, 2.5, 2], told: { s: [1, "y"] } }));
-    assert.deepEqual(await readWithdrawn(RACE), { turns: [2], told: { s: [1] } });
+  test("its number is never given out again, and an answer arriving for it later is dropped", async () => {
+    await appendThread(W, { ts: 7, role: "assistant", text: "Late answer to the deleted one.", annotationId: "c1", turn: 2 });
+    assert.ok(!(await fileLines(W)).some((e) => e.text.startsWith("Late answer")));
+    await withdrawTurns(W, [3]);
+    assert.equal(await lastTurn(W), 3, "the deleted last turn still counts");
+    assert.deepEqual(await readdir(path.join(dirFor(W), "figures")), []);
+  });
+
+  test("a rewrite deleted takes the question it replaced with it", async () => {
+    await appendThread(RACE, { ts: 1, role: "user", text: marker(1, "keep"), annotationId: "a" });
+    await appendThread(RACE, { ts: 2, role: "assistant", text: "kept", annotationId: "a", turn: 1 });
+    await appendThread(RACE, { ts: 3, role: "user", text: marker(2, "d"), annotationId: "b" });
+    await appendThread(RACE, { ts: 4, role: "user", text: marker(3, "This replaces my question in [turn 2]: I have rewritten it. Answer this version.\n\nwhat is d?"), annotationId: "b" });
+    await appendThread(RACE, { ts: 5, role: "assistant", text: "d is …", annotationId: "b", turn: 3 });
+    await withdrawTurns(RACE, [3]);
+    assert.deepEqual((await fileLines(RACE)).map((e) => e.text), [marker(1, "keep"), "kept"]);
+    assert.deepEqual(await readWithdrawn(RACE), [2, 3]);
+  });
+
+  test("two deletions landing together both count, and a damaged list is read for what is sound in it", async () => {
+    await Promise.all([withdrawTurns(RACE, [1]), withdrawTurns(RACE, [3]), withdrawTurns(RACE, [1])]);
+    assert.deepEqual(await readWithdrawn(RACE), [1, 2, 3]);
+    await writeFile(path.join(dirFor(RACE), "withdrawn.json"), JSON.stringify({ turns: [2, "x", -1, 2.5, 2], told: { s: [1] } }));
+    assert.deepEqual(await readWithdrawn(RACE), [2]);
     await writeFile(path.join(dirFor(RACE), "withdrawn.json"), "{ not json");
-    assert.deepEqual(await readWithdrawn(RACE), { turns: [], told: {} });
+    assert.deepEqual(await readWithdrawn(RACE), []);
   });
 
-  test("the replay a custom endpoint is sent leaves them out", async () => {
-    assert.deepEqual((await readThread(W)).map((e) => e.text), [marker(1, "what is pooling?"), "Pooling tests samples as one.", marker(3, "and the prior?"), "The prior carries prevalence."]);
-  });
-
-  test("a fresh session's seed leaves them out, and an agent reading the file is told to skip them", async () => {
-    const earlier = await earlierConversation(W, { beforeTurn: 4 });
-    assert.deepEqual(earlier?.index.map((e) => e.turn), [1, 3]);
-    assert.deepEqual(earlier?.withdrawn, [2]);
-    const agentic = earlierConversationSection(earlier!, { agentic: true });
-    assert.ok(/I deleted \[turn 2\] and the answer that followed/.test(agentic) && /skip them/.test(agentic));
-    const inline = earlierConversationSection(earlier!, { agentic: false });
-    assert.ok(!inline.includes("test answer") && !inline.includes("[turn 2]"), inline);
-    // A turn after the cut is not earlier, withdrawn or not
-    assert.deepEqual((await earlierConversation(W, { beforeTurn: 2 }))?.withdrawn, []);
+  test("a turn only listed as deleted, from before deleting rewrote the thread, is skipped until the next deletion clears it", async () => {
+    await appendThread(LEGACY, { ts: 1, role: "user", text: marker(1, "one"), annotationId: "a" });
+    await appendThread(LEGACY, { ts: 2, role: "assistant", text: "a1", annotationId: "a" });
+    await appendThread(LEGACY, { ts: 3, role: "user", text: marker(2, "two"), annotationId: "a" });
+    await appendThread(LEGACY, { ts: 4, role: "assistant", text: "a2", annotationId: "a" });
+    await writeFile(path.join(dirFor(LEGACY), "withdrawn.json"), JSON.stringify({ turns: [1], told: {} }));
+    assert.deepEqual((await readThread(LEGACY)).map((e) => e.text), [marker(2, "two"), "a2"]);
+    const earlier = await earlierConversation(LEGACY, { beforeTurn: 3 });
+    assert.deepEqual(earlier?.index.map((e) => e.turn), [2]);
+    assert.ok(!/delet/i.test(earlierConversationSection(earlier!, { agentic: true })), "the agent is told nothing");
+    await withdrawTurns(LEGACY, [2]);
+    assert.equal((await readFile(threadPathFor(LEGACY), "utf8")).trim(), "", "both are gone from the file now");
   });
 });
 
