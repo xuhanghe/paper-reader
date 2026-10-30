@@ -1618,7 +1618,7 @@ export const ExplainPanel = memo(function ExplainPanel({ annotations, activeId, 
   // same height, its line at the same height — so the two read as one bar.
   const followControl = annotations.length > 0 && (
     <span className="inline-flex shrink-0 items-center gap-1" role="group" aria-label="Follow">
-      <span className="text-[10px] uppercase tracking-widest mr-0.5" style={{ color: "var(--ink-faint)" }}>Follow</span>
+      <span className="pr-toolbar-label text-[10px] uppercase tracking-widest mr-0.5" style={{ color: "var(--ink-faint)" }}>Follow</span>
       {([
         ["question", "Hold the question in view; it rises to the top as the answer arrives"],
         ["answer", "Keep the end of the answer in view as it arrives"],
@@ -1642,7 +1642,7 @@ export const ExplainPanel = memo(function ExplainPanel({ annotations, activeId, 
   );
   const toolbar = (
     <div className="pr-explain-toolbar shrink-0" style={{ background: "var(--paper)", borderBottom: "1px solid var(--border)" }}>
-      <div className="flex flex-wrap items-center content-center gap-1 min-h-9 px-3 py-1" style={{ borderBottom: "1px solid var(--border)" }}>
+      <div className="flex items-center gap-1 min-h-9 px-3 py-1" style={{ borderBottom: "1px solid var(--border)" }}>
         {followControl || <span className="text-[10px] uppercase tracking-widest" style={{ color: "var(--ink-faint)" }}>Ask</span>}
         <span className="ml-auto inline-flex shrink-0 items-center gap-1">
           {annotations.length > 1 && (
@@ -1659,9 +1659,9 @@ export const ExplainPanel = memo(function ExplainPanel({ annotations, activeId, 
           </button>
         </span>
       </div>
-      <div className="flex flex-wrap items-center gap-1 px-3 py-1.5">
+      <div className="flex items-center gap-1 px-3 py-1.5">
         <span className="inline-flex shrink-0 items-center gap-0.5">
-          <span className="text-[10px] uppercase tracking-widest mr-1" style={{ color: "var(--ink-faint)" }}>Text</span>
+          <span className="pr-toolbar-label text-[10px] uppercase tracking-widest mr-1" style={{ color: "var(--ink-faint)" }}>Text</span>
           <button
             onClick={() => setFontIdx((i) => Math.max(0, i - 1))}
             disabled={!canDecrease}
@@ -1682,7 +1682,8 @@ export const ExplainPanel = memo(function ExplainPanel({ annotations, activeId, 
             title="Larger text (Ctrl+scroll)"
           >+</button>
         </span>
-        <span className="pr-explain-models ml-auto inline-flex shrink-0 max-w-full items-center justify-end gap-1">
+        {/* Gives way before anything wraps: the model's name ends in … */}
+        <span className="pr-explain-models ml-auto inline-flex min-w-0 items-center justify-end gap-1">
           {modelControls}
         </span>
       </div>

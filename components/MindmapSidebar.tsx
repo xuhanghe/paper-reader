@@ -489,12 +489,14 @@ export const MindmapSidebar = memo(function MindmapSidebar({
   return (
     <div className="flex flex-col overflow-hidden" style={{ width: `${width}px`, minWidth: 230, borderLeft: "1px solid var(--border)", background: "var(--paper)" }}>
       {/* Tabs */}
-      <div className="flex items-center h-9 shrink-0 px-1" style={{ borderBottom: "1px solid var(--border)" }}>
+      {/* At the panel's narrow end the tabs draw in, then give way themselves,
+          rather than push the fold button out of the panel */}
+      <div className="pr-notebook-tabs flex items-center h-9 shrink-0 px-1" style={{ borderBottom: "1px solid var(--border)" }}>
         {([["map", "Map"], ["concepts", "Concepts"], ["notes", "Notes"]] as [Tab, string][]).map(([id, label]) => (
           <button
             key={id}
             onClick={() => setTab(id)}
-            className="text-xs px-2.5 h-full transition-all font-medium"
+            className="pr-notebook-tab text-xs px-2.5 h-full min-w-0 overflow-hidden whitespace-nowrap transition-all font-medium"
             style={{
               color: tab === id ? "var(--ink)" : "var(--ink-faint)",
               boxShadow: tab === id ? "inset 0 -2px 0 var(--accent)" : "inset 0 -2px 0 transparent",
@@ -504,13 +506,13 @@ export const MindmapSidebar = memo(function MindmapSidebar({
             {label}
             {id === "concepts" && concepts.length > 0 && (
               <span
-                className="ml-1.5 text-[9px] px-1 py-px rounded-full tabular-nums align-middle"
+                className="pr-notebook-count ml-1.5 text-[9px] px-1 py-px rounded-full tabular-nums align-middle"
                 style={{ color: "var(--ink-muted)", background: "rgba(230,237,243,0.07)" }}
               >{concepts.length}</span>
             )}
             {id === "notes" && highlights.length + zoteroNotes.length + zoteroAnnotations.length > 0 && (
               <span
-                className="ml-1.5 text-[9px] px-1 py-px rounded-full tabular-nums align-middle"
+                className="pr-notebook-count ml-1.5 text-[9px] px-1 py-px rounded-full tabular-nums align-middle"
                 style={{ color: "var(--ink-muted)", background: "rgba(230,237,243,0.07)" }}
               >{highlights.length + zoteroNotes.length + zoteroAnnotations.length}</span>
             )}
@@ -518,7 +520,7 @@ export const MindmapSidebar = memo(function MindmapSidebar({
         ))}
         <button
           onClick={onToggle}
-          className="btn-icon ml-auto w-6 h-6 text-xs mr-1"
+          className="btn-icon ml-auto shrink-0 w-6 h-6 text-xs mr-1"
           title="Collapse"
         >
           ›

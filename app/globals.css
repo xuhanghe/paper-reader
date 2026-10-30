@@ -221,11 +221,14 @@ html, body, #__next {
 }
 
 /* Explain toolbar responds to the panel's own dragged width, not the browser
-   viewport. At its narrow end the model controls take a second row while the
-   reading and collapse controls remain visible on the first. The toolbar is
-   the container, not the panel: a container's size changing restyles all it
-   holds, and the panel holds the whole conversation — 22 ms on every width
-   change of a long one, measured in WebKit. */
+   viewport. Each of its two rows stays one line at any width: as the panel
+   narrows, the words beside the controls go first ("collapse all", then
+   FOLLOW and TEXT, whose controls say what they are and carry a hint), and
+   then the model's name gives way with an ellipsis — nothing wraps onto a
+   line of its own. The toolbar is the container, not the panel: a
+   container's size changing restyles all it holds, and the panel holds the
+   whole conversation — 22 ms on every width change of a long one, measured
+   in WebKit. */
 .pr-explain-toolbar {
   container-type: inline-size;
 }
@@ -233,13 +236,10 @@ html, body, #__next {
   .pr-explain-toolbar .pr-collapse-all-label {
     display: none;
   }
-  .pr-explain-toolbar .pr-explain-toggle {
-    margin-left: auto;
-    order: 1;
-  }
-  .pr-explain-toolbar .pr-explain-models {
-    flex: 1 0 100%;
-    order: 2;
+}
+@container (max-width: 350px) {
+  .pr-explain-toolbar .pr-toolbar-label {
+    display: none;
   }
 }
 
@@ -723,6 +723,15 @@ mark.pr-quoted:hover {
   font-size: 10px;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
+}
+/* The notebook's tabs at its narrow end: closer together, so Map, Concepts
+   and Notes with their counts still leave room for the fold button
+   (components/MindmapSidebar.tsx). The row is the container, not the
+   panel, whose size changing would restyle everything in it. */
+.pr-notebook-tabs { container-type: inline-size; }
+@container (max-width: 290px) {
+  .pr-notebook-tab { padding-left: 6px; padding-right: 6px; }
+  .pr-notebook-tab .pr-notebook-count { margin-left: 4px; }
 }
 /* The Ask panel folded: still laid out behind its rail at the width it had,
    so opening it again is a change of width, not every card built anew
