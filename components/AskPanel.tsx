@@ -1017,7 +1017,7 @@ export const ExplainPanel = memo(function ExplainPanel({ annotations, activeId, 
         pinned.current = null;
       });
     }
-  }, [annotations, streamingIds, captureAnchor, annotationRefs]);
+  }, [isOpen, annotations, streamingIds, captureAnchor, annotationRefs]);
   // Going where a mode looks: the question at the top of the window, or the
   // end of the conversation — the last line, Stop, the card's bottom edge —
   // at its bottom edge. Instant while the answer streams (Safari drops a
@@ -1185,7 +1185,7 @@ export const ExplainPanel = memo(function ExplainPanel({ annotations, activeId, 
         if (f.mode === "answer" && f.id === id && list.isConnected) align();
       });
     }
-  }, [annotations, streamingIds, follow, captureAnchor, endOfPair]);
+  }, [isOpen, annotations, streamingIds, follow, captureAnchor, endOfPair]);
 
   // Stepping pair by pair, in the mode the reader is in: from the focused
   // pair to the one before or after it, across conversations (folded ones
@@ -1327,8 +1327,12 @@ export const ExplainPanel = memo(function ExplainPanel({ annotations, activeId, 
       el.removeEventListener("scroll", schedule);
       if (frame) cancelAnimationFrame(frame);
     };
+    // The list is a new element each time the panel opens: without isOpen
+    // here, a panel folded and opened again kept listening to the old one, and
+    // the focused pair stopped following the scroll until the conversations
+    // next changed (or never moved at all, when the panel opened after load)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [annotations, collapsedIds, annotationRefs, setFollowing]);
+  }, [isOpen, annotations, collapsedIds, annotationRefs, setFollowing]);
 
   // Nothing open on screen still leaves the last open conversation to write to;
   // the bar only goes away when there is nothing writable at all.
