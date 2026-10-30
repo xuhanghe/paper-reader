@@ -265,14 +265,12 @@ export const ExplainPanel = memo(function ExplainPanel({ annotations, activeId, 
   const [lightboxState, setLightboxState] = useState<{ src: string; annotationId: string } | null>(null);
   const [expandedText, setExpandedText] = useState<Set<string>>(new Set());
   const [collapsedIds, setCollapsedIds] = useState<Set<string>>(new Set());
-  // The conversations already there when the panel opened. Only a card added
-  // after rises into place: every card of a long list rising at once on each
-  // open was work for nothing, and a landing made during the rise came to
-  // rest 4px off where it aimed. Adjusted during render, so the first paint
-  // has it.
+  // The conversations already there when the panel first opened. Only a card
+  // added after rises into place: every card of a long list rising at once
+  // was work for nothing, and a landing made during the rise came to rest
+  // 4px off where it aimed. Adjusted during render, so the first paint has it.
   const [presentAtOpen, setPresentAtOpen] = useState<Set<string> | null>(null);
   if (isOpen && !presentAtOpen) setPresentAtOpen(new Set(annotations.map((a) => a.id)));
-  if (!isOpen && presentAtOpen) setPresentAtOpen(null);
   // Which question is being rewritten, and its working text
   const [editing, setEditing] = useState<{ id: string; index: number; quotes: QuotedPassage[] } | null>(null);
   // Questions whose quoted passages are folded away, by "conversation:index"
@@ -1250,6 +1248,8 @@ export const ExplainPanel = memo(function ExplainPanel({ annotations, activeId, 
   // ] and [ step too, from anywhere but a box being typed in
   const barAnnotationRef = useRef<Annotation | null>(null);
   useEffect(() => {
+    // Not while the panel is folded behind its rail
+    if (!isOpen) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.metaKey || e.ctrlKey || e.altKey) return;
       if ((e.target as HTMLElement | null)?.closest?.("textarea, input, select, [contenteditable]")) return;
@@ -1261,7 +1261,7 @@ export const ExplainPanel = memo(function ExplainPanel({ annotations, activeId, 
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [stepPair]);
+  }, [isOpen, stepPair]);
 
   useEffect(() => {
     const list = scrollRef.current;
@@ -1374,9 +1374,17 @@ export const ExplainPanel = memo(function ExplainPanel({ annotations, activeId, 
   const target: Annotation | null = openConversations.find((a) => a.id === focusedOn?.id) ?? barAnnotation ?? null;
   const mode: "followup" | "new" = target ? composeMode : "new";
 
-  if (!isOpen) {
-    return <CollapsedRail label="Ask" side="right" onExpand={onToggle} title="Show the conversation" count={annotations.length} />;
-  }
+  // Folded, the panel stays laid out behind its rail at the width it had:
+  // opening it again — clicked, or its edge pulled — is then a change of
+  // width, not every card built anew, which takes most of a second for a
+  // long conversation and stalled the hand pulling it open
+  const rail = !isOpen && <CollapsedRail label="Ask" side="right" onExpand={onToggle} title="Show the conversation" count={annotations.length} />;
+  const shell = {
+    className: "pr-explain-panel relative flex flex-col overflow-hidden",
+    "data-folded": isOpen ? undefined : "",
+    style: { background: "var(--paper)", width: `${width}px`, minWidth: 250, "--pr-panel-width": `${width}px` } as React.CSSProperties,
+    ...dropHandlers,
+  };
 
   // The follow-up bar sits outside the scrolling list, flush above the paper
   // composer, and is bound to whichever conversation you are reading. Kept in
@@ -1740,7 +1748,9 @@ export const ExplainPanel = memo(function ExplainPanel({ annotations, activeId, 
 
   if (annotations.length === 0) {
     return (
-      <div className="pr-explain-panel relative flex flex-col overflow-hidden" style={{ background: "var(--paper)", width: `${width}px`, minWidth: 250 }} {...dropHandlers}>
+      <>
+      {rail}
+      <div {...shell}>
         {dropHint}
         {toolbar}
         <div className="flex-1 flex flex-col items-center justify-center gap-3 p-8">
@@ -1760,11 +1770,14 @@ export const ExplainPanel = memo(function ExplainPanel({ annotations, activeId, 
         {quoteStrip}
         {composer}
       </div>
+      </>
     );
   }
 
   return (
-    <div className="pr-explain-panel relative flex flex-col overflow-hidden" style={{ background: "var(--paper)", width: `${width}px`, minWidth: 250 }} {...dropHandlers}>
+    <>
+    {rail}
+    <div {...shell}>
       {dropHint}
       {toolbar}
 
@@ -2205,5 +2218,6 @@ export const ExplainPanel = memo(function ExplainPanel({ annotations, activeId, 
 
       {composer}
     </div>
+    </>
   );
 });

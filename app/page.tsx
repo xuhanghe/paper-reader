@@ -1573,8 +1573,10 @@ export default function Home() {
         />
         <ResizeHandle onDrag={dragZotero} onStart={startZotero} onEnd={endZotero} />
 
-        {/* Left: document pane — always keeps readable width; side panels shrink instead */}
-        <div className="flex flex-col overflow-hidden" style={{ flex: "1 1 400px", minWidth: 340, borderRight: "1px solid var(--border)" }}>
+        {/* Left: document pane — always keeps readable width; side panels shrink instead.
+            It starts from nothing and takes what the panels leave, so a panel is
+            only ever as wide as it was set, and its edge stays under the hand */}
+        <div className="flex flex-col overflow-hidden" style={{ flex: "1 1 0", minWidth: 340, borderRight: "1px solid var(--border)" }}>
           {session.pdfDataUrl && session.docType === "html" ? (
             <HtmlViewer
               ref={pdfViewerRef}

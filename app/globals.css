@@ -222,14 +222,14 @@ html, body, #__next {
 
 /* Explain toolbar responds to the panel's own dragged width, not the browser
    viewport. At its narrow end the model controls take a second row while the
-   reading and collapse controls remain visible on the first. */
-.pr-explain-panel {
+   reading and collapse controls remain visible on the first. The toolbar is
+   the container, not the panel: a container's size changing restyles all it
+   holds, and the panel holds the whole conversation — 22 ms on every width
+   change of a long one, measured in WebKit. */
+.pr-explain-toolbar {
   container-type: inline-size;
 }
 @container (max-width: 380px) {
-  .pr-explain-toolbar {
-    row-gap: 0.25rem;
-  }
   .pr-explain-toolbar .pr-collapse-all-label {
     display: none;
   }
@@ -724,6 +724,11 @@ mark.pr-quoted:hover {
   font-weight: 600;
   font-variant-numeric: tabular-nums;
 }
+/* The Ask panel folded: still laid out behind its rail at the width it had,
+   so opening it again is a change of width, not every card built anew
+   (components/AskPanel.tsx) */
+.pr-explain-panel[data-folded] { width: 0 !important; min-width: 0 !important; visibility: hidden; }
+.pr-explain-panel[data-folded] > * { width: var(--pr-panel-width); }
 .pr-resize { width: 5px; margin: 0 -2px; z-index: 10; flex-shrink: 0; display: flex; justify-content: center; cursor: col-resize; }
 .pr-resize > div { width: 1.5px; height: 100%; background: var(--border-light); transition: width 0.15s, background 0.15s; }
 .pr-resize:hover > div { width: 3px; background: rgba(225, 195, 105, 0.55); }
