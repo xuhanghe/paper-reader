@@ -1,20 +1,15 @@
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
+import { chooseFolder, NoNativeDialog } from "@/lib/native-dialogs";
 
 export const runtime = "nodejs";
-const run = promisify(execFile);
 
+// The system's folder dialog — macOS or Windows — for a workspace's directory
 export async function POST() {
-  if (process.platform !== "darwin") {
-    return Response.json({ error: "The native folder picker is currently available on macOS. Enter the absolute path instead." }, { status: 501 });
-  }
   try {
-    const { stdout } = await run("/usr/bin/osascript", [
-      "-e",
-      'POSIX path of (choose folder with prompt "Choose or create the folder for this research workspace")',
-    ]);
-    return Response.json({ root: stdout.trim().replace(/\/$/, "") });
-  } catch {
-    return Response.json({ cancelled: true }, { status: 499 });
+    const root = await chooseFolder("Choose or create the folder for this research workspace");
+    if (root === null) return Response.json({ cancelled: true }, { status: 499 });
+    return Response.json({ root });
+  } catch (error) {
+    if (error instanceof NoNativeDialog) return Response.json({ error: error.message }, { status: 501 });
+    return Response.json({ error: error instanceof Error ? error.message : "Could not open the folder dialog." }, { status: 500 });
   }
 }

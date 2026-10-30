@@ -119,10 +119,12 @@ function Chevron() {
 const tabIcon = (tab: MaterialTab) =>
   tab.kind === "file" ? <FileIcon name={tab.name} size={14} /> : <FileIcon kind="pdf" size={14} />;
 
-// The end of a long path, which is the part that tells folders apart
+// The end of a long path, which is the part that tells folders apart, in the
+// separator its system writes (\ on Windows)
 function shortPath(path: string) {
-  const parts = path.split("/").filter(Boolean);
-  return parts.length > 2 ? `…/${parts.slice(-2).join("/")}` : path;
+  const sep = path.includes("\\") && !path.includes("/") ? "\\" : "/";
+  const parts = path.split(/[\\/]/).filter(Boolean);
+  return parts.length > 2 ? `…${sep}${parts.slice(-2).join(sep)}` : path;
 }
 
 // A Markdown file as it reads. Memoised on its text: highlighting guesses each

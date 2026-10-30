@@ -4,7 +4,8 @@ import { homedir } from "node:os";
 import path from "node:path";
 
 const IGNORED = new Set([".git", "node_modules", ".next", ".paper-reader-sessions"]);
-const BROAD_HOME_DIRECTORIES = new Set(["Desktop", "Documents", "Downloads", "Library", "Movies", "Music", "Pictures", "Public"]);
+// Windows adds its own: Videos, the OneDrive folder, AppData
+const BROAD_HOME_DIRECTORIES = new Set(["Desktop", "Documents", "Downloads", "Library", "Movies", "Music", "Pictures", "Public", "Videos", "OneDrive", "AppData"]);
 const MAX_TEXT_BYTES = 2 * 1024 * 1024;
 
 export type WorkspaceFile = {
@@ -18,7 +19,7 @@ export type WorkspaceFile = {
 export function expandWorkspacePath(value: string): string {
   const trimmed = value.trim();
   if (trimmed === "~") return homedir();
-  if (trimmed.startsWith("~/")) return path.join(homedir(), trimmed.slice(2));
+  if (trimmed.startsWith("~/") || trimmed.startsWith("~\\")) return path.join(homedir(), trimmed.slice(2));
   return path.resolve(trimmed);
 }
 

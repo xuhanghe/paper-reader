@@ -64,7 +64,7 @@ export function CreateWorkspaceDialog({ open, onClose, onCreated }: { open: bool
       if (response.status === 499) return;
       if (!response.ok) throw new Error(data.error || "Could not open the folder picker.");
       setRoot(data.root || "");
-      if (!name.trim() && data.root) setName(String(data.root).split("/").filter(Boolean).pop()?.replace(/[-_]+/g, " ") || "Research workspace");
+      if (!name.trim() && data.root) setName(String(data.root).split(/[\\/]/).filter(Boolean).pop()?.replace(/[-_]+/g, " ") || "Research workspace");
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not choose that folder."); }
     finally { setBrowsing(false); }
   };
@@ -73,8 +73,9 @@ export function CreateWorkspaceDialog({ open, onClose, onCreated }: { open: bool
       <section className={styles.modal} role="dialog" aria-modal="true" aria-labelledby="create-workspace-title">
         <header><div><small>NEW WORKSPACE</small><h2 id="create-workspace-title">Choose or create its directory</h2></div><button onClick={onClose} aria-label="Close">×</button></header>
         <label><span>NAME</span><input autoFocus value={name} onChange={(event) => setName(event.target.value)} placeholder="e.g. Efficient inference evaluation" /></label>
-        <label><span>WORKING DIRECTORY</span><div className={styles.pathInput}><input value={root} readOnly placeholder="Choose with the macOS folder picker" /><button type="button" onClick={browse} disabled={browsing}>{browsing ? "Opening…" : "Choose / create…"}</button></div></label>
-        <p className={styles.nativePickerNote}>Select an existing repository, or use New Folder in the macOS dialog.</p>
+        {/* Typed or pasted as well as chosen: where there is no folder dialog, typing is the way in */}
+        <label><span>WORKING DIRECTORY</span><div className={styles.pathInput}><input value={root} onChange={(event) => setRoot(event.target.value)} spellCheck={false} placeholder="Choose a folder, or paste its full path" /><button type="button" onClick={browse} disabled={browsing}>{browsing ? "Opening…" : "Choose / create…"}</button></div></label>
+        <p className={styles.nativePickerNote}>Select an existing repository, or make a new folder in the dialog. A full path to an existing folder can be pasted instead.</p>
         <div className={styles.lockNote}><span><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3.5" y="7" width="9" height="6.5" rx="1.5" /><path d="M5.5 7V5.25a2.5 2.5 0 0 1 5 0V7" /></svg></span><p><strong>This directory is fixed after creation.</strong><small>Create another workspace if you later need a different project root.</small></p></div>
         <p className={styles.zeroPaperNote}>The directory is attached in place. The workspace starts with 0 linked papers; add them any time with <strong>Add papers</strong>.</p>
         {error && <p className={styles.error}>{error}</p>}
@@ -104,7 +105,7 @@ export function DeleteWorkspaceDialog({ workspace, onClose, onDelete }: { worksp
             <button onClick={() => void remove(false)} disabled={!!deleting}>{deleting === "record" ? "Removing…" : "Keep folder and remove workspace"}</button>
           </article>
           <article className={styles.deleteDirectoryChoice}>
-            <span>02</span><div><h3>Remove workspace and folder</h3><p>The workspace is removed from Paper Reader and its directory is moved to macOS Trash, where it can still be recovered.</p><code title={workspace.root}>{workspace.root}</code></div>
+            <span>02</span><div><h3>Remove workspace and folder</h3><p>The workspace is removed from Paper Reader and its directory is moved to the Trash (the Recycle Bin on Windows), where it can still be recovered.</p><code title={workspace.root}>{workspace.root}</code></div>
             <label><small>TYPE <strong>{workspace.name}</strong> TO CONFIRM</small><input value={confirmation} onChange={(event) => setConfirmation(event.target.value)} autoComplete="off" spellCheck={false} /></label>
             <button onClick={() => void remove(true)} disabled={!!deleting || confirmation !== workspace.name}>{deleting === "directory" ? "Moving to Trash…" : "Move folder to Trash"}</button>
           </article>
@@ -247,7 +248,7 @@ export function ExportDialog({ open, workspace, messages, model, onClose, onExpo
   const choose = async () => {
     setChoosing(true); setError("");
     try {
-      const response = await fetch("/api/workspaces/select-file", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ defaultName: target.split("/").pop(), location: workspace.root }) });
+      const response = await fetch("/api/workspaces/select-file", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ defaultName: target.split(/[\\/]/).pop(), location: workspace.root }) });
       if (response.status === 499) return;
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "Could not open the save dialog.");
@@ -279,7 +280,7 @@ export function ExportDialog({ open, workspace, messages, model, onClose, onExpo
         <p className={styles.zeroPaperNote}>{turns} {turns === 1 ? "turn" : "turns"} with the agent, the papers attached, and your notes below go into one Markdown file for another agent or machine to pick up.</p>
         <label><span>NOTES FOR WHOEVER READS IT NEXT</span><textarea autoFocus value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="What to know first, what is still open, what to do with it…" rows={5} data-export-notes="" /></label>
         <label><span>SAVE AS</span><div className={styles.pathInput}><input value={target} onChange={(event) => setTarget(event.target.value)} spellCheck={false} data-export-path="" /><button type="button" onClick={choose} disabled={choosing}>{choosing ? "Opening…" : "Choose…"}</button></div></label>
-        <p className={styles.nativePickerNote}>A relative path goes inside this workspace; Choose… opens the macOS save dialog for anywhere else.</p>
+        <p className={styles.nativePickerNote}>A relative path goes inside this workspace; Choose… opens the system's save dialog for anywhere else.</p>
         {error && <p className={styles.error}>{error}</p>}
         <footer><button onClick={close} disabled={saving}>Cancel</button><button className={styles.primary} onClick={save} disabled={saving || !target.trim()}>{saving ? "Exporting…" : "Export"}</button></footer>
       </section>

@@ -32,7 +32,10 @@ export async function POST(req: Request) {
       if (!/\.md$/i.test(target)) return Response.json({ error: "The export is a Markdown file: the name must end in .md." }, { status: 400 });
       await mkdir(path.dirname(target), { recursive: true });
       await writeFile(target, markdown, "utf8");
-      return Response.json({ ok: true, path: target, inside: target.startsWith(`${root}${path.sep}`) });
+      // Inside the workspace it is opened there, so it goes back as a path
+      // within it, with / for separators like every other workspace path
+      const inside = target.startsWith(`${root}${path.sep}`);
+      return Response.json({ ok: true, path: inside ? path.relative(root, target).split(path.sep).join("/") : target, inside });
     }
     const relative = /\.md$/i.test(target) ? target : `${target}.md`;
     await writeWorkspaceText(root, relative, markdown);
