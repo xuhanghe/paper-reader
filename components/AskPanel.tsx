@@ -265,6 +265,14 @@ export const ExplainPanel = memo(function ExplainPanel({ annotations, activeId, 
   const [lightboxState, setLightboxState] = useState<{ src: string; annotationId: string } | null>(null);
   const [expandedText, setExpandedText] = useState<Set<string>>(new Set());
   const [collapsedIds, setCollapsedIds] = useState<Set<string>>(new Set());
+  // The conversations already there when the panel opened. Only a card added
+  // after rises into place: every card of a long list rising at once on each
+  // open was work for nothing, and a landing made during the rise came to
+  // rest 4px off where it aimed. Adjusted during render, so the first paint
+  // has it.
+  const [presentAtOpen, setPresentAtOpen] = useState<Set<string> | null>(null);
+  if (isOpen && !presentAtOpen) setPresentAtOpen(new Set(annotations.map((a) => a.id)));
+  if (!isOpen && presentAtOpen) setPresentAtOpen(null);
   // Which question is being rewritten, and its working text
   const [editing, setEditing] = useState<{ id: string; index: number; quotes: QuotedPassage[] } | null>(null);
   // Questions whose quoted passages are folded away, by "conversation:index"
@@ -373,6 +381,11 @@ export const ExplainPanel = memo(function ExplainPanel({ annotations, activeId, 
   const restoredScrollFor = useRef<string | null>(null);
   // The key just restored for, so the landing knows an arrival from a return
   const justRestored = useRef<string | null>(null);
+  // A passage clicked in the paper opened the panel: the restore, a frame
+  // away, would put the list back over the landing on its conversation, so
+  // the landing waits for that frame and goes there in the restore's place
+  const restorePending = useRef(false);
+  const owedArrival = useRef<(() => void) | null>(null);
   // The reader's place, kept two ways as of the last scroll event or the last
   // scroll of ours: the offset itself, and the element at the top edge of the
   // list with its distance from that edge. Scroll events are delivered a
@@ -452,8 +465,13 @@ export const ExplainPanel = memo(function ExplainPanel({ annotations, activeId, 
       // One frame later: the list has to lay out before it can be scrolled.
       // Then the mode the paper was left in: following the question or the
       // answer means going back to it, free means where the list was.
+      restorePending.current = true;
       requestAnimationFrame(() => {
+        restorePending.current = false;
+        const owed = owedArrival.current;
+        owedArrival.current = null;
         if (!el.isConnected) return;
+        if (owed) { owed(); return; }
         if (top !== null) { trace("restore", { from: el.scrollTop, to: top }); el.scrollTop = top; }
         if (remembered?.id && remembered.mode !== "free") goToRef.current?.(remembered.mode, remembered.id, remembered.index);
       });
@@ -958,19 +976,31 @@ export const ExplainPanel = memo(function ExplainPanel({ annotations, activeId, 
       // mode it was in); the conversation that happens to be active was not
       // clicked, and is not scrolled to
       if (justRestored.current === positionKey) { justRestored.current = null; if (!revealed) return; }
-      trace("scrollIntoView", { reason: "switched to a conversation", target: describeForTrace(card), block: "start" });
-      smoothUntil.current = Date.now() + 700;
-      card.scrollIntoView({ behavior: "smooth", block: "start" });
-      // Arriving at a conversation — opened, or just made by an explain — is
-      // leaving the followed one for it: its first pair is now the focus,
-      // followed by nothing, and where a follow-up goes. A passage clicked
-      // in the paper means its beginning even when the conversation was
-      // already the one in focus.
-      const f = followRef.current;
-      if (f.id !== activeId || revealed) {
-        pinned.current = null;
-        setFollowing({ id: activeId, index: pairsOf(active)[0]?.start ?? 0, mode: "free" }, revealed ? "revealed" : "switched");
+      const id = activeId;
+      const arrive = (glide: boolean) => {
+        trace("scrollIntoView", { reason: glide ? "switched to a conversation" : "opened for a conversation", target: describeForTrace(card), block: "start" });
+        if (glide) smoothUntil.current = Date.now() + 700;
+        card.scrollIntoView(glide ? { behavior: "smooth", block: "start" } : { block: "start" });
+        if (!glide) captureAnchor();
+        // Arriving at a conversation — opened, or just made by an explain — is
+        // leaving the followed one for it: its first pair is now the focus,
+        // followed by nothing, and where a follow-up goes. A passage clicked
+        // in the paper means its beginning even when the conversation was
+        // already the one in focus.
+        const f = followRef.current;
+        if (f.id !== id || revealed) {
+          pinned.current = null;
+          setFollowing({ id, index: pairsOf(active)[0]?.start ?? 0, mode: "free" }, revealed ? "revealed" : "switched");
+        }
+      };
+      // The panel was folded and has just opened for this: straight there,
+      // in place of the restore — there is no view of the list yet to glide
+      // from, only a remembered offset that may be the other end of it
+      if (restorePending.current) {
+        owedArrival.current = () => { if (card.isConnected) arrive(false); };
+        return;
       }
+      arrive(true);
     }
   }, [activeId, annotations, annotationRefs, askSeq, captureAnchor, foldedQuotes, expandedText, landOn, setFollowing, positionKey, revealSeq]);
 
@@ -1761,7 +1791,7 @@ export const ExplainPanel = memo(function ExplainPanel({ annotations, activeId, 
               // No transition on the card itself: a fading box-shadow repaints
               // the whole card, formulas and all, for every frame of the fade,
               // and a card can be thousands of pixels tall
-              className="rounded-lg overflow-hidden pr-fade-up"
+              className={`rounded-lg overflow-hidden${presentAtOpen?.has(annotation.id) ? "" : " pr-fade-up"}`}
               // Every card is laid out in full, always. Skipping the layout of
               // cards off screen (content-visibility: auto, with a placeholder
               // height) saved a little paint and cost the whole list: WebKit
