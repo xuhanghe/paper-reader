@@ -1223,16 +1223,20 @@ export const PdfViewer = memo(forwardRef<PdfViewerHandle, Props>(function PdfVie
         );
       };
 
+      // A passage you asked about carries a conversation — open it. Checked
+      // first: words both highlighted and asked about open the conversation,
+      // and the highlight stays in reach from the notebook's Notes.
+      const asked = hit("mark.pr-asked");
+      const askedId = asked?.dataset.highlightId;
+      if (askedId) {
+        setHighlightMenu(null);
+        askedClickRef.current?.(askedId);
+        return;
+      }
       const mark = hit("mark.pr-highlight");
       const id = mark?.dataset.highlightId;
       if (!mark || !id) {
         setHighlightMenu(null);
-        // A passage you asked about carries a conversation, not a colour — open
-        // it rather than the recolour menu. Checked second so a highlight on the
-        // same words still wins.
-        const asked = hit("mark.pr-asked");
-        const askedId = asked?.dataset.highlightId;
-        if (askedId) askedClickRef.current?.(askedId);
         return;
       }
       setHighlightMenu({ id, rect: mark.getBoundingClientRect() });
