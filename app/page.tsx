@@ -1686,7 +1686,7 @@ export default function Home() {
           onAskAboutNode={handleAskAboutSelection}
           onQuote={handleQuoteSelection}
           concepts={session.concepts}
-          onSelectConcept={setActiveAnnotationId}
+          onSelectConcept={openConversation}
           summarizingIds={summarizing}
           onConceptsShown={refreshTakeaways}
           onResummarize={resummarize}
