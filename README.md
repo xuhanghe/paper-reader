@@ -151,9 +151,15 @@ One command from a fresh clone to the reader open in your browser:
 ```
 
 It checks for Node.js (the one thing it can't install for you — `brew install
-node` or [nodejs.org](https://nodejs.org)), installs the dependencies the first
-time, starts the server and opens the reader when it answers. Stop it with
-Ctrl-C; run it again any time. On Windows the same command is `start.cmd`.
+node` or [nodejs.org](https://nodejs.org)), starts Zotero if it is installed and
+not running, installs the dependencies the first time, starts the server and
+opens the reader when it answers. Run again while the reader is up, it just
+opens it. Stop it with Ctrl-C.
+
+On Windows the same command is `start.cmd`. Double-click `make-shortcut.cmd`
+once and a **Paper Reader** shortcut appears on the desktop and in the Start
+menu: one click starts Zotero and the reader and opens it in your browser. The
+reader runs in a minimized window; closing that window stops it.
 By hand, anywhere:
 
 ```bash

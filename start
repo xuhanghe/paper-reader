@@ -4,13 +4,15 @@
 #   ./start
 #
 # It checks for Node.js (the one thing it cannot install for you), then the
-# launcher installs the dependencies the first time or whenever they change,
-# starts the server, and opens the reader once the server answers. From there
-# the setup assistant inside the app connects Zotero and a coding agent. Stop
-# it with Ctrl-C. On Windows, start.cmd is the same thing.
+# launcher starts Zotero if it is installed and not running, installs the
+# dependencies the first time or whenever they change, starts the server, and
+# opens the reader once the server answers — or, when the reader is already
+# up, just opens it. From there the setup assistant inside the app connects
+# Zotero and a coding agent. Stop it with Ctrl-C. On Windows, start.cmd is the
+# same thing, and make-shortcut.cmd puts it on the desktop as one click.
 #
 #   PORT=3100 ./start              # a fixed port instead of the next free one
-#   PAPER_READER_NO_OPEN=1 ./start # don't open a browser (servers, tests)
+#   PAPER_READER_NO_OPEN=1 ./start # no browser, no Zotero (servers, tests)
 set -euo pipefail
 cd "$(dirname "$0")"
 

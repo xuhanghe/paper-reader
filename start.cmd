@@ -4,12 +4,15 @@ rem
 rem   start.cmd
 rem
 rem It checks for Node.js (the one thing it cannot install for you), then the
-rem launcher installs the dependencies the first time, starts the server and
-rem opens the reader once the server answers. From there the setup assistant
-rem inside the app connects Zotero and a coding agent. Stop it with Ctrl-C.
+rem launcher starts Zotero if it is installed and not running, installs the
+rem dependencies the first time, starts the server and opens the reader once
+rem the server answers - or, when the reader is already up, just opens it.
+rem From there the setup assistant inside the app connects Zotero and a coding
+rem agent. Stop it with Ctrl-C. make-shortcut.cmd puts this on the desktop and
+rem in the Start menu as one click.
 rem
 rem   set PORT=3100 && start.cmd                  a fixed port instead of the next free one
-rem   set PAPER_READER_NO_OPEN=1 && start.cmd    don't open a browser
+rem   set PAPER_READER_NO_OPEN=1 && start.cmd    no browser, no Zotero
 setlocal
 cd /d "%~dp0"
 
