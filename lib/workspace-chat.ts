@@ -16,7 +16,12 @@ import { normalizeModelSpec, type ProviderId } from "./model-spec";
 import { parseAgentMode, type AgentMode } from "./workspace-modes";
 
 export type AgentTool = { name: string; detail: string; status?: string };
-export type AgentMessage = { id: string; role: "user" | "assistant"; content: string; tools?: AgentTool[]; imageDataUrl?: string };
+// A question's images are kept in the workspace and named here by their path
+// there (see lib/workspace-attachments); a figure asked about before that was
+// kept inline, as imageDataUrl
+// references: the papers a question names with @
+export type PaperReference = { id: string; name: string; zoteroKey?: string };
+export type AgentMessage = { id: string; role: "user" | "assistant"; content: string; tools?: AgentTool[]; imageDataUrl?: string; imagePaths?: string[]; references?: PaperReference[] };
 export type ProviderSessions = Partial<Record<ProviderId, string>>;
 export type WorkspaceChat = { messages: AgentMessage[]; sessions: ProviderSessions };
 export type ChatSnapshot = { chat: WorkspaceChat; streaming: boolean };

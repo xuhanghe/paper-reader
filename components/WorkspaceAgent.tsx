@@ -7,13 +7,15 @@ import { ExportDialog } from "./WorkspaceDialogs";
 import { loadModelCatalog } from "@/hooks/useModelCatalog";
 import { parseAgentEvent } from "@/lib/agent-events";
 import { loadDraft, saveDraft } from "@/lib/drafts";
+import { extractZoteroItemText } from "@/lib/extract-text";
+import { MAX_ATTACHED_IMAGES } from "@/lib/message-images";
 import { isSubmitKey } from "@/lib/keys";
 import { migrateLegacyCustomApi } from "@/lib/legacy-custom-api";
 import { providerIdFor } from "@/lib/model-spec";
 import { readLines } from "@/lib/ndjson";
 import type { SelectionIntent } from "@/lib/prompts";
 import { uid } from "@/lib/uid";
-import { beginRun, chatSnapshot, endRun, loadAgentChoice, loadAgentMode, saveAgentChoice, saveAgentMode, stopRun, subscribeChat, updateRun, type AgentChoice, type AgentMessage, type AgentTool } from "@/lib/workspace-chat";
+import { beginRun, chatSnapshot, endRun, loadAgentChoice, loadAgentMode, saveAgentChoice, saveAgentMode, stopRun, subscribeChat, updateRun, type AgentChoice, type AgentMessage, type AgentTool, type PaperReference } from "@/lib/workspace-chat";
 import type { AgentMode } from "@/lib/workspace-modes";
 import type { ResearchWorkspace } from "@/types/workspace";
 import styles from "./workspace-agent.module.css";
@@ -67,11 +69,53 @@ const SUGGESTIONS: [string, string, string][] = [
 // `turn:N` has no meaning in this chat: such a link reads as its words
 const NO_TURNS = new Set<number>();
 const NO_SUBSCRIBE = () => () => {};
+// The images attached to a draft, kept for the session: too large for the
+// drafts store, but they should still be there after a crossing to the
+// Reader and back
+const composerImageMemory = new Map<string, string[]>();
+const NO_IMAGES: string[] = [];
+// And the papers named with @, likewise
+const composerRefMemory = new Map<string, PaperReference[]>();
+const NO_REFS: PaperReference[] = [];
+const MAX_REFERENCES = 6;
+const titleOf = (name: string) => name.replace(/\.pdf$/i, "");
 
-const UserTurn = memo(function UserTurn({ message, components }: { message: AgentMessage; components: MarkdownComponents }) {
+// A paper named in a question is read by the agent from its Reader folder.
+// One never opened in the Reader has no text there yet: it is read out of
+// Zotero here, as the Reader would, and kept there for both.
+async function prepareReference(ref: PaperReference): Promise<void> {
+  const ask = (body: Record<string, unknown>) =>
+    fetch("/api/paper/init", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }).then((r) => r.json());
+  const { hasText } = await ask({ id: ref.id });
+  if (hasText || !ref.zoteroKey) return;
+  const extracted = await extractZoteroItemText(ref.zoteroKey, 1_000_000);
+  if ("text" in extracted && extracted.text.trim()) await ask({ id: ref.id, title: titleOf(ref.name), text: extracted.text });
+}
+
+// A saved attachment as the browser loads it
+const attachmentUrl = (root: string, file: string) => `/api/workspaces/files?root=${encodeURIComponent(root)}&path=${encodeURIComponent(file)}&raw=1`;
+
+const UserTurn = memo(function UserTurn({ message, root, components }: { message: AgentMessage; root: string | null; components: MarkdownComponents }) {
+  const images = [
+    ...(root ? (message.imagePaths ?? []).map((file) => attachmentUrl(root, file)) : []),
+    ...(message.imageDataUrl ? [message.imageDataUrl] : []),
+  ];
   return (
     <article className={styles.user} data-message-id={message.id}>
-      {message.imageDataUrl && <img className={styles.figure} src={message.imageDataUrl} alt="Captured figure" />}
+      {!!message.references?.length && (
+        <div className={styles.refs}>
+          {message.references.map((ref) => <span key={ref.id} className={styles.refChip} title={titleOf(ref.name)}>@ {titleOf(ref.name)}</span>)}
+        </div>
+      )}
+      {images.length > 0 && (
+        <div className={styles.figures}>
+          {images.map((src, n) => (
+            <a key={n} href={src} target="_blank" rel="noreferrer" title="Open full size">
+              <img className={styles.figure} src={src} alt={`Attached image ${n + 1}`} />
+            </a>
+          ))}
+        </div>
+      )}
       <MarkdownAnswer content={message.content} components={components} />
     </article>
   );
@@ -118,6 +162,15 @@ export const WorkspaceAgent = memo(forwardRef<WorkspaceAgentHandle, Props>(funct
   const [mode, setMode] = useState<AgentMode>(() => loadAgentMode(workspaceId));
   // What is being typed for the agent, kept per workspace: see lib/drafts
   const [question, setQuestion] = useState(() => loadDraft(workspaceId ? `workspace:${workspaceId}` : null)?.text ?? "");
+  // Images waiting to go with the next question, as data URLs until sent
+  const [images, setImages] = useState<string[]>(() => (workspaceId ? composerImageMemory.get(workspaceId) ?? NO_IMAGES : NO_IMAGES));
+  const [dropping, setDropping] = useState(false);
+  // Papers named with @ for the next question, and the picker that names them
+  const [refs, setRefs] = useState<PaperReference[]>(() => (workspaceId ? composerRefMemory.get(workspaceId) ?? NO_REFS : NO_REFS));
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [pickerQuery, setPickerQuery] = useState("");
+  const [pickerIndex, setPickerIndex] = useState(0);
+  const [libraryResults, setLibraryResults] = useState<{ key: string; title: string }[]>([]);
   const [exportOpen, setExportOpen] = useState(false);
   const [sent, setSent] = useState(0);
   const listRef = useRef<HTMLDivElement>(null);
@@ -156,6 +209,93 @@ export const WorkspaceAgent = memo(forwardRef<WorkspaceAgentHandle, Props>(funct
   useEffect(() => () => {
     if (draftKey) saveDraft(draftKey, { text: latestDraft.current });
   }, [draftKey]);
+  useEffect(() => {
+    if (!workspaceId) return;
+    if (images.length) composerImageMemory.set(workspaceId, images);
+    else composerImageMemory.delete(workspaceId);
+  }, [workspaceId, images]);
+  useEffect(() => {
+    if (!workspaceId) return;
+    if (refs.length) composerRefMemory.set(workspaceId, refs);
+    else composerRefMemory.delete(workspaceId);
+  }, [workspaceId, refs]);
+
+  // The library is searched as the name is typed, a moment after the last key
+  const query = pickerQuery.trim();
+  useEffect(() => {
+    if (!pickerOpen || query.length < 2) return;
+    let live = true;
+    const timer = setTimeout(async () => {
+      try {
+        const response = await fetch(`/api/zotero/items?q=${encodeURIComponent(query)}`);
+        const data = await response.json();
+        if (live && response.ok) setLibraryResults((data.items ?? []).slice(0, 12));
+      } catch {
+        if (live) setLibraryResults([]);
+      }
+    }, 250);
+    return () => { live = false; clearTimeout(timer); };
+  }, [pickerOpen, query]);
+
+  // This workspace's papers first, then the rest of the library
+  const workspacePapers = workspace?.papers ?? [];
+  const refOptions = useMemo<(PaperReference & { group: "workspace" | "library" })[]>(() => {
+    const chosen = new Set(refs.map((ref) => ref.id));
+    const needle = query.toLowerCase();
+    const own = workspacePapers
+      .filter((paper) => !chosen.has(paper.id) && (!needle || paper.name.toLowerCase().includes(needle)))
+      .map((paper) => ({ id: paper.id, name: paper.name, zoteroKey: paper.zoteroKey, group: "workspace" as const }));
+    const library = query.length < 2 ? [] : libraryResults
+      .filter((item) => !chosen.has(item.key) && !workspacePapers.some((paper) => paper.id === item.key || paper.zoteroKey === item.key))
+      .map((item) => ({ id: item.key, name: item.title, zoteroKey: item.key, group: "library" as const }));
+    return [...own, ...library];
+  }, [refs, query, libraryResults, workspacePapers]);
+
+  const focusBox = () => requestAnimationFrame(() => composerRef.current?.querySelector("textarea")?.focus());
+  const openPicker = () => {
+    setPickerOpen(true);
+    setPickerQuery("");
+    setPickerIndex(0);
+    setLibraryResults([]);
+  };
+  const closePicker = () => {
+    setPickerOpen(false);
+    focusBox();
+  };
+  const pickReference = (ref: PaperReference) => {
+    setRefs((current) => (current.some((r) => r.id === ref.id) ? current : [...current, { id: ref.id, name: ref.name, zoteroKey: ref.zoteroKey }].slice(0, MAX_REFERENCES)));
+    closePicker();
+  };
+
+  // Images join the ones already attached, in the order given, up to the
+  // most one question carries — chosen, pasted or dropped
+  const attachImages = (files: File[]) => {
+    const chosen = files.filter((file) => file.type.startsWith("image/"));
+    if (!chosen.length) return;
+    Promise.all(chosen.map((file) => new Promise<string | null>((resolve) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(typeof reader.result === "string" ? reader.result : null);
+      reader.onerror = () => resolve(null);
+      reader.readAsDataURL(file);
+    }))).then((urls) => {
+      const read = urls.filter((url): url is string => !!url);
+      if (!read.length) return;
+      setImages((current) => {
+        const next = [...current, ...read];
+        if (next.length > MAX_ATTACHED_IMAGES) latest.current.onNotice(`A question carries at most ${MAX_ATTACHED_IMAGES} images.`);
+        return next.slice(0, MAX_ATTACHED_IMAGES);
+      });
+    });
+  };
+  const imageFilesOf = (data: DataTransfer | null) => {
+    if (!data) return [];
+    const files = Array.from(data.files || []).filter((file) => file.type.startsWith("image/"));
+    if (files.length) return files;
+    return Array.from(data.items || [])
+      .filter((item) => item.kind === "file" && item.type.startsWith("image/"))
+      .map((item) => item.getAsFile())
+      .filter((file): file is File => !!file);
+  };
 
   const citeRef = useRef<CiteHandlers>({});
   useEffect(() => {
@@ -190,9 +330,31 @@ export const WorkspaceAgent = memo(forwardRef<WorkspaceAgentHandle, Props>(funct
     const id = workspace.id;
     const fromPage = input.kind !== undefined;
     const typed = (fromPage ? input.question ?? "" : question).trim();
-    if (!typed && !input.selectedText && !input.imageDataUrl) return;
+    // A figure captured from the page, or what is attached in the box
+    const attaching = input.imageDataUrl ? [input.imageDataUrl] : fromPage ? [] : images;
+    const references = fromPage ? NO_REFS : refs;
+    if (!typed && !input.selectedText && !attaching.length) return;
     const controller = beginRun(id);
     if (!controller) { latest.current.onNotice("The agent is still answering."); return; }
+    // The images are saved into the workspace first, and the conversation
+    // keeps only where they are: see lib/workspace-attachments
+    let imagePaths: string[] = [];
+    if (attaching.length) {
+      try {
+        const response = await fetch("/api/workspaces/attachments", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ root: workspace.root, images: attaching }),
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || "Could not save the images.");
+        imagePaths = data.paths;
+      } catch (reason) {
+        endRun(id, controller);
+        latest.current.onNotice(`The images could not be saved in the workspace: ${reason instanceof Error ? reason.message : "unknown error"}. Nothing was sent.`);
+        return;
+      }
+    }
     const passage = input.selectedText?.replace(/\s+/g, " ").trim();
     const page = input.pageNumber ? ` (p. ${input.pageNumber})` : "";
     const shown = input.kind === "explain" ? `Explain${page}:\n\n> ${passage}`
@@ -201,29 +363,41 @@ export const WorkspaceAgent = memo(forwardRef<WorkspaceAgentHandle, Props>(funct
       : passage ? `${typed}\n\n> ${passage}${page}` : typed;
     // The chat so far, so an agent starting a session mid-conversation —
     // another provider, or one that lost its session — knows what was said
-    const history = messages.filter((message) => message.content.trim()).slice(-30).map((message) => ({ role: message.role, content: message.content.slice(0, 1500) }));
+    const history = messages.filter((message) => message.content.trim()).slice(-30).map((message) => {
+      const named = message.references?.length ? `\n\n(referring to: ${message.references.map((ref) => titleOf(ref.name)).join("; ")})` : "";
+      return { role: message.role, content: `${message.content.slice(0, 1500)}${named}` };
+    });
     const provider = providerIdFor(agent.model);
     const assistantId = uid();
     updateRun(id, controller, (current) => ({
       ...current,
-      messages: [...current.messages, { id: uid(), role: "user", content: shown, imageDataUrl: input.imageDataUrl }, { id: assistantId, role: "assistant", content: "", tools: [] }],
+      messages: [...current.messages, { id: uid(), role: "user", content: shown, ...(imagePaths.length ? { imagePaths } : {}), ...(references.length ? { references } : {}) }, { id: assistantId, role: "assistant", content: "", tools: [] }],
     }));
     // A question asked from the page leaves whatever is being typed alone
-    if (!fromPage) setQuestion("");
+    if (!fromPage) {
+      setQuestion("");
+      setImages(NO_IMAGES);
+      setRefs(NO_REFS);
+      setPickerOpen(false);
+    }
     setSent((count) => count + 1);
     const patch = (change: (message: AgentMessage) => AgentMessage) =>
       updateRun(id, controller, (current) => ({ ...current, messages: current.messages.map((message) => (message.id === assistantId ? change(message) : message)) }));
     let text = "";
     try {
+      // The papers named are made readable first; one that cannot be is
+      // still named, and the agent told so
+      await Promise.all(references.map((ref) => prepareReference(ref).catch(() => {})));
       const response = await fetch("/api/workspaces/ask", {
         method: "POST",
         signal: controller.signal,
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          root: workspace.root, question: typed, kind: input.kind, selected_text: passage, page_number: input.pageNumber, image_base64: input.imageDataUrl,
+          root: workspace.root, question: typed, kind: input.kind, selected_text: passage, page_number: input.pageNumber, image_paths: imagePaths,
           // The attached papers, so the agent can draw on what was read and
           // asked about each of them in the Reader
           papers: workspace.papers.map((paper) => ({ id: paper.id, name: paper.name, zoteroKey: paper.zoteroKey })),
+          references,
           history,
           context: latest.current.getContext(),
           model: agent.model,
@@ -321,21 +495,145 @@ export const WorkspaceAgent = memo(forwardRef<WorkspaceAgentHandle, Props>(funct
           </div>
         )}
         {messages.map((message) => message.role === "user"
-          ? <UserTurn key={message.id} message={message} components={components} />
+          ? <UserTurn key={message.id} message={message} root={workspace?.root ?? null} components={components} />
           : <AgentTurn key={message.id} message={message} live={streaming && message.id === lastId} components={components} />)}
       </div>
 
       <footer className={styles.composerArea}>
-        <div ref={composerRef} className={styles.composer}>
+        <div
+          ref={composerRef}
+          className={styles.composer}
+          data-dropping={dropping || undefined}
+          onDragOver={(event) => {
+            if (!Array.from(event.dataTransfer?.types || []).includes("Files")) return;
+            event.preventDefault();
+            event.dataTransfer.dropEffect = "copy";
+            setDropping(true);
+          }}
+          onDragLeave={(event) => {
+            if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDropping(false);
+          }}
+          onDrop={(event) => {
+            setDropping(false);
+            const files = imageFilesOf(event.dataTransfer);
+            if (!files.length) return;
+            event.preventDefault();
+            attachImages(files);
+          }}
+        >
+          {pickerOpen && (
+            <div className={styles.refPicker} role="dialog" aria-label="Reference a paper">
+              <input
+                autoFocus
+                className={styles.refSearch}
+                value={pickerQuery}
+                onChange={(event) => { setPickerQuery(event.target.value); setPickerIndex(0); }}
+                onKeyDown={(event) => {
+                  if (event.key === "Escape") { event.preventDefault(); closePicker(); }
+                  else if (event.key === "ArrowDown") { event.preventDefault(); setPickerIndex((i) => Math.min(i + 1, Math.max(0, refOptions.length - 1))); }
+                  else if (event.key === "ArrowUp") { event.preventDefault(); setPickerIndex((i) => Math.max(0, i - 1)); }
+                  else if (event.key === "Enter" && !event.nativeEvent.isComposing) {
+                    event.preventDefault();
+                    const option = refOptions[pickerIndex] ?? refOptions[0];
+                    if (option) pickReference(option);
+                  }
+                }}
+                placeholder={workspacePapers.length ? "Search this workspace or your library…" : "Search your Zotero library…"}
+                aria-label="Find a paper to reference"
+              />
+              <div className={styles.refOptions} role="listbox">
+                {refOptions.map((option, index) => (
+                  <button
+                    key={`${option.group}:${option.id}`}
+                    type="button"
+                    role="option"
+                    aria-selected={index === pickerIndex}
+                    className={styles.refOption}
+                    onMouseEnter={() => setPickerIndex(index)}
+                    onClick={() => pickReference(option)}
+                    title={titleOf(option.name)}
+                  >
+                    <span>{titleOf(option.name)}</span>
+                    <small>{option.group === "workspace" ? "in this workspace" : "library"}</small>
+                  </button>
+                ))}
+                {!refOptions.length && (
+                  <p className={styles.refEmpty}>{query.length < 2 && !workspacePapers.length ? "Type to search your Zotero library" : "No paper matches"}</p>
+                )}
+              </div>
+            </div>
+          )}
+          {refs.length > 0 && (
+            <div className={styles.refs} data-references={refs.length}>
+              {refs.map((ref) => (
+                <span key={ref.id} className={styles.refChip} title={titleOf(ref.name)}>
+                  @ {titleOf(ref.name)}
+                  <button type="button" onClick={() => setRefs((current) => current.filter((r) => r.id !== ref.id))} title="Remove this reference" aria-label={`Remove the reference to ${titleOf(ref.name)}`}>✕</button>
+                </span>
+              ))}
+            </div>
+          )}
+          {images.length > 0 && (
+            <div className={styles.attachments} data-attached-images={images.length}>
+              {images.map((src, index) => (
+                <span key={index} className={styles.attachment}>
+                  <img src={src} alt={`Attached image ${index + 1}`} />
+                  <button type="button" onClick={() => setImages((current) => current.filter((_, i) => i !== index))} title="Remove this image" aria-label={`Remove image ${index + 1}`}>✕</button>
+                </span>
+              ))}
+            </div>
+          )}
           <GrowingTextarea
             value={question}
-            onChange={(event) => setQuestion(event.target.value)}
+            onChange={(event) => {
+              const value = event.target.value;
+              const caret = event.target.selectionStart ?? value.length;
+              // An @ typed at the start of a word names a paper: the picker
+              // opens in its place
+              if (workspace && value.length === question.length + 1 && value[caret - 1] === "@" && (caret === 1 || /\s/.test(value[caret - 2]))) {
+                setQuestion(value.slice(0, caret - 1) + value.slice(caret));
+                openPicker();
+                return;
+              }
+              setQuestion(value);
+            }}
+            onPaste={(event) => {
+              const files = imageFilesOf(event.clipboardData);
+              if (!files.length) return;
+              event.preventDefault();
+              attachImages(files);
+            }}
             onKeyDown={(event) => { if (isSubmitKey(event)) { event.preventDefault(); void ask(); } }}
             placeholder={workspace ? "Ask about the open document or workspace…" : "Create a workspace to talk to its agent"}
             rows={2}
             aria-label="Message the workspace agent"
           />
           <div className={styles.composerBar}>
+            <label className={styles.iconButton} title={`Attach images — or paste or drop them here (up to ${MAX_ATTACHED_IMAGES})`} aria-label="Attach images" data-disabled={!workspace || undefined}>
+              <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M10.5 4.5 5.6 9.4a1.3 1.3 0 0 0 1.8 1.8l5-5a2.6 2.6 0 0 0-3.7-3.7l-5 5a3.9 3.9 0 0 0 5.5 5.5l4.3-4.3" /></svg>
+              <input
+                type="file"
+                accept="image/*"
+                multiple
+                hidden
+                disabled={!workspace}
+                onChange={(event) => {
+                  attachImages(Array.from(event.target.files ?? []));
+                  event.target.value = "";
+                }}
+              />
+            </label>
+            <button
+              type="button"
+              className={styles.iconButton}
+              onClick={() => (pickerOpen ? closePicker() : openPicker())}
+              disabled={!workspace}
+              aria-pressed={pickerOpen}
+              title="Reference a paper — this workspace's or any in your library (or type @)"
+              aria-label="Reference a paper"
+            >
+              <span className={styles.at} aria-hidden="true">@</span>
+            </button>
             <span role="group" aria-label="Agent mode" className={styles.modeSwitch}>
               {MODES.map(([value, label, hint]) => (
                 <button key={value} type="button" aria-pressed={mode === value} onClick={() => setMode(value)} title={hint}>{label}</button>
@@ -346,7 +644,7 @@ export const WorkspaceAgent = memo(forwardRef<WorkspaceAgentHandle, Props>(funct
             </button>
             {streaming
               ? <button type="button" className={styles.stop} onClick={stop} title="Stop the answer" aria-label="Stop the answer"><span /></button>
-              : <button type="button" className={styles.send} disabled={!question.trim() || !workspace} onClick={() => void ask()} title="Send (Enter)" aria-label="Send">
+              : <button type="button" className={styles.send} disabled={(!question.trim() && !images.length) || !workspace} onClick={() => void ask()} title="Send (Enter)" aria-label="Send">
                   <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 13V3M3.8 7.2 8 3l4.2 4.2" /></svg>
                 </button>}
           </div>

@@ -3,7 +3,8 @@
 // then the papers it concerned, then every turn as it was said.
 
 export type ExportTool = { name: string; detail: string; status?: string };
-export type ExportMessage = { role: "user" | "assistant"; content: string; tools?: ExportTool[]; hasImage?: boolean };
+// images: where the attached images are in the workspace, when they were kept there
+export type ExportMessage = { role: "user" | "assistant"; content: string; tools?: ExportTool[]; hasImage?: boolean; images?: string[] };
 export type ExportPaper = { name: string; zoteroKey?: string; sessionDir?: string };
 export type ExportInput = {
   workspace: { name: string; root: string };
@@ -49,7 +50,8 @@ export function buildConversationExport(input: ExportInput): string {
   for (const message of input.messages) {
     if (message.role === "user") turn += 1;
     out.push(`### ${turn} · ${message.role === "user" ? "You" : "Agent"}`, "");
-    if (message.hasImage) out.push("_(a figure was attached)_", "");
+    if (message.images?.length) out.push(`_(${message.images.length === 1 ? "an image was" : `${message.images.length} images were`} attached, saved in the workspace: ${message.images.map((p) => `\`${p}\``).join(", ")})_`, "");
+    else if (message.hasImage) out.push("_(a figure was attached)_", "");
     out.push(message.content.trim() || "_(no text)_", "");
     if (message.tools?.length) {
       out.push(`_Tools used: ${message.tools.map((t) => (t.detail ? `${t.name} (${t.detail})` : t.name)).join("; ")}_`, "");

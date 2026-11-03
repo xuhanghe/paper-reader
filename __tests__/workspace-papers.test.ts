@@ -2,7 +2,7 @@ import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { rm } from "node:fs/promises";
 import { appendThread, dirFor, writePaperText, writeState } from "../lib/session-store.js";
-import { describeWorkspacePapers, parsePaperRefs } from "../lib/workspace-papers.js";
+import { describeReferencedPapers, describeWorkspacePapers, parsePaperRefs } from "../lib/workspace-papers.js";
 
 // The Workspace agent works across the papers attached to a workspace. What
 // was read and asked about each of them lives in the paper's Reader session;
@@ -82,5 +82,39 @@ describe("the papers a request names", () => {
   test("anything but a list is no papers", () => {
     assert.deepEqual(parsePaperRefs(undefined), []);
     assert.deepEqual(parsePaperRefs("A1"), []);
+  });
+});
+
+// A paper named with @ in one message: put by the question, with its files for
+// an agent that opens them and its text for one that cannot
+describe("the papers a message names", () => {
+  test("an agent with file tools is pointed at each named paper's files", async () => {
+    const text = await describeReferencedPapers([{ id: READ, name: "Alpha.pdf", zoteroKey: "ALPHA123" }], { agentic: true });
+    assert.match(text, /^In this message I am referring to these papers/);
+    assert.ok(text.includes(`"Alpha" (Zotero key ALPHA123): ${dirFor(READ)}`));
+    assert.match(text, /paper\.md — the full text/);
+    assert.match(text, /thread\.jsonl — my 2 questions about it/);
+    assert.match(text, /What I worked out about it in the Reader: • Pooling dilutes/);
+  });
+
+  test("one without gets the paper's text inline", async () => {
+    const text = await describeReferencedPapers([{ id: READ, name: "Alpha.pdf" }], { agentic: false });
+    assert.match(text, /"Alpha":\n\s+# Alpha\n[\s\S]*\[page 1\]\n\s+Pooled testing of samples\./);
+    assert.ok(!text.includes(dirFor(READ)), "no folder it cannot open");
+  });
+
+  test("a paper with nothing readable is still named, and the way to it said", async () => {
+    const agentic = await describeReferencedPapers([{ id: UNREAD, name: "Beta.pdf", zoteroKey: "BETA456" }], { agentic: true });
+    assert.match(agentic, /"Beta" \(Zotero key BETA456\): its text could not be read here; reach it through Zotero MCP\./);
+    const inline = await describeReferencedPapers([{ id: UNREAD, name: "Beta.pdf" }], { agentic: false });
+    assert.match(inline, /"Beta": its text is not available here\./);
+  });
+
+  test("nothing named, nothing said; and at most six", async () => {
+    assert.equal(await describeReferencedPapers([], { agentic: true }), "");
+    assert.equal(await describeReferencedPapers("nonsense", { agentic: true }), "");
+    const many = Array.from({ length: 9 }, (_, i) => ({ id: `__ws-ref-${i}__`, name: `P${i}.pdf` }));
+    const text = await describeReferencedPapers(many, { agentic: false });
+    assert.equal(text.split("\n").filter((line) => line.startsWith("- ")).length, 6);
   });
 });

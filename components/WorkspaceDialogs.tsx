@@ -262,7 +262,7 @@ export function ExportDialog({ open, workspace, messages, model, onClose, onExpo
       const response = await fetch("/api/workspaces/export", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({
         root: workspace.root, name: workspace.name, path: target, notes, model,
         papers: workspace.papers.map((paper) => ({ id: paper.id, name: paper.name, zoteroKey: paper.zoteroKey })),
-        messages: messages.map((message) => ({ role: message.role, content: message.content, tools: message.tools, hasImage: !!message.imageDataUrl })),
+        messages: messages.map((message) => ({ role: message.role, content: message.content, tools: message.tools, hasImage: !!message.imageDataUrl || !!message.imagePaths?.length, images: message.imagePaths })),
       }) });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "Could not export the conversation.");

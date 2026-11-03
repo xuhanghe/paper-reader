@@ -16,7 +16,7 @@ export async function POST(req: Request) {
     if (!target) return Response.json({ error: "Choose where to save the export." }, { status: 400 });
     const messages = (Array.isArray(body.messages) ? body.messages : [])
       .filter((m: Partial<ExportMessage>) => (m?.role === "user" || m?.role === "assistant") && typeof m.content === "string")
-      .map((m: ExportMessage) => ({ role: m.role, content: m.content, tools: Array.isArray(m.tools) ? m.tools : undefined, hasImage: !!m.hasImage }));
+      .map((m: ExportMessage) => ({ role: m.role, content: m.content, tools: Array.isArray(m.tools) ? m.tools : undefined, hasImage: !!m.hasImage, images: Array.isArray(m.images) ? m.images.filter((i: unknown): i is string => typeof i === "string") : undefined }));
     const papers: ExportPaper[] = (Array.isArray(body.papers) ? body.papers : [])
       .filter((p: Partial<ExportPaper & { id: string }>) => typeof p?.name === "string")
       .map((p: ExportPaper & { id?: string }) => ({ name: p.name, zoteroKey: p.zoteroKey || undefined, sessionDir: p.id ? dirFor(p.id) : undefined }));

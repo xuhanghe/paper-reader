@@ -259,7 +259,7 @@ export function buildAskMessage(opts: {
 export const WORKSPACE_CITATION_DIRECTIVE =
   "\n\nWhere you draw on the paper, link the words themselves: the link text is the quote, copied off the page character for character, e.g. [shared load bank conflicts = 20,666,167](paper:12) — never a description like [verbatim excerpt](paper:12), and never the quote sitting next to the link instead of inside it. Only where it genuinely helps.";
 
-export function buildWorkspaceAskMessage(opts: { kind: AskKind; selectedText?: string; question?: string; pageNumber?: number }): string {
+export function buildWorkspaceAskMessage(opts: { kind: AskKind; selectedText?: string; question?: string; pageNumber?: number; imageCount?: number }): string {
   const body = askBody(opts);
   return body.trim() ? `${body}${WORKSPACE_CITATION_DIRECTIVE}` : body;
 }

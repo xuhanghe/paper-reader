@@ -1,17 +1,16 @@
-import { unlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import path from "node:path";
 import { unwrapPartials } from "@/lib/claude-stream";
 import { effortFor } from "@/lib/model-catalog";
 import { claudeStream, codexStream, customConfigFor, customStream, opencodeStream, resolveProvider, streamResponse } from "@/lib/providers";
 import { buildWorkspaceAskMessage, type AskKind } from "@/lib/prompts";
 import { SESSIONS_ROOT } from "@/lib/session-store";
-import { describeWorkspacePapers, parsePaperRefs } from "@/lib/workspace-papers";
+import { describeReferencedPapers, describeWorkspacePapers, parsePaperRefs } from "@/lib/workspace-papers";
 import { claudePermissionMode, modeDirective, parseAgentMode } from "@/lib/workspace-modes";
 import { chatHistorySection, freshStartOnLostSession, LOST_SESSION, parseChatHistory } from "@/lib/session-recovery";
 import { selectedSkillPaths } from "@/lib/skills";
 import { listWorkspaceFiles, validateWorkspaceRoot } from "@/lib/workspace-files";
 import { decodeCodexSessionId } from "@/lib/codex-runtime";
+import { requestImages } from "@/lib/message-images";
+import { readAttachments, saveAttachments } from "@/lib/workspace-attachments";
 
 export const runtime = "nodejs";
 
@@ -23,12 +22,6 @@ export async function POST(req: Request) {
   const kind: AskKind | null = ["explain", "define", "question", "figure"].includes(body.kind) ? body.kind : null;
   const selectedText = typeof body.selected_text === "string" ? body.selected_text.trim() : "";
   const pageNumber = typeof body.page_number === "number" && body.page_number > 0 ? body.page_number : undefined;
-  const imageDataUrl = typeof body.image_base64 === "string" && body.image_base64.startsWith("data:image/") ? body.image_base64 : "";
-  const imageBase64 = imageDataUrl.replace(/^data:image\/\w+;base64,/, "");
-  const request = kind && (selectedText || imageDataUrl || question)
-    ? buildWorkspaceAskMessage({ kind, selectedText: selectedText || undefined, question: question || undefined, pageNumber })
-    : question;
-  if (!request.trim() && !imageBase64) return new Response("question is required", { status: 400 });
 
   let root: string;
   try {
@@ -37,7 +30,22 @@ export async function POST(req: Request) {
     return new Response(error instanceof Error ? error.message : "invalid workspace", { status: 400 });
   }
 
+  // The attached images: saved in the workspace by the client, by path; any
+  // sent inline instead is saved here first. See lib/workspace-attachments
+  const inline = requestImages(body.images_base64, body.image_base64);
+  const imagePaths = [...(Array.isArray(body.image_paths) ? body.image_paths : []), ...(inline.length ? await saveAttachments(root, inline) : [])];
+  const attached = await readAttachments(root, imagePaths);
+
   const provider = resolveProvider(body.model);
+  const built = kind && (selectedText || attached.length || question)
+    ? buildWorkspaceAskMessage({ kind, selectedText: selectedText || undefined, question: question || undefined, pageNumber, imageCount: attached.length })
+    : question;
+  if (!built.trim() && !attached.length) return new Response("question is required", { status: 400 });
+  // An agent that works in the folder is told where the images are, to open
+  // them again when the conversation comes back to them
+  const request = attached.length && (provider === "claude" || provider === "codex")
+    ? `${built}\n\n(${attached.length > 1 ? `The ${attached.length} attached images are` : "The attached image is"} saved in this workspace: ${attached.map((a) => a.path).join(", ")}. Open ${attached.length > 1 ? "them" : "it"} again by path when we come back to ${attached.length > 1 ? "them" : "it"}.)`
+    : built;
   // A discussion or an implementation: see lib/workspace-modes
   const mode = parseAgentMode(body.mode);
   const paths = await selectedSkillPaths(body.skills);
@@ -48,6 +56,8 @@ export async function POST(req: Request) {
   // digest inline for one without
   const papers = parsePaperRefs(body.papers);
   const papersSection = await describeWorkspacePapers(papers, { agentic: provider === "claude" || provider === "codex" });
+  // The papers this message names with @, by the question
+  const referencesSection = await describeReferencedPapers(body.references, { agentic: provider === "claude" || provider === "codex" });
   const capability = `${modeDirective(mode)} Files you create or edit stay inside the working directory.`;
   const prompt = `You are the research agent inside Paper Reader's workspace.
 
@@ -60,19 +70,8 @@ ${paths.length ? `\nUser-selected skills (read each SKILL.md completely before u
 
 Workspace files:\n${files.length ? files.map((file) => `- ${file}`).join("\n") : "(empty directory)"}
 ${papersSection ? `\n${papersSection}\n` : ""}${context ? `\nOpen document context:\n${context}` : ""}
-
+${referencesSection ? `\n${referencesSection}\n` : ""}
 User request: ${request}`;
-
-  // A captured figure travels as a file to the CLI that takes one, and
-  // inline to the providers that take images
-  let imageFile: string | undefined;
-  let cleanupImage: (() => void) | undefined;
-  if (imageBase64 && provider === "codex") {
-    const file = path.join(tmpdir(), `paper-reader-ws-fig-${Date.now()}.png`);
-    writeFileSync(file, Buffer.from(imageBase64, "base64"));
-    imageFile = file;
-    cleanupImage = () => { try { unlinkSync(file); } catch {} };
-  }
 
   const isResume = typeof body.session_id === "string" && !!body.session_id;
   // A session the provider no longer has is started again, seeded with the
@@ -84,17 +83,18 @@ User request: ${request}`;
   const freshPrompt = () => (history ? prompt.replace("\n\nUser request: ", `\n\n${history}\n\nUser request: `) : prompt);
   if (provider === "codex") {
     const resumeId = decodeCodexSessionId(body.session_id);
-    const codexOpts = { images: imageFile ? [imageFile] : undefined, cwd: root, writable: true, model: body.model, effort: body.effort };
+    // Codex is pointed at the image files themselves
+    const codexOpts = { images: attached.length ? attached.map((a) => a.file) : undefined, cwd: root, writable: true, model: body.model, effort: body.effort };
     const resumed = codexStream(resumeId ? prompt : freshPrompt(), {
       ...codexOpts,
       resumeId,
     });
-    return streamResponse(freshStartOnLostSession(resumed, async () => codexStream(freshPrompt(), codexOpts), LOST_SESSION.codex, cleanupImage));
+    return streamResponse(freshStartOnLostSession(resumed, async () => codexStream(freshPrompt(), codexOpts), LOST_SESSION.codex));
   }
 
   if (provider === "opencode") {
     const opencodeOpts = {
-      images: imageDataUrl ? [{ mime: "image/png", dataUrl: imageDataUrl }] : undefined,
+      images: attached.length ? attached.map((a) => ({ mime: a.mime, dataUrl: a.dataUrl })) : undefined,
       model: body.model,
       effort: body.effort,
       webSearch: true,
@@ -109,9 +109,9 @@ User request: ${request}`;
     if (!found) return new Response("custom API is not configured", { status: 400 });
     const config = { ...found, effort: effortFor(body.model, body.effort) };
     const text = freshPrompt();
-    const content = imageDataUrl && config.vision
-      ? [{ type: "image_url", image_url: { url: imageDataUrl } }, { type: "text", text }]
-      : imageDataUrl ? `${text}\n\n(A figure was attached, but this model is text-only — answer from the text available.)` : text;
+    const content = attached.length && config.vision
+      ? [...attached.map((a) => ({ type: "image_url", image_url: { url: a.dataUrl } })), { type: "text", text }]
+      : attached.length ? `${text}\n\n(${attached.length > 1 ? `${attached.length} images were attached` : "An image was attached"}, but this model is text-only — answer from the text available.)` : text;
     return streamResponse(customStream(config, [{ role: "user", content }]));
   }
 
@@ -123,7 +123,7 @@ User request: ${request}`;
       model: body.model,
       effort: body.effort,
       resumeId: resume ? body.session_id : undefined,
-      imageBase64: imageBase64 || null,
+      images: attached.map((a) => a.dataUrl),
       cwd: root,
       permissionArgs: ["--permission-mode", claudePermissionMode(mode)],
       extraArgs: papers.length ? ["--add-dir", SESSIONS_ROOT] : [],

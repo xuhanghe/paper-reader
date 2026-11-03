@@ -6,18 +6,22 @@
 // shape of each file, and reads what a question needs; one without gets a
 // digest inline, within a budget, so a long reading history cannot crowd the
 // question out.
-import { countAsks, countPageImages, dirFor, hasPaperText, readMindmapFile, readState, readThread } from "@/lib/session-store";
+import { countAsks, countPageImages, dirFor, hasPaperText, readMindmapFile, readPaperText, readState, readThread } from "@/lib/session-store";
 import type { Annotation, ConceptEntry } from "@/types/session";
 
 export type WorkspacePaperRef = { id: string; name: string; zoteroKey?: string };
 
 const MAX_PAPERS = 40;
+// Papers one message refers to, and how much of their text goes inline to an
+// agent that cannot open the files
+const MAX_REFERENCES = 6;
+const REFERENCE_TEXT_CHARS = 24000;
 const MAX_TAKEAWAYS = 6;
 const MAX_TAKEAWAY_CHARS = 180;
 const INLINE_CHARS_PER_PAPER = 2800;
 const INLINE_CHARS_TOTAL = 14000;
 
-export function parsePaperRefs(value: unknown): WorkspacePaperRef[] {
+export function parsePaperRefs(value: unknown, max = MAX_PAPERS): WorkspacePaperRef[] {
   if (!Array.isArray(value)) return [];
   const refs: WorkspacePaperRef[] = [];
   for (const item of value as Array<Record<string, unknown>>) {
@@ -28,7 +32,7 @@ export function parsePaperRefs(value: unknown): WorkspacePaperRef[] {
       name: typeof item.name === "string" && item.name.trim() ? item.name : id,
       zoteroKey: typeof item.zoteroKey === "string" && item.zoteroKey ? item.zoteroKey : undefined,
     });
-    if (refs.length >= MAX_PAPERS) break;
+    if (refs.length >= max) break;
   }
   return refs;
 }
@@ -118,5 +122,47 @@ export async function describeWorkspacePapers(refs: WorkspacePaperRef[], opts: {
   const intro = opts.agentic
     ? "Papers attached to this workspace. Each one I have read in the Reader has a folder with everything I did there. Read those files with your file tools whenever a question touches a paper or what we worked out about it, and say when you are drawing on an earlier conversation:"
     : "Papers attached to this workspace, with what I worked out about each in the Reader:";
+  return `${intro}\n${lines.join("\n")}`;
+}
+
+/**
+ * The papers I name in one message with @: what each is, where its files are
+ * for an agent that opens them, and its text inline for one that cannot,
+ * within a budget. Placed by the question, apart from the workspace's papers.
+ */
+export async function describeReferencedPapers(value: unknown, opts: { agentic: boolean }): Promise<string> {
+  const refs = parsePaperRefs(value, MAX_REFERENCES);
+  if (!refs.length) return "";
+  const records = await Promise.all(refs.map(recordFor));
+  const lines: string[] = [];
+  let budget = REFERENCE_TEXT_CHARS;
+  for (const record of records) {
+    const head = `- "${titleOf(record.ref)}"${record.ref.zoteroKey ? ` (Zotero key ${record.ref.zoteroKey})` : ""}`;
+    if (opts.agentic) {
+      const files: string[] = [];
+      if (record.hasText) files.push("paper.md — the full text, with [page N] markers");
+      if (record.asks) files.push(`thread.jsonl — my ${plural(record.asks, "question")} about it in the Reader and the answers`);
+      if (record.cards) files.push(`state.json — the ${plural(record.cards, "conversation card")} and the concepts drawn from them`);
+      if (record.mindmap) files.push("mindmap.json — a structure map of the paper");
+      lines.push(files.length
+        ? `${head}: ${record.dir}\n    ${files.join(" · ")}`
+        : `${head}: its text could not be read here${record.ref.zoteroKey ? "; reach it through Zotero MCP" : ""}.`);
+    } else {
+      const text = budget >= 1000 ? (await readPaperText(record.ref.id))?.trim() : undefined;
+      if (text) {
+        const share = Math.min(budget, Math.floor(REFERENCE_TEXT_CHARS / refs.length));
+        const excerpt = text.length > share ? `${text.slice(0, share)}\n[… the rest of the paper is not included]` : text;
+        lines.push(`${head}:\n${indent(excerpt)}`);
+        budget -= excerpt.length;
+      } else {
+        lines.push(`${head}: its text is not available here.`);
+      }
+    }
+    const learned = takeaways(record.concepts);
+    if (learned.length) lines.push(`    What I worked out about it in the Reader: ${learned.map((line) => `• ${line}`).join(" ")}`);
+  }
+  const intro = opts.agentic
+    ? "In this message I am referring to these papers. Read what the question needs from their files before answering, and cite them by title:"
+    : "In this message I am referring to these papers:";
   return `${intro}\n${lines.join("\n")}`;
 }
