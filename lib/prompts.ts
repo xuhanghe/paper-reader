@@ -236,6 +236,8 @@ export function buildAskMessage(opts: {
   // The page in view as I ask, and the page of the card a follow-up is in
   currentPage?: number;
   cardPage?: number;
+  // How many images the question carries, when it is about captured figures
+  imageCount?: number;
   // The question in this one's own conversation that it follows on from,
   // when another conversation has been asked in since
   followsOn?: { turn: number; gist: string };
@@ -273,6 +275,7 @@ function askBody(opts: {
   selectedText?: string;
   question?: string;
   pageNumber?: number;
+  imageCount?: number;
 }): string {
   const page = opts.pageNumber ? ` (page ${opts.pageNumber})` : "";
   const language = languageDirective(opts.question, opts.selectedText);
@@ -288,10 +291,12 @@ function askBody(opts: {
       return opts.selectedText
         ? `About this passage${page}:\n\n"${opts.selectedText}"\n\nMy question: ${opts.question}${language}`
         : `${opts.question}`;
-    case "figure":
+    case "figure": {
+      const figures = (opts.imageCount ?? 1) > 1 ? `the ${opts.imageCount} attached figures` : "the attached figure";
       return opts.question
-        ? `I captured the attached figure from the paper. My question: ${opts.question}`
-        : `I captured the attached figure from the paper. Explain it.`;
+        ? `I captured ${figures} from the paper. My question: ${opts.question}`
+        : `I captured ${figures} from the paper. Explain ${(opts.imageCount ?? 1) > 1 ? "them" : "it"}.`;
+    }
     case "followup":
       return opts.question || "";
   }

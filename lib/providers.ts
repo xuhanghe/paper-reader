@@ -8,6 +8,7 @@ import { parseModelSpec, providerIdFor, type ProviderId } from "./model-spec";
 import { effortFor, knownModel } from "./model-catalog";
 import { getEndpoint, listEndpoints } from "./endpoints";
 import { createLineSplitter, parseJsonLine } from "./ndjson";
+import { imageExtension, parseImageDataUrl } from "./message-images";
 import type { ToolResult, ToolSpec } from "./endpoint-tools";
 
 // Multi-provider backend. Every provider emits newline-delimited JSON with
@@ -116,6 +117,8 @@ export type ClaudeRunOptions = {
   resumeId?: string;
   // A captured figure, as base64 PNG: it can only reach the CLI as a stream-json turn on stdin
   imageBase64?: string | null;
+  // Images as data URLs, each sent with its own type, ahead of the prompt
+  images?: string[];
   cwd?: string;
   // How tools are permitted: the Reader skips prompts, the Workspace passes its mode
   permissionArgs?: string[];
@@ -133,8 +136,18 @@ export function claudeModelArgs(model: unknown, effort: unknown): string[] {
   return level ? [...args, "--effort", level] : args;
 }
 
+// The image blocks of a turn sent on stdin; none means the prompt goes as an argument
+function claudeImageBlocks(opts: ClaudeRunOptions): unknown[] {
+  const blocks = (opts.images ?? []).flatMap((url) => {
+    const image = parseImageDataUrl(url);
+    return image ? [{ type: "image", source: { type: "base64", media_type: image.mime, data: image.base64 } }] : [];
+  });
+  if (opts.imageBase64) blocks.unshift({ type: "image", source: { type: "base64", media_type: "image/png", data: opts.imageBase64 } });
+  return blocks;
+}
+
 export function claudeArgs(prompt: string, opts: ClaudeRunOptions = {}): string[] {
-  const viaStdin = !!opts.imageBase64;
+  const viaStdin = claudeImageBlocks(opts).length > 0;
   return [
     "-p", ...(viaStdin ? [] : [sanitizeSpawnArg(prompt)]),
     ...(opts.resumeId ? ["--resume", opts.resumeId] : []),
@@ -169,16 +182,14 @@ export function claudeStream(prompt: string, opts: ClaudeRunOptions = {}): Reada
       };
       const proc = spawn(claudeBin(), claudeArgs(prompt, opts), opts.cwd ? { cwd: opts.cwd } : undefined);
       child = proc;
-      if (opts.imageBase64) {
+      const images = claudeImageBlocks(opts);
+      if (images.length) {
         proc.stdin.write(
           JSON.stringify({
             type: "user",
             message: {
               role: "user",
-              content: [
-                { type: "image", source: { type: "base64", media_type: "image/png", data: opts.imageBase64 } },
-                { type: "text", text: sanitizeSpawnArg(prompt) },
-              ],
+              content: [...images, { type: "text", text: sanitizeSpawnArg(prompt) }],
             },
           }) + "\n"
         );
@@ -532,7 +543,7 @@ function messageBody(
     type: "file",
     mime: img.mime,
     url: img.dataUrl,
-    filename: "figure.png",
+    filename: `figure.${imageExtension(img.mime)}`,
   }));
   parts.push({ type: "text", text: prompt });
   // The effort is the model's own variant name (see lib/model-catalog)

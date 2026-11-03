@@ -31,6 +31,7 @@ import { turnMarker } from "@/lib/citations";
 import { selectedSkillPaths } from "@/lib/skills";
 import { askGist, earlierConversation, earlierConversationSection, freshStartOnLostSession, LOST_SESSION, replayForEndpoint } from "@/lib/session-recovery";
 import { decodeCodexSessionId } from "@/lib/codex-runtime";
+import { imageExtension, parseImageDataUrl, requestImages } from "@/lib/message-images";
 
 export const runtime = "nodejs";
 
@@ -105,8 +106,10 @@ function teeToThread(source: ReadableStream, opts: TeeOpts): ReadableStream {
 export async function POST(req: Request) {
   const {
     paper_id, paper_title, kind, selected_text, question, page_number, read_up_to, current_page, card_page, replaces_turns,
-    image_base64, annotation_id, model, effort, custom, session_id, skills,
+    images_base64, image_base64, annotation_id, model, effort, custom, session_id, skills,
   } = await req.json();
+  // The images the question carries: the list, or the one an older client sends
+  const attached = requestImages(images_base64, image_base64);
 
   if (!paper_id || typeof paper_id !== "string" || !kind) {
     return new Response("paper_id and kind are required", { status: 400 });
@@ -154,8 +157,9 @@ export async function POST(req: Request) {
     currentPage: inView,
     cardPage,
     followsOn,
+    imageCount: attached.length,
   });
-  if (!message.trim() && !image_base64) return new Response("empty request", { status: 400 });
+  if (!message.trim() && !attached.length) return new Response("empty request", { status: 400 });
 
   // Web access is a capability of the reader, not a per-message mode. Agentic
   // providers always keep it available; custom HTTP endpoints have no tool
@@ -176,7 +180,11 @@ export async function POST(req: Request) {
 
   // Captured figures are stored once as files; the thread references the file
   // so history stays complete without re-sending image bytes on replays
-  const figureFile = image_base64 ? await writeFigureImage(paper_id, String(image_base64)) : null;
+  const figureFiles: string[] = [];
+  for (const image of attached) {
+    const file = await writeFigureImage(paper_id, image);
+    if (file) figureFiles.push(file);
+  }
 
   // What a custom endpoint is sent of this conversation is read BEFORE this
   // question is appended to it
@@ -187,8 +195,9 @@ export async function POST(req: Request) {
     text: message,
     kind,
     annotationId: annotation_id,
-    hasImage: !!image_base64,
-    imageFile: figureFile ?? undefined,
+    hasImage: attached.length > 0,
+    imageFile: figureFiles[0],
+    imageFiles: figureFiles.length > 1 ? figureFiles : undefined,
   }).catch(() => {});
 
   const requestedSession = typeof session_id === "string" && session_id ? session_id : undefined;
@@ -225,17 +234,20 @@ export async function POST(req: Request) {
   if (!isResume && provider !== "custom") prompt = await freshPrompt();
 
   const teeOpts: TeeOpts = { paperId: paper_id, annotationId: annotation_id, kind, turn };
-  const base64Data = image_base64 ? String(image_base64).replace(/^data:image\/\w+;base64,/, "") : null;
-
   if (provider === "codex") {
-    let images: string[] | undefined;
-    let cleanup: (() => void) | undefined;
-    if (base64Data) {
-      const tmpPath = path.join(tmpdir(), `paper-reader-fig-${Date.now()}.png`);
-      writeFileSync(tmpPath, Buffer.from(base64Data, "base64"));
-      images = [tmpPath];
-      cleanup = () => { try { unlinkSync(tmpPath); } catch {} };
-    }
+    // Codex is pointed at files: each image is written out for this run
+    const stamp = Date.now();
+    const tmpPaths = attached.flatMap((url, n) => {
+      const image = parseImageDataUrl(url);
+      if (!image) return [];
+      const tmpPath = path.join(tmpdir(), `paper-reader-fig-${stamp}-${n}.${imageExtension(image.mime)}`);
+      writeFileSync(tmpPath, Buffer.from(image.base64, "base64"));
+      return [tmpPath];
+    });
+    const images = tmpPaths.length ? tmpPaths : undefined;
+    const cleanup = tmpPaths.length
+      ? () => { for (const file of tmpPaths) { try { unlinkSync(file); } catch {} } }
+      : undefined;
     // A session Codex no longer has is started again, seeded from the record
     const resumed = codexStream(prompt, { images, model, effort, resumeId: codexResumeId });
     return streamResponse(
@@ -248,7 +260,9 @@ export async function POST(req: Request) {
 
   if (provider === "opencode") {
     const opencodeOpts = {
-      images: image_base64 ? [{ mime: "image/png", dataUrl: String(image_base64) }] : undefined,
+      images: attached.length
+        ? attached.map((dataUrl) => ({ mime: parseImageDataUrl(dataUrl)?.mime ?? "image/png", dataUrl }))
+        : undefined,
       model,
       effort,
       webSearch: true,
@@ -278,10 +292,11 @@ export async function POST(req: Request) {
     const ask = async (tools: boolean) => {
       if (!vision) {
         // Text-only model: never send image payloads
-        return { role: "user", content: image_base64 ? `${message}\n\n(A figure was attached, but this model is text-only — answer from the paper text and conversation context.)` : message };
+        const attachedNote = attached.length > 1 ? `${attached.length} figures were attached` : "A figure was attached";
+        return { role: "user", content: attached.length ? `${message}\n\n(${attachedNote}, but this model is text-only — answer from the paper text and conversation context.)` : message };
       }
       const content: unknown[] = [];
-      if (image_base64) content.push({ type: "image_url", image_url: { url: image_base64 } });
+      for (const url of attached) content.push({ type: "image_url", image_url: { url } });
       if (typeof page_number === "number") {
         for (const n of tools ? [page_number] : [page_number - 1, page_number, page_number + 1]) {
           const img = await readPageImageDataUrl(paper_id, n);
@@ -328,7 +343,7 @@ export async function POST(req: Request) {
       model,
       effort,
       resumeId: resume ? session_id : undefined,
-      imageBase64: base64Data,
+      images: attached,
       onStderr: (chunk) => { stderr = (stderr + chunk).slice(-2000); },
       signal: req.signal,
     });

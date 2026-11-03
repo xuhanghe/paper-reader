@@ -8,7 +8,7 @@
 // rebuilt here is the provider's memory of it.
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { dirFor, readState, readWithdrawn, withoutWithdrawn, type ThreadEntry } from "@/lib/session-store";
+import { dirFor, entryImageFiles, readState, readWithdrawn, withoutWithdrawn, type ThreadEntry } from "@/lib/session-store";
 import type { ConceptEntry } from "@/types/session";
 
 export type AskIndexEntry = { turn: number; kind: string; page?: number; gist: string; ts: number };
@@ -63,9 +63,11 @@ export function askGist(text: string): { page?: number; gist: string } {
     const quote = tidy(passage[2], 70);
     return passage[3] ? { page, gist: `${tidy(passage[3])} — on "${quote}"` } : { page, gist: `"${quote}"` };
   }
-  if (/^I captured the attached figure/.test(body)) {
+  const captured = /^I captured the (?:(\d+) )?attached figures?/.exec(body);
+  if (captured) {
     const question = /My question: ([\s\S]*)$/.exec(body);
-    return { gist: question ? `a captured figure — ${tidy(question[1])}` : "a captured figure" };
+    const what = captured[1] ? `${captured[1]} captured figures` : "a captured figure";
+    return { gist: question ? `${what} — ${tidy(question[1])}` : what };
   }
   if (/^Passages I selected from the paper/.test(body)) {
     // The question follows the labelled quotes
@@ -166,7 +168,7 @@ export async function earlierConversation(id: string, opts: { beforeTurn: number
   return { threadPath: threadPathFor(id), index, takeaways, recent };
 }
 
-const FORMAT = "one JSON object per line ({ts, role, text, kind, annotationId, imageFile}), in order, each message of mine carrying its [turn N] marker";
+const FORMAT = "one JSON object per line ({ts, role, text, kind, annotationId, imageFile, imageFiles when there were several}), in order, each message of mine carrying its [turn N] marker";
 
 export function earlierConversationSection(earlier: EarlierConversation, opts: { agentic: boolean }): string {
   const parts: string[] = [];
@@ -204,21 +206,35 @@ export async function replayForEndpoint(
   entries: ThreadEntry[],
   opts: { vision: boolean; annotationId?: string; readFigure: (ref: string) => Promise<string | null>; max?: number },
 ): Promise<ReplayMessage[]> {
-  const shown = new Map<ThreadEntry, string>();
+  // The budget counts images, so a question that carried several spends more of it
+  const shown = new Map<ThreadEntry, string[]>();
   if (opts.vision) {
+    let left = opts.max ?? REPLAY_FIGURES;
     const own = (e: ThreadEntry) => !!opts.annotationId && e.annotationId === opts.annotationId;
     // Newest first, the conversation asked in ahead of the rest (sort is stable)
-    const figures = entries.filter((e) => e.role === "user" && e.imageFile).reverse().sort((a, b) => Number(own(b)) - Number(own(a)));
+    const figures = entries.filter((e) => e.role === "user" && entryImageFiles(e).length).reverse().sort((a, b) => Number(own(b)) - Number(own(a)));
     for (const entry of figures) {
-      if (shown.size >= (opts.max ?? REPLAY_FIGURES)) break;
-      const url = await opts.readFigure(entry.imageFile!);
-      if (url) shown.set(entry, url);
+      if (left <= 0) break;
+      const urls: string[] = [];
+      for (const ref of entryImageFiles(entry)) {
+        if (urls.length >= left) break;
+        const url = await opts.readFigure(ref);
+        if (url) urls.push(url);
+      }
+      if (urls.length) {
+        shown.set(entry, urls);
+        left -= urls.length;
+      }
     }
   }
   return entries.map((entry) => {
-    const url = shown.get(entry);
-    if (url) return { role: entry.role, content: [{ type: "image_url", image_url: { url } }, { type: "text", text: entry.text }] };
-    const figure = entry.role === "user" && (entry.imageFile || entry.hasImage);
+    const urls = shown.get(entry);
+    if (urls) {
+      const total = entryImageFiles(entry).length;
+      const text = urls.length < total ? `(I attached ${total} figures to this message; ${urls.length} of them are shown here.)\n${entry.text}` : entry.text;
+      return { role: entry.role, content: [...urls.map((url) => ({ type: "image_url", image_url: { url } })), { type: "text", text }] };
+    }
+    const figure = entry.role === "user" && (entryImageFiles(entry).length || entry.hasImage);
     return { role: entry.role, content: figure ? `${FIGURE_NOT_SHOWN}\n${entry.text}` : entry.text };
   });
 }

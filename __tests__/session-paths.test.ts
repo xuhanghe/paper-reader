@@ -19,7 +19,20 @@ describe("writeFigureImage", () => {
     const ref = await writeFigureImage(ID, PNG);
     assert.ok(ref, "expected a reference");
     assert.equal(path.isAbsolute(ref), false, `got an absolute path: ${ref}`);
-    assert.match(ref, /^figures\/fig-\d+\.png$/);
+    assert.match(ref, /^figures\/fig-[\d-]+\.png$/);
+  });
+
+  test("several figures written at once each get a file of their own", async () => {
+    const refs = await Promise.all([writeFigureImage(ID, PNG), writeFigureImage(ID, PNG), writeFigureImage(ID, PNG)]);
+    assert.equal(new Set(refs).size, 3, `names collided: ${refs.join(", ")}`);
+    const written = await readdir(figuresDirFor(ID));
+    for (const ref of refs) assert.ok(written.includes(path.basename(ref!)));
+  });
+
+  test("a JPEG keeps its bytes", async () => {
+    const ref = (await writeFigureImage(ID, "data:image/jpeg;base64,/9j/4AAQ"))!;
+    const { readFile } = await import("node:fs/promises");
+    assert.equal((await readFile(path.join(dirFor(ID), ref))).toString("base64"), "/9j/4AAQ");
   });
 
   test("the reference resolves to the file it just wrote", async () => {

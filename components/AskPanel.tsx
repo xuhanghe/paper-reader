@@ -10,6 +10,7 @@ import { withQuotes, quotePreview, quoteLabel, parseQuotes, addQuote as pushQuot
 import { clearMarks, markTextInContainer } from "@/lib/highlight-dom";
 import { GrowingTextarea } from "./GrowingTextarea";
 import { CollapsedRail } from "./ResizablePanel";
+import { MAX_ATTACHED_IMAGES, messageImages } from "@/lib/message-images";
 
 type Props = {
   annotations: Annotation[];
@@ -18,7 +19,7 @@ type Props = {
   streamingIds: Set<string>;
   // What a model reading with tools is doing before its answer starts, by conversation
   activities?: Record<string, string>;
-  onFollowUp: (annotationId: string, question: string, imageDataUrl?: string) => void;
+  onFollowUp: (annotationId: string, question: string, images?: string[]) => void;
   // Cancel the answer being streamed into a conversation
   onStop?: (annotationId: string) => void;
   // Rewrite a question already asked and send it again
@@ -26,7 +27,7 @@ type Props = {
   // Take a follow-up and its answer (messages start to end) out of their
   // conversation; the host deletes it from the paper's thread as well
   onDeletePair?: (annotationId: string, start: number, end: number) => void;
-  onAskGeneral: (question: string, imageDataUrl?: string, reference?: { key: string; title: string }, webSearch?: boolean) => void;
+  onAskGeneral: (question: string, images?: string[], reference?: { key: string; title: string }, webSearch?: boolean) => void;
   onDelete: (annotationId: string) => void;
   onReExplainImage: (annotationId: string) => void;
   onViewInPdf: (annotationId: string) => void;
@@ -167,10 +168,11 @@ const FONT_SIZES = [12, 13, 14, 15, 16, 17, 18, 20];
 const DEFAULT_FONT_IDX = 3; // 15px
 const COLLAPSE_CHARS = 300;
 
-// An image attached to a draft, kept for the session: too large for the
-// drafts store, but it should still be there after a crossing to the
+// The images attached to a draft, kept for the session: too large for the
+// drafts store, but they should still be there after a crossing to the
 // Workspace and back
-const composerImageMemory = new Map<string, string>();
+const composerImageMemory = new Map<string, string[]>();
+const NO_IMAGES: string[] = [];
 
 export const ExplainPanel = memo(function ExplainPanel({ annotations, activeId, model, streamingIds, activities, onFollowUp, onStop, onEditMessage, onDeletePair, onAskGeneral, onDelete, onReExplainImage, onViewInPdf, onFocusedChange, onCitePaper, annotationRefs, scrollHandle, isOpen, onToggle, width = 460, modelControls, positionKey, askSeq }: Props) {
   // One composer for both kinds of question. What is typed is kept across
@@ -178,7 +180,7 @@ export const ExplainPanel = memo(function ExplainPanel({ annotations, activeId, 
   // What is being typed, kept per paper: see lib/drafts
   const draftKey = positionKey ? `reader:${positionKey}` : null;
   const [draft, setDraft] = useState(() => loadDraft(draftKey)?.text ?? "");
-  const [composerImage, setComposerImage] = useState<string | null>(() => (draftKey ? composerImageMemory.get(draftKey) ?? null : null));
+  const [composerImages, setComposerImages] = useState<string[]>(() => (draftKey ? composerImageMemory.get(draftKey) ?? NO_IMAGES : NO_IMAGES));
   // Where the next question goes: into the conversation you are on, or a
   // new one about the paper. Follow up is the default whenever there is a
   // conversation to follow up on; with none, the box can only ask anew.
@@ -203,11 +205,22 @@ export const ExplainPanel = memo(function ExplainPanel({ annotations, activeId, 
     }, 300);
   };
 
-  const readImageFile = (file: File) => {
-    const reader = new FileReader();
-    reader.onload = () => setComposerImage(reader.result as string);
-    reader.readAsDataURL(file);
+  // Images join the ones already attached, in the order given, up to the
+  // most one question carries
+  const attachImages = (files: File[]) => {
+    const images = files.filter((file) => file.type.startsWith("image/"));
+    if (!images.length) return;
+    Promise.all(images.map((file) => new Promise<string | null>((resolve) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(typeof reader.result === "string" ? reader.result : null);
+      reader.onerror = () => resolve(null);
+      reader.readAsDataURL(file);
+    }))).then((urls) => {
+      const read = urls.filter((url): url is string => !!url);
+      if (read.length) setComposerImages((current) => [...current, ...read].slice(0, MAX_ATTACHED_IMAGES));
+    });
   };
+  const removeImage = (index: number) => setComposerImages((current) => current.filter((_, i) => i !== index));
 
   // An image dragged onto the panel — a screenshot from the desktop, a
   // figure from a page — is attached to the next question, as a pasted or
@@ -244,12 +257,16 @@ export const ExplainPanel = memo(function ExplainPanel({ annotations, activeId, 
       setDropping(false);
       const dt = e.dataTransfer;
       if (!dt) return;
-      const file = Array.from(dt.files || []).find((f) => f.type.startsWith("image/"))
-        ?? Array.from(dt.items || []).find((item) => item.kind === "file" && item.type.startsWith("image/"))?.getAsFile()
-        ?? null;
-      if (!file) return;
+      let files = Array.from(dt.files || []).filter((f) => f.type.startsWith("image/"));
+      if (!files.length) {
+        files = Array.from(dt.items || [])
+          .filter((item) => item.kind === "file" && item.type.startsWith("image/"))
+          .map((item) => item.getAsFile())
+          .filter((f): f is File => !!f);
+      }
+      if (!files.length) return;
       e.preventDefault();
-      readImageFile(file);
+      attachImages(files);
     },
   };
   const dropHint = dropping && (
@@ -258,7 +275,7 @@ export const ExplainPanel = memo(function ExplainPanel({ annotations, activeId, 
       style={{ background: "rgba(12,15,18,0.72)", border: "2px dashed var(--accent)", borderRadius: 8, color: "var(--accent)" }}
       data-drop-hint=""
     >
-      <span className="text-sm font-medium">Drop the image to attach it to your next question</span>
+      <span className="text-sm font-medium">Drop images to attach them to your next question</span>
     </div>
   );
 
@@ -290,7 +307,7 @@ export const ExplainPanel = memo(function ExplainPanel({ annotations, activeId, 
     const stored = loadDraft(draftKey);
     setDraft(stored?.text ?? "");
     setQuotes(stored?.quotes ?? []);
-    setComposerImage(draftKey ? composerImageMemory.get(draftKey) ?? null : null);
+    setComposerImages(draftKey ? composerImageMemory.get(draftKey) ?? NO_IMAGES : NO_IMAGES);
   }
   // Saved a moment after each change, for a refresh; and at once when the
   // paper or the surface is left, from what the last change committed
@@ -307,9 +324,9 @@ export const ExplainPanel = memo(function ExplainPanel({ annotations, activeId, 
   }, [draftKey]);
   useEffect(() => {
     if (!draftKey) return;
-    if (composerImage) composerImageMemory.set(draftKey, composerImage);
+    if (composerImages.length) composerImageMemory.set(draftKey, composerImages);
     else composerImageMemory.delete(draftKey);
-  }, [draftKey, composerImage]);
+  }, [draftKey, composerImages]);
   const [pendingQuote, setPendingQuote] = useState<{ text: string; source?: string; top: number; left: number } | null>(null);
   // The box last typed in, so clicking a quote drops its label at the cursor
   // rather than making the reader remember which number was which
@@ -1397,15 +1414,15 @@ export const ExplainPanel = memo(function ExplainPanel({ annotations, activeId, 
     const text = draft.trim();
     if (!text) return;
     if (mode === "followup" && target) {
-      onFollowUp(target.id, withQuotes(text, quotes), composerImage || undefined);
+      onFollowUp(target.id, withQuotes(text, quotes), composerImages.length ? composerImages : undefined);
     } else {
-      onAskGeneral(withQuotes(text, quotes), composerImage || undefined, composerRef || undefined, true);
+      onAskGeneral(withQuotes(text, quotes), composerImages.length ? composerImages : undefined, composerRef || undefined, true);
       setComposerRef(null);
       setRefPickerOpen(false);
     }
     setQuotes([]);
     setDraft("");
-    setComposerImage(null);
+    setComposerImages(NO_IMAGES);
   };
   const stoppable = !!target && mode === "followup" && streamingIds.has(target.id) && !!onStop;
   // Quoted passages ride along with whichever question is asked next, in
@@ -1478,14 +1495,14 @@ export const ExplainPanel = memo(function ExplainPanel({ annotations, activeId, 
         </div>
       )}
 
-      {(composerImage || composerRef) && (
-        <div className="flex items-center gap-2 flex-wrap">
-          {composerImage && (
-            <span className="inline-flex items-center gap-1.5">
-              <img src={composerImage} alt="attached" className="max-h-12 object-contain" style={{ border: "1px solid var(--accent)", borderRadius: "3px" }} />
-              <button onClick={() => setComposerImage(null)} className="btn-icon w-5 h-5 text-[10px]" title="Remove image">✕</button>
+      {(composerImages.length > 0 || composerRef) && (
+        <div className="flex items-center gap-2 flex-wrap" data-attached-images={composerImages.length || undefined}>
+          {composerImages.map((src, index) => (
+            <span key={index} className="inline-flex items-center gap-1">
+              <img src={src} alt={`attached image ${index + 1}`} className="max-h-12 object-contain" style={{ border: "1px solid var(--accent)", borderRadius: "3px" }} />
+              <button onClick={() => removeImage(index)} className="btn-icon w-5 h-5 text-[10px]" title="Remove this image">✕</button>
             </span>
-          )}
+          ))}
           {composerRef && (
             <span className="inline-flex items-center gap-1 text-[11px] px-2 py-1 rounded max-w-[260px]" style={{ background: "var(--badge-fig-bg)", color: "var(--badge-fig-fg)" }}>
               <span className="truncate">@ {composerRef.title}</span>
@@ -1540,31 +1557,32 @@ export const ExplainPanel = memo(function ExplainPanel({ annotations, activeId, 
         >
           @
         </button>
-        <label className="btn-icon w-7 h-7 text-sm shrink-0 cursor-pointer flex items-center justify-center" title="Attach an image">
+        <label className="btn-icon w-7 h-7 text-sm shrink-0 cursor-pointer flex items-center justify-center" title={`Attach images (up to ${MAX_ATTACHED_IMAGES})`}>
           📎
           <input
             type="file"
             accept="image/*"
+            multiple
             className="hidden"
             onChange={(e) => {
-              const file = e.target.files?.[0];
-              if (file) readImageFile(file);
+              attachImages(Array.from(e.target.files ?? []));
               e.target.value = "";
             }}
           />
         </label>
         <GrowingTextarea
           value={draft}
-          placeholder={mode === "followup" ? "Ask a follow-up… (paste a figure to attach it)" : "Ask anything about the paper — web available…"}
+          placeholder={mode === "followup" ? "Ask a follow-up… (paste figures to attach them)" : "Ask anything about the paper — web available…"}
           onChange={(e) => setDraft(e.target.value)}
           data-composer={mode === "followup" ? "followup" : "general"}
           onPaste={(e) => {
-            const file = Array.from(e.clipboardData.items)
-              .find((item) => item.type.startsWith("image/"))
-              ?.getAsFile();
-            if (file) {
+            const files = Array.from(e.clipboardData.items)
+              .filter((item) => item.kind === "file" && item.type.startsWith("image/"))
+              .map((item) => item.getAsFile())
+              .filter((f): f is File => !!f);
+            if (files.length) {
               e.preventDefault();
-              readImageFile(file);
+              attachImages(files);
             }
           }}
           onKeyDown={(e) => {
@@ -2051,14 +2069,19 @@ export const ExplainPanel = memo(function ExplainPanel({ annotations, activeId, 
 
                       {isUser ? (
                         <>
-                          {msg.imageDataUrl && (
-                            <img
-                              src={msg.imageDataUrl}
-                              alt="attached figure"
-                              className="max-h-28 object-contain mb-1.5 cursor-zoom-in"
-                              style={{ border: "1px solid var(--border)", borderRadius: "3px" }}
-                              onClick={() => setLightboxState({ src: msg.imageDataUrl!, annotationId: annotation.id })}
-                            />
+                          {messageImages(msg).length > 0 && (
+                            <div className="flex flex-wrap gap-1.5 mb-1.5">
+                              {messageImages(msg).map((src, n) => (
+                                <img
+                                  key={n}
+                                  src={src}
+                                  alt={`attached figure ${n + 1}`}
+                                  className="max-h-28 max-w-full object-contain cursor-zoom-in"
+                                  style={{ border: "1px solid var(--border)", borderRadius: "3px" }}
+                                  onClick={() => setLightboxState({ src, annotationId: annotation.id })}
+                                />
+                              ))}
+                            </div>
                           )}
                           {isEditing ? (
                             <div className="flex flex-col gap-1.5" data-editing="">

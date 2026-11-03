@@ -29,6 +29,7 @@ import { SetupDialog } from "@/components/SetupDialog";
 import { loadOpenTabs, saveOpenTabs, subscribeOpenTabs, upsertOpenTab } from "@/lib/open-tabs";
 import { cacheDocument, forgetDocument, getCachedDocument } from "@/lib/document-cache";
 import { fetchZoteroDocument } from "@/lib/paper-data";
+import { imageFields, messageImages } from "@/lib/message-images";
 import { useAgentSkills } from "@/hooks/useAgentSkills";
 import { ResizeHandle, usePanelWidth } from "@/components/ResizablePanel";
 import { sameItems, useStableValue } from "@/hooks/useStableValue";
@@ -696,7 +697,8 @@ export default function Home() {
         read_up_to?: number;
         // The page of the card a follow-up is asked in
         card_page?: number;
-        image_base64?: string;
+        // The images attached to the question, as data URLs
+        images_base64?: string[];
         web_search?: boolean;
       }
     ) => {
@@ -911,13 +913,14 @@ export default function Home() {
   // "Ask anything" composer: paper text as context, optional image and a
   // referenced paper from the Zotero library
   const handleAskGeneral = useCallback(
-    async (question: string, imageDataUrl?: string, reference?: { key: string; title: string }, webSearch?: boolean) => {
+    async (question: string, images?: string[], reference?: { key: string; title: string }, webSearch?: boolean) => {
       const displayContent = reference ? `${question}\n\n(referencing: ${reference.title})` : question;
       const id = addAnnotation({
-        type: imageDataUrl ? "image" : "text",
-        imageDataUrl: imageDataUrl || undefined,
+        type: images?.length ? "image" : "text",
+        // The card shows the first; the question carries them all
+        imageDataUrl: images?.[0],
         messages: [
-          { role: "user", content: displayContent, ...(imageDataUrl ? { imageDataUrl } : {}) },
+          { role: "user", content: displayContent, ...imageFields(images) },
           { role: "assistant", content: "" },
         ],
       });
@@ -934,9 +937,9 @@ export default function Home() {
       }
 
       streamAsk(id, {
-        kind: imageDataUrl ? "figure" : "question",
+        kind: images?.length ? "figure" : "question",
         question: fusedQuestion,
-        image_base64: imageDataUrl,
+        images_base64: images,
         web_search: webSearch,
         read_up_to: readingPage(),
       });
@@ -1049,7 +1052,8 @@ export default function Home() {
       if (!annotation || previous?.role !== "user" || !text.trim()) return;
 
       stopAsk(annotationId);
-      replaceMessageFrom(annotationId, index, { role: "user", content: text, imageDataUrl: previous.imageDataUrl });
+      const images = messageImages(previous);
+      replaceMessageFrom(annotationId, index, { role: "user", content: text, ...imageFields(images) });
       setActiveAnnotationId(annotationId);
 
       // Re-editing the opening question keeps it grounded in its passage; later
@@ -1060,7 +1064,7 @@ export default function Home() {
         question: text,
         selected_text: opening ? annotation.selectedText : undefined,
         page_number: opening ? annotation.pageNumber : undefined,
-        image_base64: previous.imageDataUrl,
+        images_base64: images,
         read_up_to: annotation.pageNumber ?? readingPage(),
         card_page: annotation.pageNumber,
         replaces_turns: annotation.messages.slice(index).map((m) => m.turn).filter((t): t is number => !!t),
@@ -1318,7 +1322,7 @@ export default function Home() {
         messages: [{ role: "assistant", content: "" }],
       });
       setActiveAnnotationId(id);
-      streamAsk(id, { kind: "figure", image_base64: result.imageDataUrl });
+      streamAsk(id, { kind: "figure", images_base64: [result.imageDataUrl] });
     },
     [addAnnotation, streamAsk]
   );
@@ -1335,23 +1339,23 @@ export default function Home() {
         messages: [{ role: "assistant", content: "" }],
       });
       setActiveAnnotationId(id);
-      streamAsk(id, { kind: "figure", image_base64: annotation.imageDataUrl });
+      streamAsk(id, { kind: "figure", images_base64: [annotation.imageDataUrl] });
     },
     [session.annotations, addAnnotation, streamAsk]
   );
 
   const handleFollowUp = useCallback(
-    (annotationId: string, question: string, imageDataUrl?: string) => {
+    (annotationId: string, question: string, images?: string[]) => {
       const annotation = session.annotations.find((a) => a.id === annotationId);
       if (!annotation) return;
 
-      appendMessage(annotationId, "user", question, imageDataUrl);
+      appendMessage(annotationId, "user", question, images);
       appendMessage(annotationId, "assistant", "");
       setActiveAnnotationId(annotationId);
 
       // Follow-ups continue the fused paper conversation — the model already
       // has this card's context from earlier turns
-      streamAsk(annotationId, { kind: "followup", question, image_base64: imageDataUrl, read_up_to: annotation.pageNumber ?? readingPage(), card_page: annotation.pageNumber });
+      streamAsk(annotationId, { kind: "followup", question, images_base64: images, read_up_to: annotation.pageNumber ?? readingPage(), card_page: annotation.pageNumber });
     },
     [appendMessage, session.annotations, streamAsk, readingPage]
   );

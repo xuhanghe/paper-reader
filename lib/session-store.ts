@@ -39,6 +39,9 @@ export type ThreadEntry = {
   // complete without re-injecting image bytes on replay. Relative to the
   // session directory; see resolveSessionFile.
   imageFile?: string;
+  // Every figure, when a question carried several; imageFile is the first.
+  // Read both through entryImageFiles.
+  imageFiles?: string[];
   // On an answer, the turn it answers. Answers written before turns could be
   // withdrawn carry none.
   turn?: number;
@@ -252,6 +255,16 @@ export async function readPageImageDataUrl(id: string, n: number): Promise<strin
 
 export const figuresDirFor = (id: string) => path.join(dirFor(id), "figures");
 
+/** Every figure a thread entry refers to, whichever way it was recorded. */
+export function entryImageFiles(entry: Pick<ThreadEntry, "imageFile" | "imageFiles">): string[] {
+  if (Array.isArray(entry.imageFiles) && entry.imageFiles.length) return entry.imageFiles;
+  return entry.imageFile ? [entry.imageFile] : [];
+}
+
+// Names never collide, though several figures of one question are written in
+// the same millisecond
+let figureCount = 0;
+
 // Returns the reference to record in the thread — relative to the session
 // directory, never an absolute path: the thread outlives any one checkout, and
 // an absolute path would also carry the user's home directory into replayed
@@ -259,8 +272,8 @@ export const figuresDirFor = (id: string) => path.join(dirFor(id), "figures");
 export async function writeFigureImage(id: string, dataUrl: string): Promise<string | null> {
   try {
     await mkdir(figuresDirFor(id), { recursive: true });
-    const base64 = dataUrl.replace(/^data:image\/\w+;base64,/, "");
-    const name = `fig-${Date.now()}.png`;
+    const base64 = dataUrl.replace(/^data:image\/[\w.+-]+;base64,/, "");
+    const name = `fig-${Date.now()}-${process.pid}-${++figureCount}.png`;
     await writeFile(path.join(figuresDirFor(id), name), Buffer.from(base64, "base64"));
     return path.posix.join("figures", name);
   } catch {
@@ -505,12 +518,14 @@ export function deleteFromThread(id: string, what: { turns?: number[]; conversat
     const remaining = lines.filter((l) => !l.entry || kept.has(l.entry));
     await writeAtomic(threadPathFor(id), remaining.map((l) => `${l.line}\n`).join(""));
     // The figures only the deleted entries used
-    const used = new Set(entriesOf(remaining).flatMap((e) => (e.imageFile ? [sessionRelativeFile(id, e.imageFile)] : [])));
+    const used = new Set(entriesOf(remaining).flatMap((e) => entryImageFiles(e).map((f) => sessionRelativeFile(id, f))));
     for (const entry of entries) {
-      if (!entry.imageFile || kept.has(entry)) continue;
-      const ref = sessionRelativeFile(id, entry.imageFile);
-      const file = path.resolve(dirFor(id), ref);
-      if (!used.has(ref) && file.startsWith(figuresDirFor(id) + path.sep)) await unlink(file).catch(() => {});
+      if (kept.has(entry)) continue;
+      for (const figure of entryImageFiles(entry)) {
+        const ref = sessionRelativeFile(id, figure);
+        const file = path.resolve(dirFor(id), ref);
+        if (!used.has(ref) && file.startsWith(figuresDirFor(id) + path.sep)) await unlink(file).catch(() => {});
+      }
     }
   });
 }

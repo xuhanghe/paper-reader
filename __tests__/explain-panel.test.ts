@@ -778,7 +778,7 @@ describe("one composer, a switch for where the question goes", () => {
         createElement(ExplainPanel, {
           annotations, activeId, model: "m", streamingIds: new Set<string>(),
           onFollowUp: (id: string, q: string) => { followUps.push([id, q]); },
-          onAskGeneral: (q: string, _img?: string, _ref?: unknown, web?: boolean) => { generals.push([q, web]); },
+          onAskGeneral: (q: string, _images?: string[], _ref?: unknown, web?: boolean) => { generals.push([q, web]); },
           onDelete: () => {}, onReExplainImage: () => {}, onViewInPdf: () => {},
           annotationRefs: { current: {} }, isOpen: true, onToggle: () => {},
         })
@@ -895,9 +895,56 @@ describe("dropping an image on the panel", () => {
     assert.equal(host.querySelector("[data-drop-hint]"), null);
     // The file is read asynchronously
     let attached: HTMLImageElement | null = null;
-    for (let i = 0; i < 40 && !attached; i++) { await act(async () => { await new Promise((r) => setTimeout(r, 25)); }); attached = host.querySelector('img[alt="attached"]'); }
+    for (let i = 0; i < 40 && !attached; i++) { await act(async () => { await new Promise((r) => setTimeout(r, 25)); }); attached = host.querySelector("[data-attached-images] img"); }
     assert.ok(attached, "the image is attached to the composer");
     assert.match(attached!.src, /^data:image\/png/);
+  });
+
+  test("several images dropped, chosen or added later all ride with the question, and each can be taken off", async () => {
+    const host = freshRoot();
+    const sent: [string, string, string[] | undefined][] = [];
+    act(() => { createRoot(host).render(createElement(ExplainPanel, { annotations: [CARD_A], activeId: "a1", model: "m", streamingIds: new Set<string>(), onFollowUp: (id: string, q: string, images?: string[]) => { sent.push([id, q, images]); }, onAskGeneral: () => {}, onDelete: () => {}, onReExplainImage: () => {}, onViewInPdf: () => {}, annotationRefs: { current: {} }, isOpen: true, onToggle: () => {} })); });
+    const panel = host.querySelector(".pr-explain-panel") as HTMLElement;
+    const file = (name: string, type: string, bytes: number[]) => new dom.window.File([new Uint8Array(bytes)], name, { type });
+    const thumbs = () => Array.from(host.querySelectorAll<HTMLImageElement>("[data-attached-images] img"));
+    const waitFor = async (n: number) => { for (let i = 0; i < 40 && thumbs().length !== n; i++) await act(async () => { await new Promise((r) => setTimeout(r, 25)); }); };
+    // Two dropped at once, a text file among them left out
+    act(() => { panel.dispatchEvent(dragEvent("dragenter", [])); });
+    act(() => { panel.dispatchEvent(dragEvent("drop", [file("a.png", "image/png", [137, 80]), file("notes.txt", "text/plain", [65]), file("b.jpg", "image/jpeg", [255, 216])])); });
+    await waitFor(2);
+    assert.deepEqual(thumbs().map((img) => img.src.slice(0, 15)), ["data:image/png;", "data:image/jpeg"]);
+    // A third from the picker, which takes several
+    const input = host.querySelector('input[type="file"]') as HTMLInputElement;
+    assert.ok(input.multiple, "the picker takes several files");
+    Object.defineProperty(input, "files", { configurable: true, value: [file("c.gif", "image/gif", [71, 73])] });
+    act(() => { input.dispatchEvent(new dom.window.Event("change", { bubbles: true })); });
+    await waitFor(3);
+    // The middle one taken off
+    const remove = host.querySelectorAll<HTMLButtonElement>('[data-attached-images] button[title="Remove this image"]');
+    assert.equal(remove.length, 3);
+    act(() => { remove[1].click(); });
+    assert.deepEqual(thumbs().map((img) => img.src.slice(0, 15)), ["data:image/png;", "data:image/gif;"]);
+    // Sent: both go, and the box is empty again
+    const box = host.querySelector('textarea[data-composer="followup"]') as HTMLTextAreaElement;
+    act(() => {
+      Object.getOwnPropertyDescriptor(dom.window.HTMLTextAreaElement.prototype, "value")!.set!.call(box, "compare these");
+      box.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+    });
+    act(() => { box.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Enter", bubbles: true })); });
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0][2]?.length, 2);
+    assert.match(sent[0][2]![0], /^data:image\/png/);
+    assert.match(sent[0][2]![1], /^data:image\/gif/);
+    assert.equal(thumbs().length, 0);
+  });
+
+  test("a question that carried several images shows every one of them", () => {
+    const card = { ...CARD_A, messages: [{ role: "user" as const, content: "two figures", imageDataUrls: ["data:image/png;base64,AA", "data:image/png;base64,BB"] }, { role: "assistant" as const, content: "ok" }] };
+    const html = renderPanel([card]);
+    assert.match(html, /alt="attached figure 1"/);
+    assert.match(html, /alt="attached figure 2"/);
+    const single = { ...CARD_A, messages: [{ role: "user" as const, content: "one", imageDataUrl: "data:image/png;base64,CC" }, { role: "assistant" as const, content: "ok" }] };
+    assert.match(renderPanel([single]), /src="data:image\/png;base64,CC"/, "one saved the old way still shows");
   });
 
   test("a drag that carries no file is left alone", () => {

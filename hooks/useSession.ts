@@ -6,6 +6,7 @@ import { cacheDocument, getCachedDocument } from "@/lib/document-cache";
 import { fetchZoteroDocument } from "@/lib/paper-data";
 import { sessionIdFor, legacySessionIdFor } from "@/lib/session-id";
 import { uid } from "@/lib/uid";
+import { imageFields } from "@/lib/message-images";
 
 const DEFAULT_STATE: SessionState = {
   pdfName: "",
@@ -448,12 +449,12 @@ export function useSession() {
     return id;
   }, []);
 
-  const appendMessage = useCallback((annotationId: string, role: "user" | "assistant", content: string, imageDataUrl?: string) => {
+  const appendMessage = useCallback((annotationId: string, role: "user" | "assistant", content: string, images?: string[]) => {
     setSession((s) => ({
       ...s,
       annotations: s.annotations.map((a) =>
         a.id === annotationId
-          ? { ...a, messages: [...a.messages, imageDataUrl ? { role, content, imageDataUrl } : { role, content }] }
+          ? { ...a, messages: [...a.messages, { role, content, ...imageFields(images) }] }
           : a
       ),
     }));

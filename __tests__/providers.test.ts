@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { codexArgs, codexExitMessage, codexStream, parseCustomConfig, toAnthropicMessages } from "../lib/providers.js";
+import { claudeArgs, claudeStream, codexArgs, codexExitMessage, codexStream, parseCustomConfig, toAnthropicMessages } from "../lib/providers.js";
 import { providerIdFor } from "../lib/provider-id.js";
 
 describe("providerIdFor", () => {
@@ -181,5 +181,48 @@ describe("toAnthropicMessages", () => {
 
   test("returns no system field when there is no system message", () => {
     assert.equal(toAnthropicMessages([{ role: "user", content: "hi" }]).system, undefined);
+  });
+});
+
+// Images reach the claude CLI only as a stream-json turn on stdin: every one
+// of them, each with its own type, since the API refuses an image whose
+// declared type is not what its bytes are.
+describe("claude CLI with several images", () => {
+  const PNG = "data:image/png;base64,iVBORw0KGgo=";
+  const JPEG = "data:image/jpeg;base64,/9j/4AAQ";
+
+  test("with images the prompt goes on stdin, not as an argument", () => {
+    const args = claudeArgs("the question", { images: [PNG, JPEG] });
+    assert.ok(!args.includes("the question"));
+    assert.ok(args.join(" ").includes("--input-format stream-json"));
+    assert.ok(claudeArgs("the question").includes("the question"), "without, it stays an argument");
+  });
+
+  test("every image is sent, typed, ahead of the question", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "paper-reader-claude-"));
+    const fake = path.join(dir, "claude");
+    const out = path.join(dir, "stdin.json");
+    await writeFile(fake, `#!/usr/bin/env node
+let input = "";
+process.stdin.on("data", (d) => { input += d; });
+process.stdin.on("end", () => { require("fs").writeFileSync(${JSON.stringify(out)}, input); process.stdout.write(JSON.stringify({ type: "result", subtype: "success" }) + "\\n"); });
+`);
+    await chmod(fake, 0o755);
+    const previous = process.env.CLAUDE_BIN;
+    try {
+      process.env.CLAUDE_BIN = fake;
+      const reader = claudeStream("compare them", { images: [PNG, JPEG] }).getReader();
+      while (!(await reader.read()).done) { /* drain */ }
+      const turn = JSON.parse((await import("node:fs")).readFileSync(out, "utf8").trim());
+      const content = turn.message.content as { type: string; source?: { media_type: string; data: string }; text?: string }[];
+      assert.deepEqual(content.map((c) => c.type), ["image", "image", "text"]);
+      assert.deepEqual(content.slice(0, 2).map((c) => c.source!.media_type), ["image/png", "image/jpeg"]);
+      assert.equal(content[1].source!.data, "/9j/4AAQ");
+      assert.equal(content[2].text, "compare them");
+    } finally {
+      if (previous === undefined) delete process.env.CLAUDE_BIN;
+      else process.env.CLAUDE_BIN = previous;
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });

@@ -10,6 +10,9 @@ export type Message = {
   role: "user" | "assistant";
   content: string;
   imageDataUrl?: string; // figure attached to a user message
+  // Several attached to one question; one is kept in imageDataUrl. Read both
+  // through messageImages (lib/message-images).
+  imageDataUrls?: string[];
   // The number this ask was given in the fused thread. An answer citing
   // `turn:N` resolves to the message carrying it. Absent on messages from
   // before citations existed, and on ones the model never saw.

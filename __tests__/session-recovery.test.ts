@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
-  appendThread, conversationTurns, countAsks, deleteFromThread, dirFor, furthestPageAsked, lastTurn, readFigureDataUrl, readThread, readWithdrawn, withdrawTurns, withoutWithdrawn, writeState, type ThreadEntry,
+  appendThread, conversationTurns, entryImageFiles, writeFigureImage, countAsks, deleteFromThread, dirFor, furthestPageAsked, lastTurn, readFigureDataUrl, readThread, readWithdrawn, withdrawTurns, withoutWithdrawn, writeState, type ThreadEntry,
 } from "../lib/session-store.js";
 import {
   askGist, chatHistorySection, earlierConversation, earlierConversationSection, entriesBefore, freshStartOnLostSession,
@@ -383,5 +383,44 @@ describe("a fresh start on a lost session", () => {
       LOST_SESSION.codex,
     ));
     assert.ok(out.includes("rate limited") && !out.includes("never"));
+  });
+});
+
+// A question can carry several figures. The thread records them all, an
+// endpoint is sent as many as the budget allows, and deleting the question
+// deletes every one of its files.
+describe("a question with several figures", () => {
+  const M = "__multi-figure-test__";
+  after(() => rm(dirFor(M), { recursive: true, force: true }));
+
+  test("the record lists them all, and one recorded the old way still reads", () => {
+    assert.deepEqual(entryImageFiles({ imageFile: "figures/a.png", imageFiles: ["figures/a.png", "figures/b.png"] }), ["figures/a.png", "figures/b.png"]);
+    assert.deepEqual(entryImageFiles({ imageFile: "figures/a.png" }), ["figures/a.png"]);
+    assert.deepEqual(entryImageFiles({}), []);
+  });
+
+  test("an endpoint that reads images is sent as many as the budget allows, and told of the rest", async () => {
+    const entry: ThreadEntry = { ts: 1, role: "user", text: marker(1, "compare"), annotationId: "A", imageFile: "figures/a.png", imageFiles: ["figures/a.png", "figures/b.png", "figures/c.png"] };
+    const readFigure = async (ref: string) => `data:image/png;base64,${path.basename(ref)}`;
+    const all = await replayForEndpoint([entry], { vision: true, annotationId: "A", readFigure, max: 5 });
+    const parts = all[0].content as { type: string; image_url?: { url: string }; text?: string }[];
+    assert.deepEqual(parts.filter((p) => p.type === "image_url").map((p) => p.image_url!.url), ["data:image/png;base64,a.png", "data:image/png;base64,b.png", "data:image/png;base64,c.png"]);
+    assert.equal(parts.at(-1)!.text, marker(1, "compare"));
+    const capped = await replayForEndpoint([entry], { vision: true, annotationId: "A", readFigure, max: 2 });
+    const cappedParts = capped[0].content as { type: string; text?: string }[];
+    assert.equal(cappedParts.filter((p) => p.type === "image_url").length, 2);
+    assert.match(cappedParts.at(-1)!.text!, /^\(I attached 3 figures to this message; 2 of them are shown here\.\)/);
+  });
+
+  test("deleting the question deletes every one of its figures, and none another question uses", async () => {
+    const PNG = "data:image/png;base64,iVBORw0KGgo=";
+    const [a, b] = await Promise.all([writeFigureImage(M, PNG), writeFigureImage(M, PNG)]);
+    const kept = await writeFigureImage(M, PNG);
+    await appendThread(M, { ts: 1, role: "user", text: marker(1, "two figures"), annotationId: "x", imageFile: a!, imageFiles: [a!, b!] });
+    await appendThread(M, { ts: 2, role: "assistant", text: "about them", annotationId: "x", turn: 1 });
+    await appendThread(M, { ts: 3, role: "user", text: marker(2, "another"), annotationId: "y", imageFile: kept! });
+    await deleteFromThread(M, { conversation: "x" });
+    const left = await readdir(path.join(dirFor(M), "figures"));
+    assert.deepEqual(left, [path.basename(kept!)]);
   });
 });

@@ -10,9 +10,16 @@
 // given out, unless I asked about the paper as a whole.
 
 import { readFile } from "node:fs/promises";
-import { paperPathFor, readPageImageDataUrl, conversationEntries } from "./session-store";
+import { paperPathFor, readPageImageDataUrl, conversationEntries, entryImageFiles, type ThreadEntry } from "./session-store";
 import { askedText } from "./session-recovery";
 import type { ConversationSummary } from "./endpoint-context";
+
+// How a question's attached figures are mentioned in a transcript
+function figuresNote(entry: ThreadEntry): string {
+  const count = entryImageFiles(entry).length;
+  if (count > 1) return ` (with ${count} figures attached)`;
+  return count || entry.hasImage ? " (with a figure attached)" : "";
+}
 
 export type ToolSpec = { name: string; description: string; parameters: Record<string, unknown> };
 // What a tool gives back: words for the model, images when it looked at a
@@ -180,7 +187,7 @@ export async function runTool(name: string, args: unknown, ctx: ToolContext): Pr
     const entries = await conversationEntries(ctx.paperId, found.id);
     if (!entries.length) return { text: "That conversation has nothing in it yet.", activity };
     let text = entries
-      .map((e) => (e.role === "user" ? `Me: ${askedText(e.text)}${e.imageFile || e.hasImage ? " (with a figure attached)" : ""}` : `You: ${e.text.trim()}`))
+      .map((e) => (e.role === "user" ? `Me: ${askedText(e.text)}${figuresNote(e)}` : `You: ${e.text.trim()}`))
       .join("\n\n");
     // The newest part matters most when it does not all fit
     if (text.length > MAX_CHARS) text = `(Its beginning is left out.)\n\n…${text.slice(-MAX_CHARS)}`;
