@@ -85,13 +85,14 @@ describe("the papers a request names", () => {
   });
 });
 
-// A paper named with @ in one message: put by the question, with its files for
-// an agent that opens them and its text for one that cannot
+// A paper named inline in one message, "@Title": said by the question what
+// the @name stands for — its files for an agent that opens them, its text for
+// one that cannot
 describe("the papers a message names", () => {
   test("an agent with file tools is pointed at each named paper's files", async () => {
     const text = await describeReferencedPapers([{ id: READ, name: "Alpha.pdf", zoteroKey: "ALPHA123" }], { agentic: true });
-    assert.match(text, /^In this message I am referring to these papers/);
-    assert.ok(text.includes(`"Alpha" (Zotero key ALPHA123): ${dirFor(READ)}`));
+    assert.match(text, /^My message names papers inline as @Title/);
+    assert.ok(text.includes(`- @Alpha (Zotero key ALPHA123): ${dirFor(READ)}`));
     assert.match(text, /paper\.md — the full text/);
     assert.match(text, /thread\.jsonl — my 2 questions about it/);
     assert.match(text, /What I worked out about it in the Reader: • Pooling dilutes/);
@@ -99,15 +100,15 @@ describe("the papers a message names", () => {
 
   test("one without gets the paper's text inline", async () => {
     const text = await describeReferencedPapers([{ id: READ, name: "Alpha.pdf" }], { agentic: false });
-    assert.match(text, /"Alpha":\n\s+# Alpha\n[\s\S]*\[page 1\]\n\s+Pooled testing of samples\./);
+    assert.match(text, /- @Alpha:\n\s+# Alpha\n[\s\S]*\[page 1\]\n\s+Pooled testing of samples\./);
     assert.ok(!text.includes(dirFor(READ)), "no folder it cannot open");
   });
 
   test("a paper with nothing readable is still named, and the way to it said", async () => {
     const agentic = await describeReferencedPapers([{ id: UNREAD, name: "Beta.pdf", zoteroKey: "BETA456" }], { agentic: true });
-    assert.match(agentic, /"Beta" \(Zotero key BETA456\): its text could not be read here; reach it through Zotero MCP\./);
+    assert.match(agentic, /- @Beta \(Zotero key BETA456\): its text could not be read here; reach it through Zotero MCP\./);
     const inline = await describeReferencedPapers([{ id: UNREAD, name: "Beta.pdf" }], { agentic: false });
-    assert.match(inline, /"Beta": its text is not available here\./);
+    assert.match(inline, /- @Beta: its text is not available here\./);
   });
 
   test("nothing named, nothing said; and at most six", async () => {

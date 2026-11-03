@@ -126,9 +126,10 @@ export async function describeWorkspacePapers(refs: WorkspacePaperRef[], opts: {
 }
 
 /**
- * The papers I name in one message with @: what each is, where its files are
- * for an agent that opens them, and its text inline for one that cannot,
- * within a budget. Placed by the question, apart from the workspace's papers.
+ * The papers I name inline in one message, "@Title": what each @name stands
+ * for — where its files are for an agent that opens them, its text inline for
+ * one that cannot, within a budget. Placed by the question, apart from the
+ * workspace's papers.
  */
 export async function describeReferencedPapers(value: unknown, opts: { agentic: boolean }): Promise<string> {
   const refs = parsePaperRefs(value, MAX_REFERENCES);
@@ -137,7 +138,7 @@ export async function describeReferencedPapers(value: unknown, opts: { agentic: 
   const lines: string[] = [];
   let budget = REFERENCE_TEXT_CHARS;
   for (const record of records) {
-    const head = `- "${titleOf(record.ref)}"${record.ref.zoteroKey ? ` (Zotero key ${record.ref.zoteroKey})` : ""}`;
+    const head = `- @${titleOf(record.ref)}${record.ref.zoteroKey ? ` (Zotero key ${record.ref.zoteroKey})` : ""}`;
     if (opts.agentic) {
       const files: string[] = [];
       if (record.hasText) files.push("paper.md — the full text, with [page N] markers");
@@ -162,7 +163,7 @@ export async function describeReferencedPapers(value: unknown, opts: { agentic: 
     if (learned.length) lines.push(`    What I worked out about it in the Reader: ${learned.map((line) => `• ${line}`).join(" ")}`);
   }
   const intro = opts.agentic
-    ? "In this message I am referring to these papers. Read what the question needs from their files before answering, and cite them by title:"
-    : "In this message I am referring to these papers:";
+    ? "My message names papers inline as @Title. Each stands for the paper below: read what the question needs from its files before answering, and cite it by title:"
+    : "My message names papers inline as @Title. Each stands for the paper below:";
   return `${intro}\n${lines.join("\n")}`;
 }

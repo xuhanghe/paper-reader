@@ -81,21 +81,18 @@
 label.iconButton { cursor: pointer; }
 .iconButton[aria-pressed="true"] { border-color: rgba(225, 195, 105, .4); color: var(--accent-bright); }
 .at { font-size: 14px; font-weight: 600; line-height: 1; }
-.refs { display: flex; flex-wrap: wrap; gap: 5px; padding: 2px 0 8px; }
-.user .refs { padding: 0 0 6px; }
-.refChip { max-width: 100%; display: inline-flex; align-items: center; gap: 5px; overflow: hidden; border: 1px solid rgba(225, 195, 105, .28); border-radius: 6px; background: var(--accent-faint); padding: 2px 4px 2px 7px; color: var(--accent-bright); font-size: 11px; white-space: nowrap; text-overflow: ellipsis; }
-.user .refChip { padding-right: 7px; }
-.refChip button { flex: 0 0 auto; border: 0; background: transparent; padding: 0 2px; color: var(--ink-faint); font-size: 9px; line-height: 1; }
-.refChip button:hover { color: var(--ink); }
 .refPicker { margin: 0 0 8px; border: 1px solid #3a4651; border-radius: 9px; background: #12181d; padding: 6px; }
-.refSearch { width: 100%; height: 30px; border: 1px solid #333e48; border-radius: 6px; outline: 0; background: #182026; padding: 0 9px; color: var(--ink); font-size: 12px; }
-.refSearch:focus { border-color: rgba(225, 195, 105, .5); }
-.refOptions { max-height: 210px; overflow-y: auto; margin-top: 5px; }
+.refHint { display: flex; justify-content: space-between; gap: 8px; margin: 0; padding: 2px 4px 5px; color: var(--ink-faint); font-size: 10.5px; }
+.refHint span { flex: 0 0 auto; }
+.refOptions { max-height: 210px; overflow-y: auto; }
 .refOption { width: 100%; display: flex; align-items: baseline; gap: 8px; border: 0; border-radius: 6px; background: transparent; padding: 6px 8px; color: var(--ink-muted); font-size: 12px; text-align: left; }
 .refOption span { min-width: 0; flex: 1 1 auto; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .refOption small { flex: 0 0 auto; color: var(--ink-faint); font-size: 10px; }
 .refOption[aria-selected="true"] { background: rgba(225, 195, 105, .1); color: var(--ink); }
 .refEmpty { margin: 0; padding: 8px; color: var(--ink-faint); font-size: 11px; }
+/* An @mention: marked behind the text in the box, and inline in a sent question */
+.mentionMark { border-radius: 4px; background: rgba(225, 195, 105, .17); box-shadow: 0 0 0 1px rgba(225, 195, 105, .34); color: transparent; -webkit-box-decoration-break: clone; box-decoration-break: clone; }
+.mention { border-radius: 4px; background: rgba(225, 195, 105, .14); box-shadow: 0 0 0 1px rgba(225, 195, 105, .3); padding: 0 2px; color: var(--accent-bright); -webkit-box-decoration-break: clone; box-decoration-break: clone; }
 label.iconButton[data-disabled] { opacity: .35; cursor: default; }
 .composerBar { min-width: 0; display: flex; align-items: center; gap: 6px; }
 .modeSwitch { display: inline-flex; flex: 0 0 auto; padding: 2px; border: 1px solid #333e48; border-radius: 8px; background: #12181d; }

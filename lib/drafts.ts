@@ -6,8 +6,10 @@
 // Keyed by surface and what the box belongs to: "reader:<paper>" for the
 // Reader's composer, "workspace:<workspace>" for the Workspace agent's.
 import type { Quote } from "@/lib/quotes";
+import type { MentionRef } from "@/lib/mentions";
 
-export type Draft = { text: string; quotes?: Quote[] };
+// mentions: the papers the "@Title"s in the text stand for
+export type Draft = { text: string; quotes?: Quote[]; mentions?: MentionRef[] };
 
 const KEY = "paper-reader:drafts:v1";
 // A draft is a few lines; the oldest fall off the end so the store cannot
@@ -30,7 +32,11 @@ export function loadDraft(key: string | null | undefined): Draft | null {
   if (!key) return null;
   const entry = readAll()[key];
   if (!entry || typeof entry.text !== "string") return null;
-  return { text: entry.text, quotes: Array.isArray(entry.quotes) ? entry.quotes : [] };
+  return {
+    text: entry.text,
+    quotes: Array.isArray(entry.quotes) ? entry.quotes : [],
+    mentions: Array.isArray(entry.mentions) ? entry.mentions.filter((m) => typeof m?.id === "string" && typeof m?.name === "string") : [],
+  };
 }
 
 // An empty draft is not kept: sending, or clearing the box, forgets it
@@ -42,7 +48,7 @@ export function saveDraft(key: string | null | undefined, draft: Draft, now = Da
       if (!(key in all)) return;
       delete all[key];
     } else {
-      all[key] = { text: draft.text, quotes: draft.quotes?.length ? draft.quotes : undefined, at: now };
+      all[key] = { text: draft.text, quotes: draft.quotes?.length ? draft.quotes : undefined, mentions: draft.mentions?.length ? draft.mentions : undefined, at: now };
     }
     window.localStorage.setItem(KEY, JSON.stringify(trim(all)));
   } catch {

@@ -1,7 +1,7 @@
 "use client";
 import { forwardRef, memo, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { AgentPicker } from "./AgentPicker";
-import { GrowingTextarea } from "./GrowingTextarea";
+import { MentionTextarea } from "./MentionTextarea";
 import { CitationAnchor, MarkdownAnswer, type CiteHandlers, type MarkdownComponents } from "./MarkdownAnswer";
 import { ExportDialog } from "./WorkspaceDialogs";
 import { loadModelCatalog } from "@/hooks/useModelCatalog";
@@ -9,6 +9,7 @@ import { parseAgentEvent } from "@/lib/agent-events";
 import { loadDraft, saveDraft } from "@/lib/drafts";
 import { extractZoteroItemText } from "@/lib/extract-text";
 import { MAX_ATTACHED_IMAGES } from "@/lib/message-images";
+import { deleteMention, insertMention, liveMentions, MENTION_HREF, mentionQuery, mentionRanges, mentionTitle, typedMentionStart, withMentionLinks } from "@/lib/mentions";
 import { isSubmitKey } from "@/lib/keys";
 import { migrateLegacyCustomApi } from "@/lib/legacy-custom-api";
 import { providerIdFor } from "@/lib/model-spec";
@@ -74,11 +75,8 @@ const NO_SUBSCRIBE = () => () => {};
 // Reader and back
 const composerImageMemory = new Map<string, string[]>();
 const NO_IMAGES: string[] = [];
-// And the papers named with @, likewise
-const composerRefMemory = new Map<string, PaperReference[]>();
 const NO_REFS: PaperReference[] = [];
-const MAX_REFERENCES = 6;
-const titleOf = (name: string) => name.replace(/\.pdf$/i, "");
+const titleOf = mentionTitle;
 
 // A paper named in a question is read by the agent from its Reader folder.
 // One never opened in the Reader has no text there yet: it is read out of
@@ -95,18 +93,27 @@ async function prepareReference(ref: PaperReference): Promise<void> {
 // A saved attachment as the browser loads it
 const attachmentUrl = (root: string, file: string) => `/api/workspaces/files?root=${encodeURIComponent(root)}&path=${encodeURIComponent(file)}&raw=1`;
 
+// A sent question's @mentions, drawn where they stand in its text
+function mentionComponents(components: MarkdownComponents, refs: PaperReference[] | undefined): MarkdownComponents {
+  if (!refs?.length) return components;
+  return {
+    a: (props) => {
+      if (!props.href?.startsWith(MENTION_HREF)) return components.a(props);
+      const ref = refs.find((r) => r.id === decodeURIComponent(props.href!.slice(MENTION_HREF.length)));
+      return <span className={styles.mention} title={ref ? titleOf(ref.name) : undefined} data-mention="">{props.children}</span>;
+    },
+  };
+}
+
 const UserTurn = memo(function UserTurn({ message, root, components }: { message: AgentMessage; root: string | null; components: MarkdownComponents }) {
+  const content = useMemo(() => withMentionLinks(message.content, message.references), [message.content, message.references]);
+  const turnComponents = useMemo(() => mentionComponents(components, message.references), [components, message.references]);
   const images = [
     ...(root ? (message.imagePaths ?? []).map((file) => attachmentUrl(root, file)) : []),
     ...(message.imageDataUrl ? [message.imageDataUrl] : []),
   ];
   return (
     <article className={styles.user} data-message-id={message.id}>
-      {!!message.references?.length && (
-        <div className={styles.refs}>
-          {message.references.map((ref) => <span key={ref.id} className={styles.refChip} title={titleOf(ref.name)}>@ {titleOf(ref.name)}</span>)}
-        </div>
-      )}
       {images.length > 0 && (
         <div className={styles.figures}>
           {images.map((src, n) => (
@@ -116,7 +123,7 @@ const UserTurn = memo(function UserTurn({ message, root, components }: { message
           ))}
         </div>
       )}
-      <MarkdownAnswer content={message.content} components={components} />
+      <MarkdownAnswer content={content} components={turnComponents} />
     </article>
   );
 });
@@ -162,13 +169,16 @@ export const WorkspaceAgent = memo(forwardRef<WorkspaceAgentHandle, Props>(funct
   const [mode, setMode] = useState<AgentMode>(() => loadAgentMode(workspaceId));
   // What is being typed for the agent, kept per workspace: see lib/drafts
   const [question, setQuestion] = useState(() => loadDraft(workspaceId ? `workspace:${workspaceId}` : null)?.text ?? "");
+  // The papers the @mentions in it stand for, kept with the draft
+  const [refs, setRefs] = useState<PaperReference[]>(() => loadDraft(workspaceId ? `workspace:${workspaceId}` : null)?.mentions ?? NO_REFS);
   // Images waiting to go with the next question, as data URLs until sent
   const [images, setImages] = useState<string[]>(() => (workspaceId ? composerImageMemory.get(workspaceId) ?? NO_IMAGES : NO_IMAGES));
   const [dropping, setDropping] = useState(false);
-  // Papers named with @ for the next question, and the picker that names them
-  const [refs, setRefs] = useState<PaperReference[]>(() => (workspaceId ? composerRefMemory.get(workspaceId) ?? NO_REFS : NO_REFS));
-  const [pickerOpen, setPickerOpen] = useState(false);
-  const [pickerQuery, setPickerQuery] = useState("");
+  // A mention being typed: where its @ is, and where the caret is now; the
+  // name between the two is what the list is narrowed to
+  const [mentionAt, setMentionAt] = useState<number | null>(null);
+  const [caret, setCaret] = useState(0);
+  const pendingCaret = useRef<number | null>(null);
   const [pickerIndex, setPickerIndex] = useState(0);
   const [libraryResults, setLibraryResults] = useState<{ key: string; title: string }[]>([]);
   const [exportOpen, setExportOpen] = useState(false);
@@ -199,29 +209,32 @@ export const WorkspaceAgent = memo(forwardRef<WorkspaceAgentHandle, Props>(funct
   // The draft is saved a moment after each change, for a refresh, and at
   // once when the workspace or the surface is left
   const draftKey = workspaceId ? `workspace:${workspaceId}` : null;
-  const latestDraft = useRef(question);
+  const latestDraft = useRef({ text: question, mentions: refs });
   useEffect(() => {
     if (!draftKey) return;
-    latestDraft.current = question;
-    const timer = setTimeout(() => saveDraft(draftKey, { text: question }), 300);
+    latestDraft.current = { text: question, mentions: refs };
+    const timer = setTimeout(() => saveDraft(draftKey, { text: question, mentions: refs }), 300);
     return () => clearTimeout(timer);
-  }, [draftKey, question]);
+  }, [draftKey, question, refs]);
   useEffect(() => () => {
-    if (draftKey) saveDraft(draftKey, { text: latestDraft.current });
+    if (draftKey) saveDraft(draftKey, latestDraft.current);
   }, [draftKey]);
   useEffect(() => {
     if (!workspaceId) return;
     if (images.length) composerImageMemory.set(workspaceId, images);
     else composerImageMemory.delete(workspaceId);
   }, [workspaceId, images]);
+
+  // The name typed after the @, while the caret is on it; null when no
+  // mention is being typed
+  const typing = mentionAt === null ? null : mentionQuery(question, mentionAt, caret);
+  const pickerOpen = typing !== null;
+  const query = (typing ?? "").trim();
   useEffect(() => {
-    if (!workspaceId) return;
-    if (refs.length) composerRefMemory.set(workspaceId, refs);
-    else composerRefMemory.delete(workspaceId);
-  }, [workspaceId, refs]);
+    if (mentionAt !== null && typing === null) setMentionAt(null);
+  }, [mentionAt, typing]);
 
   // The library is searched as the name is typed, a moment after the last key
-  const query = pickerQuery.trim();
   useEffect(() => {
     if (!pickerOpen || query.length < 2) return;
     let live = true;
@@ -240,31 +253,62 @@ export const WorkspaceAgent = memo(forwardRef<WorkspaceAgentHandle, Props>(funct
   // This workspace's papers first, then the rest of the library
   const workspacePapers = workspace?.papers ?? [];
   const refOptions = useMemo<(PaperReference & { group: "workspace" | "library" })[]>(() => {
-    const chosen = new Set(refs.map((ref) => ref.id));
     const needle = query.toLowerCase();
     const own = workspacePapers
-      .filter((paper) => !chosen.has(paper.id) && (!needle || paper.name.toLowerCase().includes(needle)))
+      .filter((paper) => !needle || mentionTitle(paper.name).toLowerCase().includes(needle))
       .map((paper) => ({ id: paper.id, name: paper.name, zoteroKey: paper.zoteroKey, group: "workspace" as const }));
     const library = query.length < 2 ? [] : libraryResults
-      .filter((item) => !chosen.has(item.key) && !workspacePapers.some((paper) => paper.id === item.key || paper.zoteroKey === item.key))
+      .filter((item) => !workspacePapers.some((paper) => paper.id === item.key || paper.zoteroKey === item.key))
       .map((item) => ({ id: item.key, name: item.title, zoteroKey: item.key, group: "library" as const }));
     return [...own, ...library];
-  }, [refs, query, libraryResults, workspacePapers]);
+  }, [query, libraryResults, workspacePapers]);
 
-  const focusBox = () => requestAnimationFrame(() => composerRef.current?.querySelector("textarea")?.focus());
-  const openPicker = () => {
-    setPickerOpen(true);
-    setPickerQuery("");
+  // The text as changed, the mentions still whole in it, and where the caret
+  // goes once it is on screen
+  // The caret is moved with the text, in the same update: a render that saw
+  // the new text and the old caret would read a mention being typed as left
+  const replaceText = (text: string, at: number) => {
+    setQuestion(text);
+    setRefs((current) => liveMentions(text, current));
+    setCaret(at);
+    pendingCaret.current = at;
+  };
+  useLayoutEffect(() => {
+    const at = pendingCaret.current;
+    if (at === null) return;
+    pendingCaret.current = null;
+    const box = composerRef.current?.querySelector("textarea");
+    if (!box) return;
+    box.focus();
+    box.setSelectionRange(at, at);
+    setCaret(at);
+  }, [question]);
+  const startMention = (anchor: number) => {
+    setMentionAt(anchor);
     setPickerIndex(0);
     setLibraryResults([]);
   };
-  const closePicker = () => {
-    setPickerOpen(false);
-    focusBox();
-  };
+  // The @ and the name typed after it become the mention, inline
   const pickReference = (ref: PaperReference) => {
-    setRefs((current) => (current.some((r) => r.id === ref.id) ? current : [...current, { id: ref.id, name: ref.name, zoteroKey: ref.zoteroKey }].slice(0, MAX_REFERENCES)));
-    closePicker();
+    if (mentionAt === null) return;
+    const picked = { id: ref.id, name: ref.name, zoteroKey: ref.zoteroKey };
+    const next = insertMention(question, mentionAt, caret, picked);
+    setMentionAt(null);
+    setQuestion(next.text);
+    setRefs((current) => liveMentions(next.text, [...current.filter((r) => r.id !== picked.id), picked]));
+    setCaret(next.caret);
+    pendingCaret.current = next.caret;
+  };
+  // The @ button types an @ where the caret is, starting a word if it must
+  const typeAt = () => {
+    const box = composerRef.current?.querySelector("textarea");
+    const at = box ? box.selectionStart : question.length;
+    const before = question.slice(0, at);
+    const lead = before && !/\s$/.test(before) ? " " : "";
+    const text = `${before}${lead}@${question.slice(box ? box.selectionEnd : at)}`;
+    const anchor = at + lead.length;
+    replaceText(text, anchor + 1);
+    startMention(anchor);
   };
 
   // Images join the ones already attached, in the order given, up to the
@@ -332,7 +376,7 @@ export const WorkspaceAgent = memo(forwardRef<WorkspaceAgentHandle, Props>(funct
     const typed = (fromPage ? input.question ?? "" : question).trim();
     // A figure captured from the page, or what is attached in the box
     const attaching = input.imageDataUrl ? [input.imageDataUrl] : fromPage ? [] : images;
-    const references = fromPage ? NO_REFS : refs;
+    const references = fromPage ? NO_REFS : liveMentions(question, refs);
     if (!typed && !input.selectedText && !attaching.length) return;
     const controller = beginRun(id);
     if (!controller) { latest.current.onNotice("The agent is still answering."); return; }
@@ -363,10 +407,7 @@ export const WorkspaceAgent = memo(forwardRef<WorkspaceAgentHandle, Props>(funct
       : passage ? `${typed}\n\n> ${passage}${page}` : typed;
     // The chat so far, so an agent starting a session mid-conversation —
     // another provider, or one that lost its session — knows what was said
-    const history = messages.filter((message) => message.content.trim()).slice(-30).map((message) => {
-      const named = message.references?.length ? `\n\n(referring to: ${message.references.map((ref) => titleOf(ref.name)).join("; ")})` : "";
-      return { role: message.role, content: `${message.content.slice(0, 1500)}${named}` };
-    });
+    const history = messages.filter((message) => message.content.trim()).slice(-30).map((message) => ({ role: message.role, content: message.content.slice(0, 1500) }));
     const provider = providerIdFor(agent.model);
     const assistantId = uid();
     updateRun(id, controller, (current) => ({
@@ -378,7 +419,7 @@ export const WorkspaceAgent = memo(forwardRef<WorkspaceAgentHandle, Props>(funct
       setQuestion("");
       setImages(NO_IMAGES);
       setRefs(NO_REFS);
-      setPickerOpen(false);
+      setMentionAt(null);
     }
     setSent((count) => count + 1);
     const patch = (change: (message: AgentMessage) => AgentMessage) =>
@@ -522,26 +563,12 @@ export const WorkspaceAgent = memo(forwardRef<WorkspaceAgentHandle, Props>(funct
           }}
         >
           {pickerOpen && (
-            <div className={styles.refPicker} role="dialog" aria-label="Reference a paper">
-              <input
-                autoFocus
-                className={styles.refSearch}
-                value={pickerQuery}
-                onChange={(event) => { setPickerQuery(event.target.value); setPickerIndex(0); }}
-                onKeyDown={(event) => {
-                  if (event.key === "Escape") { event.preventDefault(); closePicker(); }
-                  else if (event.key === "ArrowDown") { event.preventDefault(); setPickerIndex((i) => Math.min(i + 1, Math.max(0, refOptions.length - 1))); }
-                  else if (event.key === "ArrowUp") { event.preventDefault(); setPickerIndex((i) => Math.max(0, i - 1)); }
-                  else if (event.key === "Enter" && !event.nativeEvent.isComposing) {
-                    event.preventDefault();
-                    const option = refOptions[pickerIndex] ?? refOptions[0];
-                    if (option) pickReference(option);
-                  }
-                }}
-                placeholder={workspacePapers.length ? "Search this workspace or your library…" : "Search your Zotero library…"}
-                aria-label="Find a paper to reference"
-              />
-              <div className={styles.refOptions} role="listbox">
+            <div className={styles.refPicker} role="listbox" aria-label="Papers to mention">
+              <p className={styles.refHint}>
+                {query ? <>Papers matching “{query}”</> : workspacePapers.length ? "This workspace's papers — type to search your library" : "Type a name to search your library"}
+                <span>↑↓ · Enter · Esc</span>
+              </p>
+              <div className={styles.refOptions}>
                 {refOptions.map((option, index) => (
                   <button
                     key={`${option.group}:${option.id}`}
@@ -550,6 +577,8 @@ export const WorkspaceAgent = memo(forwardRef<WorkspaceAgentHandle, Props>(funct
                     aria-selected={index === pickerIndex}
                     className={styles.refOption}
                     onMouseEnter={() => setPickerIndex(index)}
+                    // Keeps the caret in the box, where the mention goes
+                    onMouseDown={(event) => event.preventDefault()}
                     onClick={() => pickReference(option)}
                     title={titleOf(option.name)}
                   >
@@ -558,19 +587,9 @@ export const WorkspaceAgent = memo(forwardRef<WorkspaceAgentHandle, Props>(funct
                   </button>
                 ))}
                 {!refOptions.length && (
-                  <p className={styles.refEmpty}>{query.length < 2 && !workspacePapers.length ? "Type to search your Zotero library" : "No paper matches"}</p>
+                  <p className={styles.refEmpty}>{query.length < 2 ? "Keep typing to search your Zotero library" : "No paper matches"}</p>
                 )}
               </div>
-            </div>
-          )}
-          {refs.length > 0 && (
-            <div className={styles.refs} data-references={refs.length}>
-              {refs.map((ref) => (
-                <span key={ref.id} className={styles.refChip} title={titleOf(ref.name)}>
-                  @ {titleOf(ref.name)}
-                  <button type="button" onClick={() => setRefs((current) => current.filter((r) => r.id !== ref.id))} title="Remove this reference" aria-label={`Remove the reference to ${titleOf(ref.name)}`}>✕</button>
-                </span>
-              ))}
             </div>
           )}
           {images.length > 0 && (
@@ -583,28 +602,57 @@ export const WorkspaceAgent = memo(forwardRef<WorkspaceAgentHandle, Props>(funct
               ))}
             </div>
           )}
-          <GrowingTextarea
+          <MentionTextarea
             value={question}
+            ranges={mentionRanges(question, refs)}
+            markClassName={styles.mentionMark}
             onChange={(event) => {
               const value = event.target.value;
-              const caret = event.target.selectionStart ?? value.length;
-              // An @ typed at the start of a word names a paper: the picker
-              // opens in its place
-              if (workspace && value.length === question.length + 1 && value[caret - 1] === "@" && (caret === 1 || /\s/.test(value[caret - 2]))) {
-                setQuestion(value.slice(0, caret - 1) + value.slice(caret));
-                openPicker();
-                return;
-              }
+              const at = event.target.selectionStart ?? value.length;
+              setCaret(at);
+              // An @ typed at the start of a word begins a mention
+              if (workspace && typedMentionStart(question, value, at)) startMention(at - 1);
               setQuestion(value);
+              setRefs((current) => liveMentions(value, current));
             }}
+            onSelect={(event) => setCaret(event.currentTarget.selectionStart)}
             onPaste={(event) => {
               const files = imageFilesOf(event.clipboardData);
               if (!files.length) return;
               event.preventDefault();
               attachImages(files);
             }}
-            onKeyDown={(event) => { if (isSubmitKey(event)) { event.preventDefault(); void ask(); } }}
-            placeholder={workspace ? "Ask about the open document or workspace…" : "Create a workspace to talk to its agent"}
+            onKeyDown={(event) => {
+              const composing = event.nativeEvent.isComposing;
+              // While a mention is being typed, the list has the arrows,
+              // Enter and Tab, and Escape leaves the @ as plain text
+              if (pickerOpen && !composing) {
+                if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+                  event.preventDefault();
+                  const step = event.key === "ArrowDown" ? 1 : -1;
+                  setPickerIndex((i) => Math.min(Math.max(0, i + step), Math.max(0, refOptions.length - 1)));
+                  return;
+                }
+                if (event.key === "Enter" || event.key === "Tab") {
+                  event.preventDefault();
+                  const option = refOptions[pickerIndex] ?? refOptions[0];
+                  if (option) pickReference(option);
+                  else setMentionAt(null);
+                  return;
+                }
+                if (event.key === "Escape") { event.preventDefault(); setMentionAt(null); return; }
+              }
+              // A mention goes whole; ⌥⌫ and ⌘⌫ still take a word or a line
+              if ((event.key === "Backspace" || event.key === "Delete") && !composing && !event.altKey && !event.metaKey && !event.ctrlKey) {
+                const box = event.currentTarget;
+                if (box.selectionStart === box.selectionEnd) {
+                  const next = deleteMention(question, box.selectionStart, refs, event.key);
+                  if (next) { event.preventDefault(); replaceText(next.text, next.caret); return; }
+                }
+              }
+              if (isSubmitKey(event)) { event.preventDefault(); void ask(); }
+            }}
+            placeholder={workspace ? "Ask about the document or workspace · @ names a paper" : "Create a workspace to talk to its agent"}
             rows={2}
             aria-label="Message the workspace agent"
           />
@@ -626,10 +674,10 @@ export const WorkspaceAgent = memo(forwardRef<WorkspaceAgentHandle, Props>(funct
             <button
               type="button"
               className={styles.iconButton}
-              onClick={() => (pickerOpen ? closePicker() : openPicker())}
+              onClick={() => (pickerOpen ? setMentionAt(null) : typeAt())}
               disabled={!workspace}
               aria-pressed={pickerOpen}
-              title="Reference a paper — this workspace's or any in your library (or type @)"
+              title="Name a paper in your question — this workspace's or any in your library (or type @)"
               aria-label="Reference a paper"
             >
               <span className={styles.at} aria-hidden="true">@</span>

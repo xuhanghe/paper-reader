@@ -21,9 +21,15 @@ describe("drafts", () => {
   test("a draft comes back as it was left, box by box", () => {
     saveDraft("reader:paper-1", { text: "half a thought", quotes: [{ id: "q1", text: "a passage", page: 3 }] });
     saveDraft("workspace:ws-1", { text: "evaluate this idea" });
-    assert.deepEqual(loadDraft("reader:paper-1"), { text: "half a thought", quotes: [{ id: "q1", text: "a passage", page: 3 }] });
-    assert.deepEqual(loadDraft("workspace:ws-1"), { text: "evaluate this idea", quotes: [] });
+    assert.deepEqual(loadDraft("reader:paper-1"), { text: "half a thought", quotes: [{ id: "q1", text: "a passage", page: 3 }], mentions: [] });
+    assert.deepEqual(loadDraft("workspace:ws-1"), { text: "evaluate this idea", quotes: [], mentions: [] });
     assert.equal(loadDraft("reader:paper-2"), null);
+  });
+
+  test("the papers a draft's @mentions stand for come back with it", () => {
+    saveDraft("workspace:ws-m", { text: "compare @iPipe", mentions: [{ id: "CCC", name: "iPipe" }, { id: 7 } as never] });
+    assert.deepEqual(loadDraft("workspace:ws-m")?.mentions, [{ id: "CCC", name: "iPipe" }]);
+    saveDraft("workspace:ws-m", { text: "" });
   });
 
   test("sending, or clearing the box, forgets the draft", () => {
