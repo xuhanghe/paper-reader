@@ -19,3 +19,15 @@ export function modeDirective(mode: AgentMode): string {
 export function claudePermissionMode(mode: AgentMode): "acceptEdits" | "auto" {
   return mode === "auto" ? "auto" : "acceptEdits";
 }
+
+// The web, in every mode. Run headless, the CLI cannot ask before a tool that
+// needs asking: in a discussion (acceptEdits) web search and fetch were simply
+// refused, and the agent said it had no permission. Allowed by name instead,
+// as one comma-separated value: the flag takes a list, and a value of its own
+// can never swallow an argument after it.
+export const WEB_TOOLS = ["WebSearch", "WebFetch"] as const;
+
+/** The claude CLI's permission arguments for a mode. */
+export function claudePermissionArgs(mode: AgentMode): string[] {
+  return ["--permission-mode", claudePermissionMode(mode), "--allowedTools", WEB_TOOLS.join(",")];
+}

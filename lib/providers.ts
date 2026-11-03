@@ -289,6 +289,9 @@ export function codexArgs(prompt: string, opts?: CodexRunOptions): string[] {
   if (opts?.cwd) args.push("-C", opts.cwd);
   if (opts?.writable) args.push("-a", "never");
   args.push("-s", opts?.writable ? "workspace-write" : "read-only");
+  // The workspace sandbox cuts commands off from the network unless told
+  // otherwise; the agent has the web at any time, in either mode
+  if (opts?.writable) args.push("-c", "sandbox_workspace_write.network_access=true");
   args.push(...codexMcpArgs()); // Zotero library access
   // Config overrides, like the effort below, so they apply to a resumed turn too.
   // The user's own config is ignored (see below), so without this Codex runs

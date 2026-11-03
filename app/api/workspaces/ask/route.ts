@@ -4,7 +4,7 @@ import { claudeStream, codexStream, customConfigFor, customStream, opencodeStrea
 import { buildWorkspaceAskMessage, type AskKind } from "@/lib/prompts";
 import { SESSIONS_ROOT } from "@/lib/session-store";
 import { describeReferencedPapers, describeWorkspacePapers, parsePaperRefs } from "@/lib/workspace-papers";
-import { claudePermissionMode, modeDirective, parseAgentMode } from "@/lib/workspace-modes";
+import { claudePermissionArgs, modeDirective, parseAgentMode } from "@/lib/workspace-modes";
 import { chatHistorySection, freshStartOnLostSession, LOST_SESSION, parseChatHistory } from "@/lib/session-recovery";
 import { selectedSkillPaths } from "@/lib/skills";
 import { listWorkspaceFiles, validateWorkspaceRoot } from "@/lib/workspace-files";
@@ -125,7 +125,7 @@ User request: ${request}`;
       resumeId: resume ? body.session_id : undefined,
       images: attached.map((a) => a.dataUrl),
       cwd: root,
-      permissionArgs: ["--permission-mode", claudePermissionMode(mode)],
+      permissionArgs: claudePermissionArgs(mode),
       extraArgs: papers.length ? ["--add-dir", SESSIONS_ROOT] : [],
       onStderr: (chunk) => { stderr = (stderr + chunk).slice(-2000); },
       signal: req.signal,

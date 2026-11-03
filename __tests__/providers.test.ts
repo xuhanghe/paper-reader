@@ -30,6 +30,17 @@ describe("Codex CLI argument placement", () => {
     assert.equal(args.at(-1), "explain this");
   });
 
+  test("the workspace sandbox lets commands reach the network; the Reader's read-only one is left as it is", () => {
+    const workspace = codexArgs("q", { cwd: "/tmp/w", writable: true });
+    const at = workspace.indexOf("sandbox_workspace_write.network_access=true");
+    assert.ok(at > 0 && workspace[at - 1] === "-c", "network on, as a config override");
+    assert.ok(at < workspace.indexOf("exec"), "a root option, before exec");
+    assert.ok(workspace.includes("--search"), "and web search, as always");
+    const reader = codexArgs("q");
+    assert.ok(!reader.some((a) => a.includes("network_access")));
+    assert.ok(reader.includes("--search"));
+  });
+
   test("never passes root-only flags to exec resume", () => {
     const sessionId = "019c1234-1234-7000-8000-123456789abc";
     const args = codexArgs("follow up", {
