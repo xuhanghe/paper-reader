@@ -12,7 +12,6 @@ import { canPaintRanges, groupAt, paintRanges, positionAt, rangeIsLive } from "@
 import { GrowingTextarea } from "./GrowingTextarea";
 import { CollapsedRail } from "./ResizablePanel";
 import { MAX_ATTACHED_IMAGES, messageImages } from "@/lib/message-images";
-import { buildRankIndex, rankSearch, snippet } from "@/lib/search-rank";
 
 type Props = {
   annotations: Annotation[];
@@ -784,41 +783,6 @@ export const ExplainPanel = memo(function ExplainPanel({ annotations, activeId, 
       return true;
     }
     return false;
-  };
-
-  // ── Finding a thread among this paper's conversations ──
-  // Every exchange, matched by word (lib/search-rank) while the box is open;
-  // the one chosen is landed on as a cited turn is, and becomes the focus
-  const [findOpen, setFindOpen] = useState(false);
-  const [findQuery, setFindQuery] = useState("");
-  const [findAt, setFindAt] = useState(0);
-  const exchanges = useMemo(() => {
-    if (!findOpen) return null;
-    const docs: { title: string; text: string; id: string; index: number; label: string }[] = [];
-    for (const a of annotations) {
-      for (const pair of pairsOf(a)) {
-        const messages = a.messages.slice(pair.start, pair.end);
-        const asked = messages[0]?.role === "user" ? parseQuotes(messages[0].content).question : "";
-        const said = messages.filter((m) => m.role === "assistant").map((m) => m.content).join("\n");
-        if (!asked.trim() && !said.trim()) continue;
-        docs.push({
-          id: a.id,
-          index: pair.start,
-          label: a.label,
-          title: asked.trim() || a.label,
-          text: [a.selectedText && pair.start === 0 ? a.selectedText : "", a.label, asked, said].filter(Boolean).join("\n"),
-        });
-      }
-    }
-    return buildRankIndex(docs);
-  }, [findOpen, annotations]);
-  const found = useMemo(() => (exchanges && findQuery.trim() ? rankSearch(exchanges, findQuery, 12) : []), [exchanges, findQuery]);
-  const closeFind = () => { setFindOpen(false); setFindQuery(""); setFindAt(0); };
-  const goToExchange = (id: string, index: number) => {
-    closeFind();
-    pinned.current = null;
-    setFollowing({ id, index, mode: "free" }, "found");
-    jumpTo(id, () => messageRefs.current[`${id}:${index}`]);
   };
 
   // Which turns there are to jump to. Keyed on the numbers themselves, so it
@@ -1792,16 +1756,6 @@ export const ExplainPanel = memo(function ExplainPanel({ annotations, activeId, 
       <div className="flex items-center gap-1 min-h-9 px-3 py-1" style={{ borderBottom: "1px solid var(--border)" }}>
         {followControl || <span className="text-[10px] uppercase tracking-widest" style={{ color: "var(--ink-faint)" }}>Ask</span>}
         <span className="ml-auto inline-flex shrink-0 items-center gap-1">
-          {annotations.length > 0 && (
-            <button
-              onClick={() => (findOpen ? closeFind() : setFindOpen(true))}
-              className="btn-icon w-6 h-6 text-sm"
-              aria-pressed={findOpen}
-              aria-label="Find a conversation"
-              title="Find a conversation in this paper"
-              style={findOpen ? { color: "var(--accent-bright)" } : undefined}
-            >⌕</button>
-          )}
           {annotations.length > 1 && (
             <button
               onClick={toggleAll}
@@ -1816,58 +1770,6 @@ export const ExplainPanel = memo(function ExplainPanel({ annotations, activeId, 
           </button>
         </span>
       </div>
-      {findOpen && (
-        <div className="relative px-3 py-1.5" style={{ borderBottom: "1px solid var(--border)" }} data-find-conversations="">
-          <input
-            autoFocus
-            value={findQuery}
-            onChange={(e) => { setFindQuery(e.target.value); setFindAt(0); }}
-            onKeyDown={(e) => {
-              if (e.nativeEvent.isComposing) return;
-              if (e.key === "Escape") { e.preventDefault(); closeFind(); }
-              else if (e.key === "ArrowDown") { e.preventDefault(); setFindAt((i) => Math.min(i + 1, Math.max(0, found.length - 1))); }
-              else if (e.key === "ArrowUp") { e.preventDefault(); setFindAt((i) => Math.max(0, i - 1)); }
-              else if (e.key === "Enter") {
-                e.preventDefault();
-                const hit = found[findAt] ?? found[0];
-                if (hit) goToExchange(hit.doc.id, hit.doc.index);
-              }
-            }}
-            placeholder="Find a question, an answer, a passage…"
-            aria-label="Find in this paper's conversations"
-            className="w-full rounded px-2 py-1 text-xs outline-none"
-            style={{ background: "var(--surface)", border: "1px solid var(--border)", color: "var(--ink)" }}
-          />
-          {findQuery.trim() && (
-            <div
-              role="listbox"
-              aria-label="Matching exchanges"
-              className="absolute left-3 right-3 top-full z-30 mt-1 max-h-[50vh] overflow-y-auto rounded p-1"
-              style={{ background: "var(--surface)", border: "1px solid var(--border)", boxShadow: "0 12px 32px rgba(0,0,0,.45)" }}
-            >
-              {found.length === 0 && <p className="px-2 py-2 text-xs" style={{ color: "var(--ink-faint)" }}>Nothing in this paper&apos;s conversations matches</p>}
-              {found.map(({ doc }, n) => (
-                <button
-                  key={`${doc.id}:${doc.index}`}
-                  type="button"
-                  role="option"
-                  aria-selected={n === findAt}
-                  onMouseEnter={() => setFindAt(n)}
-                  // The box keeps the focus, so the keys still move through the list
-                  onMouseDown={(e) => e.preventDefault()}
-                  onClick={() => goToExchange(doc.id, doc.index)}
-                  className="block w-full rounded px-2 py-1.5 text-left"
-                  style={n === findAt ? { background: "rgba(230,237,243,0.07)" } : undefined}
-                >
-                  <span className="block truncate text-xs" style={{ color: "var(--ink)" }}>{doc.title}</span>
-                  <span className="block truncate text-[11px]" style={{ color: "var(--ink-muted)" }}>{snippet(doc.text, findQuery, 110)}</span>
-                  <span className="block truncate text-[10px]" style={{ color: "var(--ink-faint)" }}>{doc.label}</span>
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
       <div className="flex items-center gap-1 px-3 py-1.5">
         <span className="inline-flex shrink-0 items-center gap-0.5">
           <span className="pr-toolbar-label text-[10px] uppercase tracking-widest mr-1" style={{ color: "var(--ink-faint)" }}>Text</span>
