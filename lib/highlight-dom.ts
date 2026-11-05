@@ -159,6 +159,28 @@ function locateText(
   return match ? { nodes, rawStart: match.start, rawEnd: match.end } : null;
 }
 
+// Ranges over a passage, one per text node it covers — what a mark would wrap,
+// without wrapping anything. For painting with the CSS Custom Highlight API
+// where the DOM belongs to React: cutting React's text nodes up for marks
+// leaves it updating nodes that are gone, which shows as repeated words or as
+// a NotFoundError from insertBefore.
+export function rangesForText(container: HTMLElement, query: string, skipSelector?: string): Range[] {
+  const found = locateText(container, query, skipSelector);
+  if (!found) return [];
+  const { nodes, rawStart, rawEnd } = found;
+  const ranges: Range[] = [];
+  for (const { node, start } of nodes) {
+    const s = Math.max(rawStart, start);
+    const e = Math.min(rawEnd, start + node.data.length);
+    if (s >= e) continue;
+    const range = container.ownerDocument.createRange();
+    range.setStart(node, s - start);
+    range.setEnd(node, e - start);
+    ranges.push(range);
+  }
+  return ranges;
+}
+
 // A live Range over the passage, for measuring where it is on the page
 export function rangeForText(container: HTMLElement, query: string): Range | null {
   const found = locateText(container, query);

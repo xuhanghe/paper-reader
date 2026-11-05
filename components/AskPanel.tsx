@@ -7,7 +7,8 @@ import { isSubmitKey } from "@/lib/keys";
 import { loadPanelScroll, savePanelScroll } from "@/lib/panel-scroll";
 import { trace, traceEnabled, describeForTrace } from "@/lib/panel-trace";
 import { withQuotes, quotePreview, quoteLabel, parseQuotes, addQuote as pushQuote, type Quote, type QuotedPassage } from "@/lib/quotes";
-import { clearMarks, markTextInContainer } from "@/lib/highlight-dom";
+import { rangesForText } from "@/lib/highlight-dom";
+import { canPaintRanges, groupAt, paintRanges, positionAt, rangeIsLive } from "@/lib/text-highlights";
 import { GrowingTextarea } from "./GrowingTextarea";
 import { CollapsedRail } from "./ResizablePanel";
 import { MAX_ATTACHED_IMAGES, messageImages } from "@/lib/message-images";
@@ -641,12 +642,16 @@ export const ExplainPanel = memo(function ExplainPanel({ annotations, activeId, 
   // Which conversation each link was actually painted in — two conversations
   // can carry the same label, and the reverse jump should not have to guess
   const paintedIn = useRef<Map<string, string>>(new Map());
+  // And the text each one covers there
+  const quoteRanges = useRef<Map<string, Range[]>>(new Map());
   const lastPaint = useRef("");
 
-  // Underline each quoted passage where it was written. These marks are drawn
-  // into DOM React owns, so they are cleared and repainted as a whole rather
-  // than left to drift — and a conversation that is streaming is left alone,
-  // because its text is being rewritten underneath them.
+  // Underline each quoted passage where it was written. The underline is
+  // painted over the text (lib/text-highlights), never wrapped around it: the
+  // answers are React's, and <mark>s cut into their text nodes left React
+  // updating nodes that were gone — repeated words, or a NotFoundError from
+  // insertBefore that took the panel down. A conversation that is streaming is
+  // left unpainted while its text is being rewritten.
   useLayoutEffect(() => {
     const containersOf = (id: string) =>
       Array.from(annotationRefs.current[id]?.querySelectorAll("[data-quotable]") ?? []) as HTMLElement[];
@@ -659,35 +664,55 @@ export const ExplainPanel = memo(function ExplainPanel({ annotations, activeId, 
       [...collapsedIds].sort().join(","),
       [...streamingIds].sort().join(","),
     ].join("#");
-    const stillPainted = [...paintedIn.current.keys()].every((id) =>
-      scrollRef.current?.querySelector(`mark.pr-quoted[data-highlight-id="${id}"]`)
-    );
+    // Still over the words they were painted on: an edit to an answer can
+    // move or replace them without changing anything above
+    const squash = (text: string) => text.replace(/\s+/g, "");
+    const stillPainted = [...quoteRanges.current].every(([id, ranges]) => {
+      const link = quoteLinks.find((l) => l.id === id);
+      return !!link && ranges.every(rangeIsLive) && squash(ranges.map((r) => r.toString()).join("")) === squash(link.text);
+    });
     if (signature === lastPaint.current && stillPainted) return;
     lastPaint.current = signature;
 
-    for (const a of annotations) for (const c of containersOf(a.id)) clearMarks(c, "pr-quoted");
-
     const placed = new Map<string, string>();
+    const painted = new Map<string, Range[]>();
     for (const a of annotations) {
       if (collapsedIds.has(a.id) || streamingIds.has(a.id)) continue;
       const containers = containersOf(a.id);
       for (const link of quoteLinks) {
         if (link.source !== a.label || placed.has(link.id)) continue;
         for (const container of containers) {
-          const done = markTextInContainer(container, link.text, "pr-quoted", "Quoted in a question — click to go to it", {
-            id: link.id,
-            // A chip echoes its passage; marking one would link it to itself
-            skipSelector: "[data-quote-chip]",
-          });
-          if (done) {
+          // A chip echoes its passage; finding it there would link it to itself
+          const ranges = rangesForText(container, link.text, "[data-quote-chip]");
+          if (ranges.length) {
             placed.set(link.id, a.id);
+            painted.set(link.id, ranges);
             break;
           }
         }
       }
     }
     paintedIn.current = placed;
+    quoteRanges.current = painted;
+    paintRanges("pr-quoted", [...painted.values()].flat());
   }, [annotations, quoteLinks, collapsedIds, streamingIds, annotationRefs]);
+
+  // A passage landed on pulses twice, as a message does
+  const flashTimers = useRef<ReturnType<typeof setTimeout>[]>([]);
+  const flashRanges = (ranges: Range[]) => {
+    flashTimers.current.forEach(clearTimeout);
+    const steps: [number, boolean][] = [[0, true], [420, false], [620, true], [1040, false]];
+    flashTimers.current = steps.map(([at, on]) => {
+      const t = setTimeout(() => paintRanges("pr-quote-flash", on ? ranges : []), at);
+      (t as unknown as { unref?: () => void }).unref?.();
+      return t;
+    });
+  };
+  // Nothing painted outlives the panel
+  useEffect(() => () => {
+    flashTimers.current.forEach(clearTimeout);
+    for (const name of ["pr-quoted", "pr-quoted-hover", "pr-quote-flash"]) paintRanges(name, []);
+  }, []);
 
   const flash = (el: HTMLElement) => {
     el.classList.add("pr-quote-flash");
@@ -726,13 +751,22 @@ export const ExplainPanel = memo(function ExplainPanel({ annotations, activeId, 
     jumpTo(link.targetId, () => messageRefs.current[`${link.targetId}:${link.targetIndex}`]);
   };
 
-  // …and back: question → the passage it was taken from
+  // …and back: question → the passage it was taken from, unfolded first and
+  // looked up after that render has painted it
   const goToPassage = (linkId: string, source?: string) => {
     const id = paintedIn.current.get(linkId) ?? annotations.find((a) => a.label === source)?.id;
     if (!id) return;
-    jumpTo(id, () =>
-      annotationRefs.current[id]?.querySelector(`mark.pr-quoted[data-highlight-id="${linkId}"]`) as HTMLElement | null
-    );
+    expand(id);
+    requestAnimationFrame(() => {
+      const ranges = (quoteRanges.current.get(linkId) ?? []).filter(rangeIsLive);
+      const target = ranges[0]?.startContainer.parentElement ?? annotationRefs.current[id];
+      if (!target) return;
+      trace("scrollIntoView", { reason: "jump to a quoted passage", target: describeForTrace(target), block: "center" });
+      smoothUntil.current = Date.now() + 700;
+      target.scrollIntoView({ behavior: "smooth", block: "center" });
+      if (ranges.length && canPaintRanges()) flashRanges(ranges);
+      else flash(target);
+    });
   };
 
   // A citation the model wrote: `turn:N` is the ask numbered N, wherever in
@@ -805,22 +839,61 @@ export const ExplainPanel = memo(function ExplainPanel({ annotations, activeId, 
     };
   }, [turnKey, canJumpToPaper]);
 
-  // The marks are not React's, so their clicks are caught by delegation. No
-  // dependency list: re-binding each render is cheaper than reasoning about a
-  // stale closure over the links.
+  // A painted passage is not an element and has no events: a click, or the
+  // pointer passing, is placed in the text under it. No dependency list:
+  // re-binding each render is cheaper than reasoning about a stale closure
+  // over the links.
+  const overQuote = useRef<string | null>(null);
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
+    const linkAt = (e: MouseEvent) =>
+      quoteRanges.current.size ? groupAt(quoteRanges.current, positionAt(el.ownerDocument, e.clientX, e.clientY)) : null;
+    const hover = (id: string | null) => {
+      if (id === overQuote.current) return;
+      overQuote.current = id;
+      paintRanges("pr-quoted-hover", id ? quoteRanges.current.get(id) ?? [] : []);
+      // The cursor and the hint a <mark> had, on the list while over one
+      if (id) {
+        el.setAttribute("data-over-quote", "");
+        el.title = "Quoted in a question — click to go to it";
+      } else {
+        el.removeAttribute("data-over-quote");
+        el.removeAttribute("title");
+      }
+    };
     const onClick = (e: MouseEvent) => {
-      const mark = (e.target as Element | null)?.closest?.("mark.pr-quoted") as HTMLElement | null;
-      const id = mark?.dataset.highlightId;
+      // A drag that selected words is not a click on the passage, and a link
+      // or button inside it keeps its own click
+      if (el.ownerDocument.getSelection()?.isCollapsed === false) return;
+      if ((e.target as Element | null)?.closest?.("a,button")) return;
+      const id = linkAt(e);
       if (!id) return;
       e.preventDefault();
       e.stopPropagation();
       goToQuestion(id);
     };
+    let frame = 0;
+    let lastMove: MouseEvent | null = null;
+    const onMove = (e: MouseEvent) => {
+      if (!quoteRanges.current.size && !overQuote.current) return;
+      lastMove = e;
+      if (frame) return;
+      frame = requestAnimationFrame(() => {
+        frame = 0;
+        if (lastMove) hover(linkAt(lastMove));
+      });
+    };
+    const onLeave = () => hover(null);
     el.addEventListener("click", onClick);
-    return () => el.removeEventListener("click", onClick);
+    el.addEventListener("mousemove", onMove, { passive: true });
+    el.addEventListener("mouseleave", onLeave);
+    return () => {
+      el.removeEventListener("click", onClick);
+      el.removeEventListener("mousemove", onMove);
+      el.removeEventListener("mouseleave", onLeave);
+      if (frame) cancelAnimationFrame(frame);
+    };
   });
 
   // Where to land in a conversation depends on why we are going there. Coming

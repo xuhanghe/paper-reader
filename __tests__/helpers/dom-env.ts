@@ -50,6 +50,20 @@ dom.window.cancelAnimationFrame = g.cancelAnimationFrame as typeof dom.window.ca
 dom.window.Range.prototype.getBoundingClientRect = () => new dom.window.DOMRect(20, 40, 80, 16);
 dom.window.Range.prototype.getClientRects = (() => []) as unknown as Range["getClientRects"];
 
+// The CSS Custom Highlight API, which jsdom lacks: named sets of ranges the
+// page paints over its text (see lib/text-highlights). Tests read what is
+// painted from here.
+class TestHighlight extends Set<Range> {
+  constructor(...ranges: Range[]) {
+    super(ranges);
+  }
+}
+g.Highlight = TestHighlight;
+export const highlights = new Map<string, Set<Range>>();
+g.CSS = { ...((g.CSS as object) ?? {}), highlights };
+/** The ranges painted under a name, in order. */
+export const painted = (name: string): Range[] => Array.from(highlights.get(name) ?? []);
+
 export const scrollCalls: ScrollIntoViewOptions[] = [];
 dom.window.Element.prototype.scrollIntoView = function (opts?: boolean | ScrollIntoViewOptions) {
   scrollCalls.push(typeof opts === "object" && opts ? opts : {});

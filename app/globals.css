@@ -423,20 +423,21 @@ a:focus-visible {
 
 /* A passage that was carried into a question. Underlined rather than washed
    over: it sits inside prose the reader is still reading, so it has to read as
-   a link, not as a highlight. The mark keeps the text's own colour — the
-   underline is the whole signal. */
-mark.pr-quoted {
-  background: transparent;
-  color: inherit;
-  cursor: pointer;
-  text-decoration: underline;
+   a link, not as a highlight. It keeps the text's own colour — the underline
+   is the whole signal. Painted over React's text, never wrapped around it:
+   see lib/text-highlights. */
+::highlight(pr-quoted) {
+  text-decoration-line: underline;
   text-decoration-color: var(--quote);
   text-decoration-thickness: 2px;
   text-underline-offset: 2px;
-  border-radius: 2px;
 }
-mark.pr-quoted:hover {
-  background: var(--quote-dim);
+::highlight(pr-quoted-hover),
+::highlight(pr-quote-flash) {
+  background-color: var(--quote-dim);
+}
+[data-over-quote] {
+  cursor: pointer;
 }
 /* Landing on either end of a quote link pulses it, so the jump says where it
    arrived instead of leaving the reader to find the spot */

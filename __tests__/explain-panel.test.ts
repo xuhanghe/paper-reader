@@ -1,6 +1,6 @@
 // Must come first: react-dom decides at import time whether it is in a
 // browser, and takes an IE-era code path if it is not.
-import { dom, freshRoot } from "./helpers/dom-env.js";
+import { dom, freshRoot, painted } from "./helpers/dom-env.js";
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import { createElement, act } from "react";
@@ -1041,8 +1041,22 @@ describe("jumping between a passage and the question that quoted it", () => {
     show(annotations, streaming);
   };
 
-  const marks = () => Array.from(host.querySelectorAll("mark.pr-quoted"));
+  // What is underlined: painted over the text, never wrapped around it
+  const marks = () => painted("pr-quoted");
+  const textOf = (ranges: Range[]) => ranges.map((r) => r.toString()).join("");
   const click = (el: Element) => act(() => { el.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })); });
+  // A painted passage is clicked where its words are: the point resolves to
+  // the text under it, as caretRangeFromPoint does in a browser
+  const clickPassage = (range: Range) => {
+    const doc = dom.window.document as Document & { caretRangeFromPoint?: (x: number, y: number) => Range | null };
+    doc.caretRangeFromPoint = () => {
+      const at = doc.createRange();
+      at.setStart(range.startContainer, range.startOffset + 1);
+      at.collapse(true);
+      return at;
+    };
+    try { click(range.startContainer.parentElement!); } finally { Reflect.deleteProperty(doc, "caretRangeFromPoint"); }
+  };
   // The jump unfolds, waits for that render, then scrolls — so it lands a frame later
   const settle = async () => { await act(async () => { await new Promise((r) => setTimeout(r, 5)); }); };
   const flashed = () => host.querySelector(".pr-quote-flash");
@@ -1051,13 +1065,18 @@ describe("jumping between a passage and the question that quoted it", () => {
 
   test("the passage is underlined where it was written", () => {
     mount();
-    assert.equal(marks().length, 1);
-    assert.equal(marks()[0].textContent, PASSAGE);
+    assert.equal(textOf(marks()), PASSAGE);
+  });
+
+  test("the underline is painted, not wrapped: the answer's text is left as React made it", () => {
+    mount();
+    assert.ok(marks().length > 0);
+    assert.equal(host.querySelectorAll("mark").length, 0, "no element is put into React's DOM");
   });
 
   test("it is marked in the conversation it came from, not the one that quoted it", () => {
     mount();
-    const card = marks()[0].closest("[data-conversation]") as HTMLElement;
+    const card = marks()[0].startContainer.parentElement!.closest("[data-conversation]") as HTMLElement;
     assert.equal(card.dataset.conversation, "conversation A");
   });
 
@@ -1083,7 +1102,7 @@ describe("jumping between a passage and the question that quoted it", () => {
 
   test("clicking the underlined passage lands on the question that quoted it", async () => {
     mount();
-    click(marks()[0]);
+    clickPassage(marks()[0]);
     await settle();
     const landed = flashed();
     assert.ok(landed, "expected the jump to say where it arrived");
@@ -1094,10 +1113,20 @@ describe("jumping between a passage and the question that quoted it", () => {
     mount();
     click(chip()!);
     await settle();
-    const landed = flashed();
-    assert.ok(landed, "expected to land somewhere");
-    assert.equal(landed!.tagName, "MARK");
-    assert.equal(landed!.textContent, PASSAGE);
+    assert.equal(textOf(painted("pr-quote-flash")), PASSAGE, "the passage itself pulses");
+  });
+
+  test("an answer edited under its underline neither breaks nor keeps a stale one", () => {
+    // A <mark> cut into React's text made the next change to that answer show
+    // repeated words, or throw from insertBefore and take the panel down
+    mount();
+    const edited = { ...SOURCE, messages: [SOURCE.messages[0], { role: "assistant" as const, content: `So: ${PASSAGE}, **mostly**, at this size.` }] };
+    show([edited, ASKER]);
+    assert.equal(host.querySelector('[data-conversation="conversation A"]')!.textContent!.includes(`So: ${PASSAGE}, mostly, at this size.`), true);
+    assert.equal(textOf(marks()), PASSAGE, "painted again over the new text");
+    const gone = { ...SOURCE, messages: [SOURCE.messages[0], { role: "assistant" as const, content: "Something else entirely." }] };
+    show([gone, ASKER]);
+    assert.equal(marks().length, 0, "nothing left painted once the passage is gone");
   });
 
   test("a folded conversation unfolds itself rather than swallowing the jump", async () => {
@@ -1109,17 +1138,16 @@ describe("jumping between a passage and the question that quoted it", () => {
     assert.equal(marks().length, 0, "sanity: a folded conversation has nothing to mark");
     click(chip()!);
     await settle();
-    assert.equal(marks().length, 1, "the source conversation is open again");
-    assert.equal(flashed()?.textContent, PASSAGE);
+    assert.equal(textOf(marks()), PASSAGE, "the source conversation is open again");
+    assert.equal(textOf(painted("pr-quote-flash")), PASSAGE);
   });
 
   test("a conversation still being answered is left unmarked", () => {
-    // Its text is being rewritten chunk by chunk; wrapping marks around it
-    // mid-flight would fight React for the same nodes
+    // Its text is being rewritten chunk by chunk
     mount([SOURCE, ASKER], "a1");
     assert.equal(marks().length, 0);
     show([SOURCE, ASKER]);
-    assert.equal(marks().length, 1, "and marked again once the answer is done");
+    assert.equal(textOf(marks()), PASSAGE, "and marked again once the answer is done");
   });
 
   test("rewriting a question keeps the passage it pointed at", () => {
