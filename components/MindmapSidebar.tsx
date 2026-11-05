@@ -1,9 +1,10 @@
 "use client";
-import { useState, useRef, useEffect, memo } from "react";
+import { useState, useRef, useEffect, useMemo, memo } from "react";
 import { Mindmap, MindmapNode, ConceptEntry, Highlight } from "@/types/session";
 import { isSubmitKey } from "@/lib/keys";
 import { GrowingTextarea } from "./GrowingTextarea";
 import { CollapsedRail } from "./ResizablePanel";
+import { buildRankIndex, rankSearch } from "@/lib/search-rank";
 
 // How long a note entry stays lit after jumping to it from the paper
 const ENTRY_FLASH_MS = 1600;
@@ -437,6 +438,16 @@ export const MindmapSidebar = memo(function MindmapSidebar({
   };
 
   const [tab, setTab] = useState<Tab>("map");
+  // The concepts narrowed to what is typed, by name and takeaway, best first
+  const [conceptQuery, setConceptQuery] = useState("");
+  const conceptIndex = useMemo(
+    () => buildRankIndex(concepts.map((c) => ({ title: c.label, text: (c.takeaways ?? []).join("\n"), concept: c }))),
+    [concepts]
+  );
+  const shownConcepts = useMemo(
+    () => (conceptQuery.trim() ? rankSearch(conceptIndex, conceptQuery, 200).map((r) => r.doc.concept) : concepts),
+    [conceptIndex, conceptQuery, concepts]
+  );
 
   // Summaries are written when the list is looked at, not after every answer
   useEffect(() => {
@@ -806,7 +817,30 @@ export const MindmapSidebar = memo(function MindmapSidebar({
               What you work out in the Ask panel is summarised here
             </p>
           )}
-          {concepts.map((c) => (
+          {concepts.length > 0 && (
+            <div className="sticky top-0 z-10 -mx-2 -mt-2 px-2 pt-2 pb-1.5" style={{ background: "var(--paper)" }}>
+              <input
+                value={conceptQuery}
+                onChange={(e) => setConceptQuery(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.nativeEvent.isComposing) return;
+                  if (e.key === "Escape") { e.preventDefault(); setConceptQuery(""); }
+                  // Enter opens the best match's conversation
+                  if (e.key === "Enter" && shownConcepts[0] && conceptQuery.trim()) { e.preventDefault(); onSelectConcept(shownConcepts[0].annotationId); }
+                }}
+                placeholder="Find a concept…"
+                aria-label="Find a concept"
+                className="w-full rounded px-2 py-1 text-xs outline-none"
+                style={{ background: "var(--surface)", border: "1px solid var(--border)", color: "var(--ink)" }}
+              />
+              {conceptQuery.trim() && (
+                <p className="mt-1 px-0.5 text-[10px]" style={{ color: "var(--ink-faint)" }}>
+                  {shownConcepts.length ? `${shownConcepts.length} of ${concepts.length} · Enter opens the first` : "No concept matches"}
+                </p>
+              )}
+            </div>
+          )}
+          {shownConcepts.map((c) => (
             <ConceptCard
               key={c.annotationId}
               concept={c}
