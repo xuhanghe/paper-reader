@@ -699,6 +699,8 @@ export type PdfViewerHandle = {
   // The page in view — where the reader has read up to, for a question asked
   // with no passage to say so
   getCurrentPage?: () => number | undefined;
+  // Brings a page into view at its top; false until the document is there
+  goToPage?: (pageNumber: number) => boolean;
 };
 
 // Built on the official PDF.js viewer component (the same one Overleaf uses):
@@ -2818,6 +2820,12 @@ export const PdfViewer = memo(forwardRef<PdfViewerHandle, Props>(function PdfVie
   useImperativeHandle(ref, () => ({
     getScroll: () => containerRef.current?.scrollTop ?? 0,
     getCurrentPage: () => viewerRef.current?.currentPageNumber || undefined,
+    goToPage(pageNumber: number) {
+      const viewer = viewerRef.current;
+      if (!viewer || !viewer.pagesCount || pageNumber < 1 || pageNumber > viewer.pagesCount) return false;
+      viewer.currentPageNumber = pageNumber;
+      return true;
+    },
     setScroll: (top: number) => containerRef.current?.scrollTo({ top, behavior: "smooth" }),
     // Resolve a quote with the PDF character model used by pointer selection.
     // The brief flash and retained citation underline therefore share one

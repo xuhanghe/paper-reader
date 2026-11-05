@@ -1,0 +1,42 @@
+/* The ⌘K search box — see components/SearchPalette */
+
+.kbd { margin-left: 2px; border: 1px solid var(--border); border-radius: 4px; padding: 0 4px; color: var(--ink-faint); font: 10px/16px var(--font-geist-mono, ui-monospace), monospace; }
+
+.backdrop { position: fixed; inset: 0; z-index: 80; display: flex; justify-content: center; align-items: flex-start; padding: 11vh 16px 16px; background: rgba(5, 7, 9, .58); backdrop-filter: blur(2px); }
+.panel { width: min(720px, 100%); max-height: 76vh; display: flex; flex-direction: column; overflow: hidden; border: 1px solid var(--border); border-radius: 14px; background: var(--surface); box-shadow: 0 24px 64px rgba(0, 0, 0, .55); }
+
+.field { display: flex; align-items: center; gap: 10px; border-bottom: 1px solid var(--border-light); padding: 0 14px; }
+.field > span { color: var(--ink-faint); font-size: 18px; }
+.field input { flex: 1; min-width: 0; height: 52px; border: 0; outline: 0; background: transparent; color: var(--ink); font-size: 15px; }
+.field input::placeholder { color: var(--ink-faint); }
+.stop { flex: 0 0 auto; border: 1px solid var(--border); border-radius: 6px; background: transparent; padding: 3px 9px; color: var(--ink-muted); font-size: 11px; }
+.stop:hover { border-color: var(--accent); color: var(--ink); }
+
+.list { min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 6px; }
+.heading { margin: 8px 10px 4px; color: var(--ink-faint); font-size: 10px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; }
+.empty { margin: 0; padding: 14px 12px; color: var(--ink-faint); font-size: 12px; line-height: 1.6; }
+
+.row { width: 100%; display: flex; align-items: flex-start; gap: 10px; border: 0; border-radius: 9px; background: transparent; padding: 9px 10px; color: var(--ink-muted); text-align: left; }
+.row[aria-selected="true"] { background: rgba(230, 237, 243, .06); color: var(--ink); }
+.body { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 2px; }
+.body strong { overflow: hidden; color: var(--ink); font-size: 13px; font-weight: 550; white-space: nowrap; text-overflow: ellipsis; }
+.body small { display: -webkit-box; overflow: hidden; color: var(--ink-muted); font-size: 12px; line-height: 1.45; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.body em { color: var(--accent-bright); font-size: 12px; font-style: normal; line-height: 1.45; }
+.body i { overflow: hidden; color: var(--ink-faint); font-size: 11px; font-style: normal; white-space: nowrap; text-overflow: ellipsis; }
+
+.kind { flex: 0 0 auto; min-width: 86px; margin-top: 1px; border-radius: 5px; padding: 2px 6px; background: rgba(230, 237, 243, .06); color: var(--ink-muted); font-size: 10px; font-weight: 600; text-align: center; }
+.kind[data-kind="paper"] { background: var(--accent-faint); color: var(--accent-bright); }
+.kind[data-kind="conversation"] { background: var(--quote-dim); color: var(--quote); }
+.kind[data-kind="note"] { background: var(--badge-fig-bg); color: var(--badge-fig-fg); }
+
+.ask { margin-bottom: 2px; }
+.spark { flex: 0 0 auto; width: 86px; color: var(--accent); font-size: 14px; text-align: center; }
+.activity { display: flex; flex-direction: column; gap: 1px; }
+.activity small { -webkit-line-clamp: 1; color: var(--ink-faint); }
+.activity small[data-latest] { color: var(--ink-muted); }
+.error { color: #e88f7d !important; }
+
+@media (max-width: 640px) {
+  .kind, .spark { min-width: 0; width: auto; }
+  .backdrop { padding-top: 6vh; }
+}

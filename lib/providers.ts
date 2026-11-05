@@ -123,6 +123,9 @@ export type ClaudeRunOptions = {
   // How tools are permitted: the Reader skips prompts, the Workspace passes its mode
   permissionArgs?: string[];
   extraArgs?: string[];
+  // The Zotero library, through its MCP server; off for a run that must
+  // only read files
+  mcp?: boolean;
   onStderr?: (chunk: string) => void;
   // The request's own signal: a client that goes away stops the CLI
   signal?: AbortSignal;
@@ -161,7 +164,7 @@ export function claudeArgs(prompt: string, opts: ClaudeRunOptions = {}): string[
     "--verbose",
     ...(opts.permissionArgs ?? ["--dangerously-skip-permissions"]),
     ...(opts.extraArgs ?? []),
-    ...claudeMcpArgs(), // Zotero library access
+    ...(opts.mcp === false ? [] : claudeMcpArgs()), // Zotero library access
   ];
 }
 

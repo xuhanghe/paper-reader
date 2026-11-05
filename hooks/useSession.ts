@@ -570,6 +570,9 @@ export function useSession() {
   return {
     session,
     restoring,
+    // The paper open at launch is back (or there was none): a jump handed
+    // over from the other surface may open another now without racing it
+    hydrated,
     paperId: session.pdfName ? sessionIdFor(session.pdfName, session.zoteroKey) : null,
     flushSave,
     clearPaper,

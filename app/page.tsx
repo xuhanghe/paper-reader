@@ -29,6 +29,8 @@ import { SetupDialog } from "@/components/SetupDialog";
 import { loadOpenTabs, saveOpenTabs, subscribeOpenTabs, upsertOpenTab } from "@/lib/open-tabs";
 import { cacheDocument, forgetDocument, getCachedDocument } from "@/lib/document-cache";
 import { fetchZoteroDocument } from "@/lib/paper-data";
+import { SearchPalette } from "@/components/SearchPalette";
+import { onJump, takePendingJump, type Locator } from "@/lib/search-nav";
 import { imageFields, messageImages } from "@/lib/message-images";
 import { useAgentSkills } from "@/hooks/useAgentSkills";
 import { ResizeHandle, usePanelWidth } from "@/components/ResizablePanel";
@@ -98,6 +100,7 @@ export default function Home() {
   const {
     session,
     restoring,
+    hydrated,
     paperId,
     flushSave,
     clearPaper,
@@ -1412,6 +1415,100 @@ export default function Home() {
     void pdfViewerRef.current?.highlightText(page, quote);
   }, []);
 
+  // ── Going to a search result ──
+  // The paper is opened as the library opens it; once it and its saved
+  // conversations are on screen, the result is landed on: the turn in the Ask
+  // panel and its passage in the paper, the note and its highlight, or the
+  // words on the page.
+  type ReaderPlace = Extract<Locator, { paperId: string }>;
+  const [pendingJump, setPendingJump] = useState<ReaderPlace | null>(null);
+  const goToPlace = useCallback(async (loc: Locator) => {
+    if (!("paperId" in loc)) return;
+    if (loc.paperId !== paperId) {
+      try {
+        if (tabs.some((t) => t.id === loc.paperId)) {
+          await openTab(loc.paperId);
+        } else if (loc.zoteroKey) {
+          const loaded = await fetchZoteroDocument(loc.zoteroKey);
+          openMaterial(loaded.docType === "html" ? loc.title : `${loc.title}.pdf`, loaded.data, loaded.docType, loc.zoteroKey, loaded.attachmentKey, loaded.sourceUrl);
+        } else {
+          const res = await fetch(`/api/sessions?id=${encodeURIComponent(loc.paperId)}`);
+          const { state } = res.ok ? await res.json() : { state: null };
+          if (!state?.pdfDataUrl || !state.pdfName) throw new Error("This paper's document is no longer here.");
+          openMaterial(state.pdfName, state.pdfDataUrl, state.docType, undefined, undefined, state.sourceUrl);
+        }
+      } catch (error) {
+        setCiteMiss(`Could not open “${loc.title}”: ${error instanceof Error ? error.message : "unknown error"}`);
+        setTimeout(() => setCiteMiss(null), 6000);
+        return;
+      }
+    }
+    setPendingJump(loc);
+  }, [paperId, tabs, openTab, openMaterial]);
+
+  // Handed over from the Workspace, once the paper open at launch is back;
+  // and from the search box on this page
+  const goToPlaceRef = useRef(goToPlace);
+  useEffect(() => { goToPlaceRef.current = goToPlace; });
+  useEffect(() => {
+    if (!hydrated) return;
+    const handed = takePendingJump("reader");
+    if (handed) void goToPlaceRef.current(handed);
+  }, [hydrated]);
+  useEffect(() => onJump((loc) => void goToPlaceRef.current(loc)), []);
+
+  useEffect(() => {
+    const loc = pendingJump;
+    if (!loc || restoring || paperId !== loc.paperId || !session.pdfDataUrl) return;
+    setPendingJump(null);
+    // The viewer draws the document a moment after the paper opens: tried
+    // until it is there, or a few seconds have passed
+    const whenReady = async (attempt: () => Promise<unknown> | unknown, tries = 40) => {
+      for (let i = 0; i < tries; i++) {
+        if (await attempt()) return true;
+        await new Promise((r) => setTimeout(r, 250));
+      }
+      return false;
+    };
+    const viewer = () => pdfViewerRef.current;
+    const showWords = async (page: number, words: string) => {
+      if (!(await whenReady(() => viewer()?.goToPage?.(page)))) return;
+      const located = await viewer()?.highlightText(page, words);
+      if (located) return;
+      const found = await viewer()?.locateText?.(words);
+      if (found && found !== page) await viewer()?.highlightText(found, words);
+    };
+    if (loc.kind === "conversation" && loc.annotationId) {
+      const card = session.annotations.find((a) => a.id === loc.annotationId);
+      if (card) {
+        setExplainOpen(true);
+        setActiveAnnotationId(card.id);
+        // The question the result is about: by its place, checked against the
+        // card as it is now, else by its turn
+        const atIndex = loc.messageIndex !== undefined && card.messages[loc.messageIndex]?.role === "user" ? loc.messageIndex : -1;
+        const index = atIndex >= 0 ? atIndex : loc.turn ? card.messages.findIndex((m) => m.role === "user" && m.turn === loc.turn) : -1;
+        if (index >= 0) panelScroll.current?.revealMessage(card.id, index);
+        else panelScroll.current?.reveal(card.id);
+        if (card.type !== "image" && card.pageNumber && card.selectedText) void showWords(card.pageNumber, card.selectedText.slice(0, 400));
+        else if (card.pageNumber) void whenReady(() => viewer()?.goToPage?.(card.pageNumber!));
+        return;
+      }
+    }
+    if (loc.kind === "note") {
+      revealNote(loc.noteId);
+      if (loc.page) {
+        void whenReady(() => viewer()?.goToPage?.(loc.page!)).then(async (ready) => {
+          if (!ready) return;
+          const landed = await viewer()?.scrollToHighlight?.(loc.noteId, loc.page);
+          if (!landed && loc.text) await viewer()?.highlightText(loc.page!, loc.text);
+        });
+      }
+      return;
+    }
+    if (loc.page && "quote" in loc && loc.quote) void showWords(loc.page, loc.quote);
+    else if (loc.page) void whenReady(() => viewer()?.goToPage?.(loc.page!));
+  }, [pendingJump, restoring, paperId, session.pdfDataUrl, session.annotations, revealNote]);
+
   if (!isClient) {
     return <div className="h-screen" style={{ background: "var(--paper)" }} />;
   }
@@ -1431,6 +1528,7 @@ export default function Home() {
         </nav>
 
         <div className="pr-reader-actions">
+          <SearchPalette surface="reader" />
           <button type="button" onClick={() => setSkillsOpen(true)} className="pr-capability-button" title="Choose agent skills">
             <i aria-hidden>◆</i><span>Skills</span>{activeSkillIds.length > 0 && <small>{activeSkillIds.length}</small>}
           </button>

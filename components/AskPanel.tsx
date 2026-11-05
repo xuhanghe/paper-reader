@@ -68,6 +68,9 @@ export type PanelScroll = {
   // Bring a conversation into view at its beginning and focus its first
   // pair — a passage of the paper clicked, whether or not it is already active
   reveal: (id: string) => void;
+  // One message of a conversation, unfolded, centred and pulsed — where a
+  // search result for one turn lands
+  revealMessage: (id: string, index: number) => void;
 };
 
 
@@ -794,7 +797,9 @@ export const ExplainPanel = memo(function ExplainPanel({ annotations, activeId, 
 
   // A reveal asked for from the paper: consumed by the landing below, which
   // runs again for it even when the active conversation does not change
-  const pendingReveal = useRef<string | null>(null);
+  // A conversation to arrive at as if its passage were clicked — at one of
+  // its messages, when a search result names one
+  const pendingReveal = useRef<{ id: string; index?: number } | null>(null);
   const [revealSeq, setRevealSeq] = useState(0);
   useImperativeHandle(
     scrollHandle,
@@ -802,7 +807,14 @@ export const ExplainPanel = memo(function ExplainPanel({ annotations, activeId, 
       get: () => scrollRef.current?.scrollTop ?? 0,
       set: (top: number) => scrollRef.current?.scrollTo({ top, behavior: "smooth" }),
       reveal: (id: string) => {
-        pendingReveal.current = id;
+        pendingReveal.current = { id };
+        setRevealSeq((n) => n + 1);
+      },
+      // Through the same arrival as a reveal, so nothing else lands after it
+      // and takes the panel back to the conversation's beginning
+      revealMessage: (id: string, index: number) => {
+        expand(id);
+        pendingReveal.current = { id, index };
         setRevealSeq((n) => n + 1);
       },
       quote: (text: string, page?: number) => {
@@ -1005,7 +1017,8 @@ export const ExplainPanel = memo(function ExplainPanel({ annotations, activeId, 
     // The panel just opened for this conversation: its card mounts a render
     // later, and the arrival is still owed then
     if (!card || !active) return;
-    const revealed = pendingReveal.current === activeId;
+    const reveal = pendingReveal.current?.id === activeId ? pendingReveal.current : null;
+    const revealed = !!reveal;
     pendingReveal.current = null;
     const switched = lastActiveId.current !== activeId || revealed;
     lastActiveId.current = activeId;
@@ -1065,11 +1078,18 @@ export const ExplainPanel = memo(function ExplainPanel({ annotations, activeId, 
       // clicked, and is not scrolled to
       if (justRestored.current === positionKey) { justRestored.current = null; if (!revealed) return; }
       const id = activeId;
+      // A search result arrives at the message it named: centred, pulsed,
+      // and the pair it opens is the focus
+      const named = reveal?.index !== undefined ? messageRefs.current[`${id}:${reveal.index}`] ?? null : null;
+      const namedPair = named ? pairsOf(active).find((p) => reveal!.index! >= p.start && reveal!.index! < p.end) : undefined;
       const arrive = (glide: boolean) => {
-        trace("scrollIntoView", { reason: glide ? "switched to a conversation" : "opened for a conversation", target: describeForTrace(card), block: "start" });
+        const target = named?.isConnected ? named : card;
+        const block = target === card ? "start" : "center";
+        trace("scrollIntoView", { reason: target === card ? (glide ? "switched to a conversation" : "opened for a conversation") : "arrived at a message", target: describeForTrace(target), block });
         if (glide) smoothUntil.current = Date.now() + 700;
-        card.scrollIntoView(glide ? { behavior: "smooth", block: "start" } : { block: "start" });
+        target.scrollIntoView(glide ? { behavior: "smooth", block } : { block });
         if (!glide) captureAnchor();
+        if (target !== card) flash(target);
         // Arriving at a conversation — opened, or just made by an explain — is
         // leaving the followed one for it: its first pair is now the focus,
         // followed by nothing, and where a follow-up goes. A passage clicked
@@ -1078,7 +1098,7 @@ export const ExplainPanel = memo(function ExplainPanel({ annotations, activeId, 
         const f = followRef.current;
         if (f.id !== id || revealed) {
           pinned.current = null;
-          setFollowing({ id, index: pairsOf(active)[0]?.start ?? 0, mode: "free" }, revealed ? "revealed" : "switched");
+          setFollowing({ id, index: namedPair?.start ?? pairsOf(active)[0]?.start ?? 0, mode: "free" }, revealed ? "revealed" : "switched");
         }
       };
       // The panel was folded and has just opened for this: straight there,

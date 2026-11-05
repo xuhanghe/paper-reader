@@ -37,6 +37,9 @@ export type WorkspaceAgentHandle = {
   ask: (ask: AgentAsk) => void;
   // A passage held for the next question, as the Reader's Quote does
   quote: (text: string, page?: number, remark?: string) => void;
+  // A message of the conversation, centred and pulsed — where a search
+  // result lands. False when it is not in this conversation.
+  revealMessage: (id: string) => boolean;
 };
 
 type Props = {
@@ -493,7 +496,19 @@ export const WorkspaceAgent = memo(forwardRef<WorkspaceAgentHandle, Props>(funct
     });
   };
 
-  useImperativeHandle(ref, () => ({ ask: (input) => void ask(input), quote }));
+  const revealMessage = (id: string) => {
+    const el = Array.from(listRef.current?.querySelectorAll<HTMLElement>("[data-message-id]") ?? []).find((m) => m.dataset.messageId === id);
+    if (!el) return false;
+    el.scrollIntoView({ block: "center", behavior: "smooth" });
+    el.classList.remove(styles.landed);
+    // Restarted on a second landing on the same message
+    void el.offsetWidth;
+    el.classList.add(styles.landed);
+    setTimeout(() => el.classList.remove(styles.landed), 1600);
+    return true;
+  };
+
+  useImperativeHandle(ref, () => ({ ask: (input) => void ask(input), quote, revealMessage }));
 
   const stop = useCallback(() => { if (workspaceId) stopRun(workspaceId); }, [workspaceId]);
 

@@ -607,7 +607,8 @@ export const MindmapSidebar = memo(function MindmapSidebar({
                 return (
                   <div
                     key={n.key}
-                    className="rounded px-2 py-1.5"
+                    ref={(el) => { entryRefs.current[`zotero-note-${n.key}`] = el; }}
+                    className={`rounded px-2 py-1.5${flashEntry === `zotero-note-${n.key}` ? " pr-entry-flash" : ""}`}
                     style={{ background: "var(--surface)", border: "1px solid var(--border-light)", borderLeft: "2px solid var(--badge-fig-fg)" }}
                   >
                     <div

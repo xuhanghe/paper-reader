@@ -117,3 +117,8 @@ label.iconButton[data-disabled] { opacity: .35; cursor: default; }
   .working i { animation: none; opacity: .6; }
   .tools summary::after { transition: none; }
 }
+
+/* A message a search landed on */
+@keyframes landed { 0%, 100% { box-shadow: 0 0 0 0 transparent; } 35% { box-shadow: 0 0 0 3px rgba(225, 195, 105, .45); } }
+.landed { animation: landed .75s ease-in-out 2; }
+.agent.landed { border-radius: 10px; }

@@ -16,6 +16,8 @@ import { SkillsDrawer } from "@/components/SkillsDrawer";
 import { WorkspaceAgent, type AgentAsk, type WorkspaceAgentHandle } from "@/components/WorkspaceAgent";
 import { CopyPapersDialog, CreateWorkspaceDialog, DeleteWorkspaceDialog, PaperPicker } from "@/components/WorkspaceDialogs";
 import { CollapsedRail, ResizeHandle, usePanelWidth } from "@/components/ResizablePanel";
+import { SearchPalette } from "@/components/SearchPalette";
+import { onJump, takePendingJump, type Locator } from "@/lib/search-nav";
 import { FileIcon, FolderIcon } from "@/components/FileIcon";
 import { useAgentSkills } from "@/hooks/useAgentSkills";
 import { useWorkspaceFiles } from "@/hooks/useWorkspaceFiles";
@@ -290,6 +292,46 @@ export function WorkspaceShell() {
     if (!activeWorkspaceId) return;
     docStore(activeWorkspaceId).save(openDocs);
   }, [openDocs, activeWorkspaceId]);
+
+  // ── Going to a search result ──
+  // Its workspace first; then the file opened, or the agent shown and the
+  // message landed on once that workspace's conversation is on screen
+  const [pendingMessage, setPendingMessage] = useState<{ workspaceId: string; messageId: string } | null>(null);
+  const goToPlace = (loc: Locator) => {
+    if (loc.kind !== "workspace-chat" && loc.kind !== "workspace-file") return;
+    if (!workspaces.some((w) => w.id === loc.workspaceId)) {
+      setNotice(`“${loc.workspaceName}” is no longer in Paper Reader.`);
+      return;
+    }
+    if (loc.workspaceId !== activeWorkspace?.id) switchWorkspace(loc.workspaceId);
+    if (loc.kind === "workspace-file") {
+      const name = loc.path.split("/").pop() || loc.path;
+      const extension = name.includes(".") ? name.split(".").pop()!.toLowerCase() : "";
+      void openDocument(extension === "pdf"
+        ? { id: `workspace-pdf:${loc.path}`, kind: "workspacePdf", path: loc.path, name }
+        : { id: `file:${loc.path}`, kind: "file", path: loc.path, name, extension });
+      return;
+    }
+    setAgentOpen(true);
+    setPendingMessage({ workspaceId: loc.workspaceId, messageId: loc.messageId });
+  };
+  const goToPlaceRef = useRef(goToPlace);
+  useEffect(() => { goToPlaceRef.current = goToPlace; });
+  useEffect(() => {
+    const handed = takePendingJump("workspace");
+    if (handed) goToPlaceRef.current(handed);
+    return onJump((loc) => goToPlaceRef.current(loc));
+  }, []);
+  useEffect(() => {
+    if (!pendingMessage || activeWorkspace?.id !== pendingMessage.workspaceId) return;
+    const { messageId } = pendingMessage;
+    setPendingMessage(null);
+    // The agent's panel is remounted for the workspace: two frames for it to
+    // be drawn with its conversation
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      if (!agentRef.current?.revealMessage(messageId)) setNotice("That message is no longer in this workspace's chat.");
+    }));
+  }, [pendingMessage, activeWorkspace?.id]);
 
   useEffect(() => {
     // Never persist the null that every mount starts with — it would erase
@@ -624,7 +666,7 @@ export function WorkspaceShell() {
       <header className="pr-app-bar">
         <div className="pr-brand"><span>P</span><strong>Paper Reader</strong></div>
         <nav className="pr-surface-switch" aria-label="Application surface"><Link href="/">Reader</Link><Link href="/workspace" className="active" aria-current="page">Workspace</Link></nav>
-        <div className="pr-reader-actions"><button className="pr-capability-button" onClick={() => setSkillsOpen(true)} title="Choose agent skills"><i aria-hidden>◆</i><span>Skills</span>{activeSkillIds.length > 0 && <small>{activeSkillIds.length}</small>}</button>{activeWorkspace && <span className={styles.workspaceName} style={hueStyle(activeWorkspace.id)}><i />{activeWorkspace.name}</span>}</div>
+        <div className="pr-reader-actions"><SearchPalette surface="workspace" /><button className="pr-capability-button" onClick={() => setSkillsOpen(true)} title="Choose agent skills"><i aria-hidden>◆</i><span>Skills</span>{activeSkillIds.length > 0 && <small>{activeSkillIds.length}</small>}</button>{activeWorkspace && <span className={styles.workspaceName} style={hueStyle(activeWorkspace.id)}><i />{activeWorkspace.name}</span>}</div>
       </header>
 
       <main className={styles.shell}>

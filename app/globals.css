@@ -432,7 +432,9 @@ a:focus-visible {
   text-decoration-thickness: 2px;
   text-underline-offset: 2px;
 }
-::highlight(pr-quoted-hover),
+::highlight(pr-quoted-hover) {
+  background-color: var(--quote-dim);
+}
 ::highlight(pr-quote-flash) {
   background-color: var(--quote-dim);
 }
