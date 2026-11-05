@@ -19,8 +19,23 @@ import { landingFor, type Locator, type SearchDoc, type WorkspaceInput } from "@
 export type FoundResult = { id: string; kind: SearchDoc["kind"]; title: string; where: string; why: string; locator: Locator };
 export type AgentEvent =
   | { type: "activity"; text: string }
-  | { type: "results"; results: FoundResult[] }
+  | { type: "results"; reply?: string; results: FoundResult[] }
   | { type: "error"; message: string };
+
+// The search so far, when it is a conversation: what I said, and what was
+// found for it
+export type SearchTurn = { role: "user" | "agent"; text: string; found?: { id: string; title: string }[] };
+
+export function parseHistory(value: unknown): SearchTurn[] {
+  if (!Array.isArray(value)) return [];
+  return value.slice(-12).flatMap((t: Record<string, unknown>) => {
+    if ((t?.role !== "user" && t?.role !== "agent") || typeof t.text !== "string") return [];
+    const found = Array.isArray(t.found)
+      ? (t.found as Record<string, unknown>[]).filter((f) => typeof f?.id === "string" && typeof f.title === "string").slice(0, 8).map((f) => ({ id: f.id as string, title: (f.title as string).slice(0, 160) }))
+      : undefined;
+    return [{ role: t.role as SearchTurn["role"], text: t.text.slice(0, 1500), found }];
+  });
+}
 
 const MODEL = "claude:sonnet";
 const EFFORT = "low";
@@ -47,16 +62,22 @@ export function catalogLine(doc: SearchDoc): string {
   });
 }
 
-export function searchPrompt(memory: string, catalogPath: string, candidates: SearchDoc[], workspaceRoots: string[]): string {
+export function searchPrompt(memory: string, catalogPath: string, candidates: SearchDoc[], workspaceRoots: string[], reading?: { id: string; title: string }, history: SearchTurn[] = []): string {
+  const earlier = history.length
+    ? `\nEarlier in this search, oldest first — my message now may narrow, correct or follow up on it:\n${history
+        .map((t) => (t.role === "user" ? `- I said: ${clip(t.text, 400)}` : `- You answered: ${clip(t.text, 300) || "(nothing said)"}${t.found?.length ? `; found ${t.found.map((f) => `${f.title} [${f.id}]`).join("; ")}` : "; found nothing"}`))
+        .join("\n")}\n`
+    : "";
   const shortlist = candidates.length
     ? candidates.map((d) => `- ${d.id} (${d.kind}, in “${clip(d.where, 60)}”): ${clip(d.title, 120)}`).join("\n")
     : "(none — nothing shares a word with it)";
   return `You find things in my research library from a vague memory of them, and say exactly where they are.
 
-What I remember: «${memory}»
-
+${earlier}
+What I remember, or ask now: «${memory}»
+${reading ? `\nI am reading “${reading.title}” (paper id ${reading.id}) right now: when the memory fits something in it, that is most likely what I mean.\n` : ""}
 The library, one JSON object per line, each with an "id": ${catalogPath}
-Kinds: paper (its record, structure map and what I worked out about it), conversation (one of my conversations about a paper in the Reader, its questions listed by turn), note (a highlight or a note on a paper), workspace-chat (a message of mine in a workspace's chat), workspace-file (a file in a workspace).
+Kinds: paper (its record, structure map and what I worked out about it), conversation (one of my conversations about a paper in the Reader, its questions listed by turn), concept (what one of those conversations established), note (a highlight or a note on a paper), workspace-chat (a message of mine in a workspace's chat), workspace-file (a file in a workspace).
 
 The closest by plain word match, best first — they may all be wrong:
 ${shortlist}
@@ -69,14 +90,28 @@ ${workspaceRoots.length ? `- the workspace folders: ${workspaceRoots.join(", ")}
 My memory may be in Chinese while the source is in English, or the other way round, and its details may be off: search for the idea in both languages and with other words for it. Grep the catalog first; read a file only to confirm. Be quick.
 
 Answer with JSON only, nothing after it:
-{"results": [{"id": "<an id from the catalog>", "why": "<one short sentence, in the language of my memory, saying why this is it>", "turn": <for a conversation, the turn that matches>, "page": <for a paper, the page>, "quote": "<for a paper, 5 to 15 words copied exactly from paper.md on that page, marking the spot>"}]}
-Best first, at most ${MAX_RESULTS}, only what you are fairly sure of. Never make up an id. If nothing fits: {"results": []}`;
+{"reply": "<one or two sentences, in the language of my message: what you found, or what you need from me to find it>", "results": [{"id": "<an id from the catalog>", "why": "<one short sentence, in the language of my message, saying why this is it>", "turn": <for a conversation, the turn that matches>, "page": <for a paper, the page>, "quote": "<for a paper, 5 to 15 words copied exactly from paper.md on that page; for a conversation, the sentence of my question or of the answer that matches, copied exactly>"}]}
+Best first, at most ${MAX_RESULTS}, only what you are fairly sure of. Never make up an id. If nothing fits, say so in the reply, with "results": [].`;
+}
+
+/** What the agent said, from its answer: its reply in a sentence or two. */
+export function parseReply(text: string): string | undefined {
+  const at = text.lastIndexOf('{"reply"');
+  const start = at >= 0 ? at : text.lastIndexOf("{");
+  if (start < 0) return undefined;
+  try {
+    const body = JSON.parse(text.slice(start, text.lastIndexOf("}") + 1)) as { reply?: unknown };
+    return typeof body.reply === "string" && body.reply.trim() ? clip(body.reply, 600) : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** The results the agent named, checked against the index: unknown ids dropped. */
 export function parseFound(text: string, byId: Map<string, SearchDoc>, memory = ""): FoundResult[] {
-  // The last JSON object holding "results"
-  const at = text.lastIndexOf('{"results"');
+  // The last JSON object holding "results" (and, these days, a reply first)
+  const replyAt = text.lastIndexOf('{"reply"');
+  const at = replyAt >= 0 ? replyAt : text.lastIndexOf('{"results"');
   const start = at >= 0 ? at : text.indexOf("{");
   if (start < 0) return [];
   let body: { results?: unknown };
@@ -94,8 +129,8 @@ export function parseFound(text: string, byId: Map<string, SearchDoc>, memory = 
     const page = Number(raw.page);
     const turn = Number(raw.turn);
     const quote = typeof raw.quote === "string" ? raw.quote.trim().slice(0, 300) : "";
-    // The turn it named, or the exchange the memory matches best
-    if (locator.kind === "conversation") locator = landingFor(doc, memory, Number.isInteger(turn) && turn > 0 ? turn : undefined);
+    // The sentence it quoted, in the turn it named; or the one the memory matches best
+    if (locator.kind === "conversation") locator = landingFor(doc, memory, Number.isInteger(turn) && turn > 0 ? turn : undefined, quote || undefined);
     if (locator.kind === "paper" && Number.isInteger(page) && page > 0) locator = { ...locator, page, ...(quote ? { quote } : {}) };
     out.push({
       id: doc.id,
@@ -129,7 +164,9 @@ export async function* findFromMemory(
   memory: string,
   index: RankIndex<SearchDoc>,
   workspaces: WorkspaceInput[],
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  reading?: { id: string; title: string },
+  history: SearchTurn[] = []
 ): AsyncGenerator<AgentEvent> {
   const run = path.join(SESSIONS_ROOT, "_search", `${Date.now()}-${process.pid}-${Math.random().toString(36).slice(2, 8)}`);
   const catalogPath = path.join(run, "catalog.jsonl");
@@ -139,11 +176,14 @@ export async function* findFromMemory(
   try {
     await mkdir(run, { recursive: true });
     await writeFile(catalogPath, index.docs.map(catalogLine).join("\n") + "\n");
-    const candidates = rankSearch(index, memory, CANDIDATES).map((r) => r.doc);
+    // Matched by word on the whole search so far, so a follow-up as short as
+    // "the other one" still has the first message's words to go on
+    const words = [memory, ...history.filter((t) => t.role === "user").map((t) => t.text)].join(" ");
+    const candidates = rankSearch(index, words, CANDIDATES).map((r) => r.doc);
     yield { type: "activity", text: candidates.length ? `${candidates.length} close matches by word; looking further` : "No word in common with anything; looking by meaning" };
 
     const timeout = AbortSignal.timeout(TIME_LIMIT_MS);
-    const stream = claudeStream(searchPrompt(memory, catalogPath, candidates, roots), {
+    const stream = claudeStream(searchPrompt(memory, catalogPath, candidates, roots, reading, history), {
       model: MODEL,
       effort: EFFORT,
       cwd: SESSIONS_ROOT,
@@ -190,7 +230,7 @@ export async function* findFromMemory(
       yield { type: "error", message: clip(failure, 300) };
       return;
     }
-    yield { type: "results", results: parseFound(finalText, byId, memory) };
+    yield { type: "results", reply: parseReply(finalText), results: parseFound(finalText, byId, memory) };
   } catch (error) {
     yield { type: "error", message: error instanceof Error ? error.message : "The search could not run." };
   } finally {
@@ -198,14 +238,36 @@ export async function* findFromMemory(
   }
 }
 
-/** The plain-word results, as the box shows them while typing. */
-export function quickResults(index: RankIndex<SearchDoc>, query: string, limit = 24) {
-  return rankSearch(index, query, limit).map(({ doc }) => ({
+// How many of the paper being read come first
+const HERE_LIMIT = 8;
+
+// What a result shows of itself: for a conversation, the sentence found,
+// question or answer, as a quote; for anything else, the words around the match
+function citeFor(doc: SearchDoc, query: string): { snippet: string; locator: Locator } {
+  const locator = landingFor(doc, query);
+  if (locator.kind === "conversation" && locator.quote) return { snippet: locator.quote, locator };
+  return { snippet: snippet(doc.text || doc.title, query), locator };
+}
+
+/** Whether a result is one of the paper being read's own conversations or concepts. */
+const isHere = (doc: SearchDoc, paperId?: string) =>
+  !!paperId && (doc.kind === "conversation" || doc.kind === "concept") && (doc.locator as { paperId?: string }).paperId === paperId;
+
+/**
+ * The plain-word results, as the box shows them while typing: the paper
+ * being read's own conversations and concepts first, marked as such, then the
+ * rest of the library.
+ */
+export function quickResults(index: RankIndex<SearchDoc>, query: string, limit = 24, paperId?: string) {
+  const ranked = rankSearch(index, query, paperId ? 400 : limit).map((r) => r.doc);
+  const here = ranked.filter((d) => isHere(d, paperId)).slice(0, HERE_LIMIT);
+  const elsewhere = ranked.filter((d) => !isHere(d, paperId)).slice(0, limit);
+  return [...here, ...elsewhere].map((doc) => ({
     id: doc.id,
     kind: doc.kind,
     title: doc.title,
     where: doc.where,
-    snippet: snippet(doc.text || doc.title, query),
-    locator: landingFor(doc, query),
+    here: isHere(doc, paperId),
+    ...citeFor(doc, query),
   }));
 }

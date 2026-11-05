@@ -6,8 +6,8 @@ import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { appendThread, dirFor, withdrawTurns, writeState } from "../lib/session-store.js";
-import { buildSearchIndex, forgetSearchCache, landingFor, parseWorkspaces } from "../lib/search-index.js";
-import { catalogLine, parseFound, searchPrompt } from "../lib/search-agent.js";
+import { buildSearchIndex, forgetSearchCache, landingFor, parseWorkspaces, sentencesOf } from "../lib/search-index.js";
+import { catalogLine, parseFound, parseHistory, parseReply, searchPrompt } from "../lib/search-agent.js";
 import { rankSearch } from "../lib/search-rank.js";
 
 // Everything that can be found, each with where it is: a paper, its
@@ -75,15 +75,30 @@ describe("the index", () => {
     assert.equal(rankSearch(index, "prior prevalence", 200).find((r) => r.doc.id.includes(P))?.doc.id, conv.id);
   });
 
-  test("a result in a conversation lands on the exchange the words match, not the conversation's beginning", async () => {
+  test("a result in a conversation cites the sentence the words match, question or answer, and lands on its message", async () => {
     const index = await buildSearchIndex(workspaces());
     const conv = index.docs.find((d) => d.id === `conv:${P}:card-1`)!;
-    const byWords = landingFor(conv, "prevalence prior");
-    assert.deepEqual(byWords.kind === "conversation" && [byWords.messageIndex, byWords.turn], [2, 3]);
-    const firstPair = landingFor(conv, "dilution matter");
-    assert.deepEqual(firstPair.kind === "conversation" && [firstPair.messageIndex, firstPair.turn], [0, 1]);
+    const inAnswer = landingFor(conv, "prevalence");
+    assert.deepEqual(inAnswer.kind === "conversation" && [inAnswer.messageIndex, inAnswer.turn, inAnswer.quote, inAnswer.inAnswer], [3, 3, "The prior is the prevalence.", true]);
+    const inQuestion = landingFor(conv, "dilution matter");
+    assert.deepEqual(inQuestion.kind === "conversation" && [inQuestion.messageIndex, inQuestion.quote, inQuestion.inAnswer], [0, "why does dilution matter here?", false]);
     const nothing = landingFor(conv, "quantum chromodynamics");
     assert.equal(nothing.kind === "conversation" && nothing.messageIndex, undefined, "no word in common: the conversation itself");
+  });
+
+  test("the agent's quote is taken where it is really there; its turn narrows the search", async () => {
+    const index = await buildSearchIndex(workspaces());
+    const conv = index.docs.find((d) => d.id === `conv:${P}:card-1`)!;
+    const quoted = landingFor(conv, "", undefined, "Pooling dilutes a positive sample.");
+    assert.deepEqual(quoted.kind === "conversation" && [quoted.messageIndex, quoted.inAnswer, quoted.quote], [1, true, "Pooling dilutes a positive sample."]);
+    const invented = landingFor(conv, "prior prevalence", undefined, "words nobody ever wrote here");
+    assert.equal(invented.kind === "conversation" && invented.quote, "The prior is the prevalence.", "an invented quote falls back to the words");
+    const turnOnly = landingFor(conv, "", 3);
+    assert.deepEqual(turnOnly.kind === "conversation" && [turnOnly.messageIndex, turnOnly.turn], [2, 3], "the turn named, at its question");
+  });
+
+  test("a sentence reads as it does on screen", () => {
+    assert.deepEqual(sentencesOf("**MAC** 是认证标签。它不能防止 replay！See [the paper](paper:3). Then `x`."), ["MAC 是认证标签。", "它不能防止 replay！", "See the paper.", "Then x."]);
   });
 
   test("turns with no card go by the paper and the page asked on; a deleted turn stays deleted", async () => {
@@ -133,6 +148,21 @@ describe("what the agent is given and what it answers", () => {
     assert.match(prompt, /\/tmp\/catalog\.jsonl/);
     assert.match(prompt, /the workspace folders: \/w\/one/);
     assert.match(prompt, /Never make up an id/);
+  });
+
+  test("a follow-up is sent with the search so far, and the reply is read out of the answer", () => {
+    const history = parseHistory([
+      { role: "user", text: "讲 DPU 加密的那篇" },
+      { role: "agent", text: "两篇都可能", found: [{ id: "paper:A", title: "SCALE" }, { id: 7 }] },
+      { role: "system", text: "dropped" },
+    ]);
+    assert.equal(history.length, 2);
+    assert.deepEqual(history[1].found, [{ id: "paper:A", title: "SCALE" }]);
+    const prompt = searchPrompt("不是这个", "/tmp/c.jsonl", [], [], { id: "R1", title: "Reading It" }, history);
+    assert.match(prompt, /Earlier in this search[\s\S]*I said: 讲 DPU 加密的那篇[\s\S]*You answered: 两篇都可能; found SCALE \[paper:A\]/);
+    assert.match(prompt, /I am reading “Reading It” \(paper id R1\)/);
+    assert.equal(parseReply('ok {"reply": "是这篇", "results": []}'), "是这篇");
+    assert.equal(parseReply("no json"), undefined);
   });
 
   test("only ids in the index come back, and a turn or page only where it is real", async () => {

@@ -69,8 +69,8 @@ export type PanelScroll = {
   // pair — a passage of the paper clicked, whether or not it is already active
   reveal: (id: string) => void;
   // One message of a conversation, unfolded, centred and pulsed — where a
-  // search result for one turn lands
-  revealMessage: (id: string, index: number) => void;
+  // search result lands; with a quote, that sentence of it is what is lit
+  revealMessage: (id: string, index: number, quote?: string) => void;
 };
 
 
@@ -799,7 +799,7 @@ export const ExplainPanel = memo(function ExplainPanel({ annotations, activeId, 
   // runs again for it even when the active conversation does not change
   // A conversation to arrive at as if its passage were clicked — at one of
   // its messages, when a search result names one
-  const pendingReveal = useRef<{ id: string; index?: number } | null>(null);
+  const pendingReveal = useRef<{ id: string; index?: number; quote?: string } | null>(null);
   const [revealSeq, setRevealSeq] = useState(0);
   useImperativeHandle(
     scrollHandle,
@@ -812,9 +812,9 @@ export const ExplainPanel = memo(function ExplainPanel({ annotations, activeId, 
       },
       // Through the same arrival as a reveal, so nothing else lands after it
       // and takes the panel back to the conversation's beginning
-      revealMessage: (id: string, index: number) => {
+      revealMessage: (id: string, index: number, quote?: string) => {
         expand(id);
-        pendingReveal.current = { id, index };
+        pendingReveal.current = { id, index, quote };
         setRevealSeq((n) => n + 1);
       },
       quote: (text: string, page?: number) => {
@@ -1082,14 +1082,19 @@ export const ExplainPanel = memo(function ExplainPanel({ annotations, activeId, 
       // and the pair it opens is the focus
       const named = reveal?.index !== undefined ? messageRefs.current[`${id}:${reveal.index}`] ?? null : null;
       const namedPair = named ? pairsOf(active).find((p) => reveal!.index! >= p.start && reveal!.index! < p.end) : undefined;
+      // The sentence the search cited, found in the message as it is drawn
+      const cited = named && reveal?.quote ? rangesForText(named, reveal.quote.replace(/…$/, "").slice(0, 160)) : [];
       const arrive = (glide: boolean) => {
-        const target = named?.isConnected ? named : card;
+        const live = cited.filter(rangeIsLive);
+        const target = live[0]?.startContainer.parentElement ?? (named?.isConnected ? named : card);
         const block = target === card ? "start" : "center";
         trace("scrollIntoView", { reason: target === card ? (glide ? "switched to a conversation" : "opened for a conversation") : "arrived at a message", target: describeForTrace(target), block });
         if (glide) smoothUntil.current = Date.now() + 700;
         target.scrollIntoView(glide ? { behavior: "smooth", block } : { block });
         if (!glide) captureAnchor();
-        if (target !== card) flash(target);
+        // The sentence itself pulses where it can be painted; else the message
+        if (live.length && canPaintRanges()) flashRanges(live);
+        else if (named) flash(named);
         // Arriving at a conversation — opened, or just made by an explain — is
         // leaving the followed one for it: its first pair is now the focus,
         // followed by nothing, and where a follow-up goes. A passage clicked

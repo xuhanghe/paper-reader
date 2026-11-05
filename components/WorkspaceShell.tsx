@@ -666,7 +666,7 @@ export function WorkspaceShell() {
       <header className="pr-app-bar">
         <div className="pr-brand"><span>P</span><strong>Paper Reader</strong></div>
         <nav className="pr-surface-switch" aria-label="Application surface"><Link href="/">Reader</Link><Link href="/workspace" className="active" aria-current="page">Workspace</Link></nav>
-        <div className="pr-reader-actions"><SearchPalette surface="workspace" /><button className="pr-capability-button" onClick={() => setSkillsOpen(true)} title="Choose agent skills"><i aria-hidden>◆</i><span>Skills</span>{activeSkillIds.length > 0 && <small>{activeSkillIds.length}</small>}</button>{activeWorkspace && <span className={styles.workspaceName} style={hueStyle(activeWorkspace.id)}><i />{activeWorkspace.name}</span>}</div>
+        <div className="pr-reader-actions"><SearchPalette surface="workspace" reading={activeDoc?.kind === "paper" ? { id: activeDoc.paper.id, title: activeDoc.paper.name.replace(/\.pdf$/i, "") } : undefined} /><button className="pr-capability-button" onClick={() => setSkillsOpen(true)} title="Choose agent skills"><i aria-hidden>◆</i><span>Skills</span>{activeSkillIds.length > 0 && <small>{activeSkillIds.length}</small>}</button>{activeWorkspace && <span className={styles.workspaceName} style={hueStyle(activeWorkspace.id)}><i />{activeWorkspace.name}</span>}</div>
       </header>
 
       <main className={styles.shell}>

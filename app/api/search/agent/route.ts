@@ -1,5 +1,5 @@
 import { buildSearchIndex, parseWorkspaces } from "@/lib/search-index";
-import { findFromMemory } from "@/lib/search-agent";
+import { findFromMemory, parseHistory } from "@/lib/search-agent";
 
 export const runtime = "nodejs";
 
@@ -15,7 +15,9 @@ export async function POST(req: Request) {
   const stream = new ReadableStream({
     async start(controller) {
       try {
-        for await (const event of findFromMemory(memory, index, workspaces, req.signal)) {
+        // The paper being read, named by its own entry in the index
+        const reading = typeof body.paperId === "string" ? index.docs.find((d) => d.id === `paper:${body.paperId}`) : undefined;
+        for await (const event of findFromMemory(memory, index, workspaces, req.signal, reading ? { id: body.paperId, title: reading.title } : undefined, parseHistory(body.history))) {
           controller.enqueue(encoder.encode(JSON.stringify(event) + "\n"));
         }
       } catch {

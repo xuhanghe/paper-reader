@@ -46,6 +46,8 @@ type Props = {
   // brings its entry into view. The counter makes repeat clicks on the same
   // highlight register as new requests.
   focusNote?: { id: string; n: number } | null;
+  // Set when a search lands on a concept: opens the Concepts tab on its card
+  focusConcept?: { id: string; n: number } | null;
   // The conversation the reader is in, in the Ask panel. Its concept is lit
   // in the list and kept in view, so the gist of the thread is at hand
   // while the thread itself is read.
@@ -98,6 +100,7 @@ function ConceptCard({
   concept,
   busy,
   lit,
+  flash,
   cardRef,
   onSelect,
   onResummarize,
@@ -107,6 +110,8 @@ function ConceptCard({
   busy: boolean;
   // The thread the reader is in: drawn as its card is in the Ask panel
   lit: boolean;
+  // Just landed on by a search
+  flash?: boolean;
   cardRef?: (el: HTMLDivElement | null) => void;
   onSelect: () => void;
   onResummarize?: () => void;
@@ -155,7 +160,7 @@ function ConceptCard({
       ref={cardRef}
       data-concept-id={concept.annotationId}
       data-lit={lit ? "" : undefined}
-      className="rounded px-2 py-1.5 transition-colors group/concept"
+      className={`rounded px-2 py-1.5 transition-colors group/concept${flash ? " pr-entry-flash" : ""}`}
       style={{
         background: lit ? "rgba(225,195,105,0.07)" : "rgba(230,237,243,0.03)",
         border: lit ? "1px solid var(--accent)" : "1px solid var(--border-light)",
@@ -413,6 +418,7 @@ export const MindmapSidebar = memo(function MindmapSidebar({
   onRemoveHighlight,
   onEditNote,
   focusNote,
+  focusConcept,
   focusedConversation,
   zoteroNotes,
   zoteroAnnotations,
@@ -481,6 +487,27 @@ export const MindmapSidebar = memo(function MindmapSidebar({
     });
     return () => cancelAnimationFrame(frame);
   }, [tab, focusedConversation]);
+
+  // A search landing on a concept: its tab, its card in view, pulsed
+  const [flashConcept, setFlashConcept] = useState<string | null>(null);
+  useEffect(() => {
+    if (!focusConcept) return;
+    let scrollFrame = 0;
+    const showFrame = requestAnimationFrame(() => {
+      setTab("concepts");
+      setFlashConcept(null);
+      scrollFrame = requestAnimationFrame(() => {
+        setFlashConcept(focusConcept.id);
+        conceptRefs.current[focusConcept.id]?.scrollIntoView({ block: "center", behavior: "smooth" });
+      });
+    });
+    const timer = setTimeout(() => setFlashConcept(null), ENTRY_FLASH_MS);
+    return () => {
+      cancelAnimationFrame(showFrame);
+      cancelAnimationFrame(scrollFrame);
+      clearTimeout(timer);
+    };
+  }, [focusConcept]);
 
   if (!isOpen) {
     return <CollapsedRail label="Notebook" side="right" onExpand={onToggle} title="Show the notebook" />;
@@ -812,6 +839,7 @@ export const MindmapSidebar = memo(function MindmapSidebar({
               concept={c}
               busy={summarizingIds?.has(c.annotationId) ?? false}
               lit={c.annotationId === focusedConversation}
+              flash={flashConcept === c.annotationId}
               cardRef={(el) => { conceptRefs.current[c.annotationId] = el; }}
               onSelect={() => onSelectConcept(c.annotationId)}
               onResummarize={onResummarize ? () => onResummarize(c.annotationId) : undefined}

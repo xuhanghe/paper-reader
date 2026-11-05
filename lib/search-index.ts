@@ -21,9 +21,13 @@ import type { Annotation, ConceptEntry, Highlight, MindmapNode } from "@/types/s
 export type PaperPlace = { paperId: string; title: string; zoteroKey?: string };
 export type Locator =
   | ({ kind: "paper"; page?: number; quote?: string } & PaperPlace)
-  // messageIndex: the question the result is about, by its place in the card
-  | ({ kind: "conversation"; annotationId?: string; turn?: number; messageIndex?: number; page?: number; quote?: string } & PaperPlace)
+  // messageIndex: the message the result is about, by its place in the card —
+  // a question, or an answer; quote: the sentence of it that matched, and
+  // inAnswer whether that sentence is the answer's
+  | ({ kind: "conversation"; annotationId?: string; turn?: number; messageIndex?: number; page?: number; quote?: string; inAnswer?: boolean } & PaperPlace)
   | ({ kind: "note"; noteId: string; page?: number; text?: string } & PaperPlace)
+  // What a conversation established, as the Concepts tab shows it
+  | ({ kind: "concept"; annotationId: string } & PaperPlace)
   | { kind: "workspace-chat"; workspaceId: string; workspaceName: string; messageId: string }
   | { kind: "workspace-file"; workspaceId: string; workspaceName: string; path: string };
 
@@ -39,9 +43,11 @@ export type SearchDoc = {
   locator: Locator;
   // A conversation's questions by turn, for the agent to name one
   turns?: { turn: number; question: string }[];
-  // Its exchanges, by the place of their question in the card: what a result
-  // lands on (see landingFor)
+  // Its exchanges, by the place of their question in the card
   pairs?: { index: number; turn?: number; text: string }[];
+  // Every message of it as shown, for the sentence a result cites and lands
+  // on (see landingFor)
+  messages?: { index: number; role: "user" | "assistant"; turn?: number; text: string }[];
 };
 
 // A workspace as the client knows it: its chat is kept in the browser
@@ -182,6 +188,19 @@ async function paperDocs(zotero: ZoteroLibrary | null, inWorkspaces: Map<string,
       locator: { kind: "paper", ...place },
     });
 
+    // What each conversation established, found as itself
+    for (const c of concepts) {
+      if (!c.label?.trim() && !c.takeaways?.length) continue;
+      docs.push({
+        id: `concept:${id}:${c.annotationId}`,
+        kind: "concept",
+        title: clip(c.label || "Concept", 140),
+        where: title,
+        text: (c.takeaways ?? []).join("\n"),
+        locator: { kind: "concept", ...place, annotationId: c.annotationId },
+      });
+    }
+
     // Its conversations, as the Ask panel holds them
     const annotations = Array.isArray(state.annotations) ? (state.annotations as Annotation[]) : [];
     const carded = new Set<string>();
@@ -189,6 +208,7 @@ async function paperDocs(zotero: ZoteroLibrary | null, inWorkspaces: Map<string,
       carded.add(a.id);
       const turns: { turn: number; question: string }[] = [];
       const pairs: { index: number; turn?: number; text: string }[] = [];
+      const shown: NonNullable<SearchDoc["messages"]> = [];
       const lines: string[] = [];
       if (a.selectedText) lines.push(`passage: ${clip(a.selectedText, 400)}`);
       (a.messages ?? []).forEach((m, index) => {
@@ -197,10 +217,12 @@ async function paperDocs(zotero: ZoteroLibrary | null, inWorkspaces: Map<string,
           const question = parseQuotes(m.content).question;
           if (m.turn) turns.push({ turn: m.turn, question: clip(question, 160) });
           pairs.push({ index, turn: m.turn, text: question });
+          shown.push({ index, role: "user", turn: m.turn, text: question.slice(0, 6000) });
           lines.push(`Q${m.turn ? ` [turn ${m.turn}]` : ""}: ${clip(question, 600)}`);
         } else {
           const pair = pairs[pairs.length - 1];
           if (pair) pair.text += `\n${clip(m.content, 1200)}`;
+          shown.push({ index, role: "assistant", turn: pair?.turn, text: m.content.slice(0, 12000) });
           lines.push(`A: ${clip(m.content, 700)}`);
         }
       });
@@ -214,6 +236,7 @@ async function paperDocs(zotero: ZoteroLibrary | null, inWorkspaces: Map<string,
         text: lines.join("\n"),
         turns,
         pairs,
+        messages: shown,
         locator: { kind: "conversation", ...place, annotationId: a.id, page: a.pageNumber },
       });
     }
@@ -441,14 +464,60 @@ export function forgetSearchCache() {
   libraryCache = null;
 }
 
+// A message as it reads on screen: Markdown's marks gone, so a sentence of it
+// is found again in the rendered answer, and shown cleanly
+export function plainText(markdown: string): string {
+  return markdown
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/(\*\*|__|\*|_|`)/g, "")
+    .replace(/^\s{0,3}(#{1,6}\s+|[-*+]\s+|\d+\.\s+|>\s?)/gm, "")
+    .replace(/\$\$?([^$]*)\$\$?/g, "$1");
+}
+
+// Sentences, in Chinese or English: ended by a stop or a line break
+export function sentencesOf(text: string): string[] {
+  return plainText(text)
+    .split(/\n+|(?<=[。！？!?；;])|(?<=[.])\s+(?=[A-Z0-9“"(])/)
+    .map((s) => s.replace(/\s+/g, " ").trim())
+    .filter((s) => s.length >= 4);
+}
+
+const squash = (text: string) => text.replace(/\s+/g, "");
+
 /**
- * Where a result in a conversation lands: the turn named, or else the
- * exchange the words best match — never just the conversation's beginning
- * when something in it can be pointed at.
+ * Where a result in a conversation lands, and what it cites: the sentence —
+ * of a question or of an answer — that the words match best, or the one the
+ * agent quoted, in the turn it named. The message holding it is landed on and
+ * the sentence lit; never just the conversation's beginning when something in
+ * it can be pointed at.
  */
-export function landingFor(doc: SearchDoc, words: string, turn?: number): Locator {
-  if (doc.locator.kind !== "conversation" || !doc.pairs?.length) return doc.locator;
-  const named = turn ? doc.pairs.find((p) => p.turn === turn) : undefined;
-  const pair = named ?? doc.pairs[bestMatch(doc.pairs.map((p) => p.text), words)];
-  return pair ? { ...doc.locator, messageIndex: pair.index, ...(pair.turn ? { turn: pair.turn } : {}) } : doc.locator;
+export function landingFor(doc: SearchDoc, words: string, turn?: number, quote?: string): Locator {
+  const base = doc.locator;
+  if (base.kind !== "conversation" || !doc.messages?.length) return base;
+  const named = turn ? doc.messages.filter((m) => m.turn === turn) : [];
+  const pool = named.length ? named : doc.messages;
+  const at = (m: NonNullable<SearchDoc["messages"]>[number], sentence: string): Locator => ({
+    ...base,
+    messageIndex: m.index,
+    ...(m.turn ? { turn: m.turn } : {}),
+    quote: sentence.length > 220 ? `${sentence.slice(0, 219)}…` : sentence,
+    inAnswer: m.role === "assistant",
+  });
+  // The agent's own quote, where it is really there
+  if (quote?.trim()) {
+    const wanted = squash(plainText(quote)).slice(0, 80);
+    for (const m of pool) {
+      if (!wanted || !squash(plainText(m.text)).includes(wanted)) continue;
+      const sentence = sentencesOf(m.text).find((s) => squash(s).includes(wanted.slice(0, 24))) ?? plainText(quote).trim();
+      return at(m, sentence);
+    }
+  }
+  // Else the sentence the words match best
+  const sentences = pool.flatMap((m) => sentencesOf(m.text).map((sentence) => ({ m, sentence })));
+  const best = bestMatch(sentences.map((s) => s.sentence), words);
+  if (best >= 0) return at(sentences[best].m, sentences[best].sentence);
+  // Nothing in common: the turn named, at its question
+  const first = named.find((m) => m.role === "user") ?? named[0];
+  return first ? { ...base, messageIndex: first.index, ...(first.turn ? { turn: first.turn } : {}) } : base;
 }

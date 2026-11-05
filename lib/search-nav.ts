@@ -76,3 +76,19 @@ export function workspacesForSearch(): unknown[] {
     return [];
   }
 }
+
+// How a result is named and placed, wherever results are shown
+export const KIND_LABEL: Record<Locator["kind"], string> = {
+  paper: "Paper",
+  conversation: "Conversation",
+  concept: "Concept",
+  note: "Note",
+  "workspace-chat": "Workspace chat",
+  "workspace-file": "File",
+};
+
+export function placeLabel(loc: Locator): string | null {
+  if (loc.kind === "conversation" && loc.turn) return `turn ${loc.turn}`;
+  if ((loc.kind === "paper" || loc.kind === "note" || loc.kind === "conversation") && loc.page) return `p. ${loc.page}`;
+  return null;
+}

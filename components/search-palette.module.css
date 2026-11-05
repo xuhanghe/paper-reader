@@ -40,3 +40,42 @@
   .kind, .spark { min-width: 0; width: auto; }
   .backdrop { padding-top: 6vh; }
 }
+
+/* The "Not here?" button in the box */
+.agentButton { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 5px; border: 1px solid rgba(225, 195, 105, .35); border-radius: 7px; background: var(--accent-faint); padding: 4px 9px; color: var(--accent-bright); font-size: 11.5px; white-space: nowrap; }
+.agentButton:hover { border-color: var(--accent); }
+.agentButton kbd { color: var(--ink-faint); font: 10px var(--font-geist-mono, ui-monospace), monospace; }
+.nothing { margin-top: 2px; }
+
+/* The agent's window — see components/FinderChat */
+.finder { position: fixed; z-index: 70; display: flex; flex-direction: column; max-height: min(600px, calc(100vh - 32px)); overflow: hidden; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); box-shadow: 0 18px 48px rgba(0, 0, 0, .5); }
+.finderHead { display: flex; align-items: center; gap: 8px; border-bottom: 1px solid var(--border-light); padding: 9px 10px 9px 12px; cursor: grab; user-select: none; touch-action: none; }
+.finderHead:active { cursor: grabbing; }
+.finderHead .spark { width: auto; }
+.finderTitle { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.finderTitle strong { color: var(--ink); font-size: 13px; font-weight: 600; }
+.finderTitle small { color: var(--ink-faint); font-size: 10.5px; }
+.finderHead button { width: 24px; height: 24px; border: 0; border-radius: 6px; background: transparent; color: var(--ink-faint); font-size: 12px; }
+.finderHead button:hover { background: rgba(230, 237, 243, .07); color: var(--ink); }
+.finderList { min-height: 120px; flex: 1; overflow-y: auto; overscroll-behavior: contain; padding: 10px 12px; display: flex; flex-direction: column; gap: 10px; }
+.finderEmpty { margin: 0; color: var(--ink-faint); font-size: 12px; line-height: 1.6; }
+.finderMine { align-self: flex-end; max-width: 88%; margin: 0; border-radius: 10px 10px 3px 10px; background: #1c262e; padding: 7px 10px; color: var(--ink); font-size: 12.5px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
+.finderReply { display: flex; flex-direction: column; gap: 6px; }
+.finderReply > p { margin: 0; color: var(--ink-muted); font-size: 12.5px; line-height: 1.55; }
+.finderActivity { display: flex; flex-direction: column; gap: 2px; }
+.finderActivity strong { color: var(--ink-muted); font-size: 12px; font-weight: 500; }
+.finderActivity small { overflow: hidden; color: var(--ink-faint); font-size: 11px; white-space: nowrap; text-overflow: ellipsis; }
+.finderCard { width: 100%; display: flex; align-items: flex-start; gap: 8px; border: 1px solid var(--border-light); border-radius: 8px; background: rgba(230, 237, 243, .025); padding: 7px 8px; text-align: left; }
+.finderCard:hover { border-color: rgba(225, 195, 105, .45); background: var(--accent-faint); }
+.finderCard .kind { min-width: 74px; }
+.finderInput { display: flex; align-items: flex-end; gap: 6px; border-top: 1px solid var(--border-light); padding: 8px 10px; }
+.finderInput textarea { flex: 1; min-width: 0; max-height: 140px; resize: none; border: 1px solid var(--border); border-radius: 8px; outline: 0; background: var(--paper); padding: 6px 9px; color: var(--ink); font-size: 12.5px; line-height: 1.5; }
+.finderInput textarea:focus { border-color: rgba(225, 195, 105, .5); }
+.finderSend, .finderStop { flex: 0 0 auto; height: 30px; border: 0; border-radius: 8px; font-size: 12px; }
+.finderSend { width: 30px; background: var(--accent); color: #1d180c; font-weight: 700; }
+.finderSend:disabled { background: #273038; color: #6b7782; }
+.finderStop { padding: 0 10px; background: #2a333b; color: var(--ink-muted); }
+
+/* A conversation result's sentence, quoted, and where it is from */
+.cite { color: var(--ink) !important; }
+.cite b { margin-right: 5px; color: var(--quote); font-size: 10px; font-weight: 600; letter-spacing: .03em; text-transform: uppercase; }

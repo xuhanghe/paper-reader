@@ -519,6 +519,8 @@ export default function Home() {
   // Clicking a highlight in the paper reveals its entry in the Notes panel.
   // The counter distinguishes repeat clicks on the same highlight.
   const [focusNote, setFocusNote] = useState<{ id: string; n: number } | null>(null);
+  // A concept to bring into view in the notebook, as focusNote does a note
+  const [focusConcept, setFocusConcept] = useState<{ id: string; n: number } | null>(null);
   // The conversation the reader is in, as the Ask panel reports it: its
   // concept is lit in the notebook
   const [focusedAnnotationId, setFocusedAnnotationId] = useState<string | null>(null);
@@ -1485,14 +1487,25 @@ export default function Home() {
         setActiveAnnotationId(card.id);
         // The question the result is about: by its place, checked against the
         // card as it is now, else by its turn
-        const atIndex = loc.messageIndex !== undefined && card.messages[loc.messageIndex]?.role === "user" ? loc.messageIndex : -1;
+        const atIndex = loc.messageIndex !== undefined && card.messages[loc.messageIndex] ? loc.messageIndex : -1;
         const index = atIndex >= 0 ? atIndex : loc.turn ? card.messages.findIndex((m) => m.role === "user" && m.turn === loc.turn) : -1;
-        if (index >= 0) panelScroll.current?.revealMessage(card.id, index);
+        if (index >= 0) panelScroll.current?.revealMessage(card.id, index, loc.quote);
         else panelScroll.current?.reveal(card.id);
         if (card.type !== "image" && card.pageNumber && card.selectedText) void showWords(card.pageNumber, card.selectedText.slice(0, 400));
         else if (card.pageNumber) void whenReady(() => viewer()?.goToPage?.(card.pageNumber!));
         return;
       }
+    }
+    if (loc.kind === "concept") {
+      // Its card in the Concepts tab, and the conversation it came from
+      setSidebarOpen(true);
+      setFocusConcept((prev) => ({ id: loc.annotationId, n: (prev?.n ?? 0) + 1 }));
+      if (session.annotations.some((a) => a.id === loc.annotationId)) {
+        setExplainOpen(true);
+        setActiveAnnotationId(loc.annotationId);
+        panelScroll.current?.reveal(loc.annotationId);
+      }
+      return;
     }
     if (loc.kind === "note") {
       revealNote(loc.noteId);
@@ -1528,7 +1541,7 @@ export default function Home() {
         </nav>
 
         <div className="pr-reader-actions">
-          <SearchPalette surface="reader" />
+          <SearchPalette surface="reader" reading={paperId && session.pdfName ? { id: paperId, title: session.pdfName.replace(/\.pdf$/i, "") } : undefined} />
           <button type="button" onClick={() => setSkillsOpen(true)} className="pr-capability-button" title="Choose agent skills">
             <i aria-hidden>◆</i><span>Skills</span>{activeSkillIds.length > 0 && <small>{activeSkillIds.length}</small>}
           </button>
@@ -1799,6 +1812,7 @@ export default function Home() {
           onRemoveHighlight={handleRemoveHighlight}
           onEditNote={handleEditNote}
           focusNote={focusNote}
+          focusConcept={focusConcept}
           focusedConversation={focusedAnnotationId}
           zoteroNotes={zoteroNotes}
           zoteroAnnotations={visibleZoteroAnnotations}

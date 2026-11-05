@@ -12,7 +12,8 @@ export async function POST(req: Request) {
     const query = typeof body.q === "string" ? body.q.trim().slice(0, 300) : "";
     if (!query) return Response.json({ results: [] });
     const index = await buildSearchIndex(parseWorkspaces(body.workspaces));
-    return Response.json({ results: quickResults(index, query) });
+    const paperId = typeof body.paperId === "string" && body.paperId ? body.paperId : undefined;
+    return Response.json({ results: quickResults(index, query, 24, paperId) });
   } catch (error) {
     return Response.json({ error: error instanceof Error ? error.message : "Search failed." }, { status: 500 });
   }

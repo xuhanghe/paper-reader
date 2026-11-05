@@ -1,13 +1,17 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
-import { bestMatch, buildRankIndex, rankSearch, snippet, tokenize } from "../lib/search-rank.js";
+import { bestMatch, buildRankIndex, nearWords, rankSearch, snippet, tokenize } from "../lib/search-rank.js";
 
 // Searching as it is remembered: words in any order, a word half typed,
 // Chinese with no spaces to split on
 
 describe("words", () => {
   test("Latin text is split into words, without the commonest ones; Chinese into overlapping pairs", () => {
-    assert.deepEqual(tokenize("The Idiosyncrasies of BlueField-3 DPUs"), ["idiosyncrasies", "bluefield", "3", "dpus"]);
+    assert.deepEqual(tokenize("The Idiosyncrasies of BlueField-3 DPUs"), ["bluefield3", "idiosyncrasies", "bluefield", "3", "dpus"]);
+    assert.ok(tokenize("multi-chaining MACs").includes("multichaining"), "a hyphenated word is also one word");
+    assert.deepEqual(tokenize("这个MAC check是干啥的"), ["这个", "mac", "check", "是干", "干啥", "啥的"], "English and Chinese written together are still apart");
+    assert.ok(tokenize("multi-chaining将GHASH拆成").includes("multichaining"));
+    assert.ok(tokenize("multi-chaining将GHASH拆成").includes("ghash"));
     assert.deepEqual(tokenize("检索增强"), ["检索", "索增", "增强"]);
     assert.deepEqual(tokenize("加密 MPI"), ["加密", "mpi"]);
     assert.deepEqual(tokenize("密"), ["密"]);
@@ -35,7 +39,7 @@ describe("ranking", () => {
 
   test("the last word may still be being typed", () => {
     assert.equal(rankSearch(index, "prevale")[0]?.doc.title, "Pooled testing");
-    assert.equal(rankSearch(index, "prevale ").length, 0, "a finished word is taken as it is");
+    assert.equal(rankSearch(index, "prevale ")[0]?.doc.title, "Pooled testing", "and a finished part of a word still finds the word it is part of");
   });
 
   test("a Chinese phrase is found inside a longer sentence", () => {
@@ -62,5 +66,31 @@ describe("the best of a few", () => {
     assert.equal(bestMatch(pairs, "dilution"), 0);
     assert.equal(bestMatch(pairs, "quokka"), -1);
     assert.equal(bestMatch(["这个MAC check是干啥的", "multichaining 是什么"], "MAC check 干啥"), 0);
+  });
+});
+
+describe("a word not quite as it was written", () => {
+  const docs = [
+    { title: "Multi-chaining MACs", text: "parallel GHASH chains verified at checkpoints" },
+    { title: "Bandwidth bound kernels", text: "the kernel is bandwidth bound at this size" },
+    { title: "Allreduce on rings", text: "each rank exchanges with its neighbour" },
+    { title: "Chain of thought", text: "a chain of reasoning steps" },
+  ];
+  const index = buildRankIndex(docs);
+
+  test("a word spelt a letter or two off is still found", () => {
+    assert.equal(rankSearch(index, "multichaing")[0]?.doc.title, "Multi-chaining MACs");
+    assert.equal(rankSearch(index, "bandwith bound")[0]?.doc.title, "Bandwidth bound kernels");
+    assert.equal(rankSearch(index, "all-reduce")[0]?.doc.title, "Allreduce on rings", "written with a hyphen or without");
+  });
+
+  test("part of a longer word finds it", () => {
+    assert.equal(rankSearch(index, "chaining")[0]?.doc.title, "Multi-chaining MACs");
+  });
+
+  test("the word as written still comes first, and a short word is not stretched", () => {
+    const both = buildRankIndex([{ title: "bandwith typo", text: "" }, { title: "bandwidth right", text: "" }]);
+    assert.equal(rankSearch(both, "bandwidth")[0].doc.title, "bandwidth right");
+    assert.deepEqual(nearWords(index, "mac"), [], "three letters is too short to guess at");
   });
 });

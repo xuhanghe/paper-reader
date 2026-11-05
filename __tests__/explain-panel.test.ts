@@ -1728,3 +1728,21 @@ describe("a draft stays with its paper", () => {
     assert.equal(box(again).value, "");
   });
 });
+
+// A search result lands on the message holding the sentence it cites — an
+// answer as readily as a question — and that sentence is what is lit
+describe("landing on a cited sentence", () => {
+  test("the sentence in an answer is painted, the answer brought into view", async () => {
+    const card = thread([
+      { role: "user", content: "what is a bank conflict?" },
+      { role: "assistant", content: "Two threads of a warp hit the same bank. **Padding** shifts each row by one word." },
+    ], "c1", "shared memory");
+    const host = freshRoot();
+    const handle = { current: null as PanelScroll | null };
+    act(() => { createRoot(host).render(createElement(ExplainPanel, { annotations: [card], activeId: "c1", model: "m", streamingIds: new Set<string>(), onFollowUp: () => {}, onAskGeneral: () => {}, onDelete: () => {}, onReExplainImage: () => {}, onViewInPdf: () => {}, annotationRefs: { current: {} }, isOpen: true, onToggle: () => {}, scrollHandle: handle })); });
+    act(() => { handle.current!.revealMessage("c1", 1, "Padding shifts each row by one word."); });
+    await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+    const lit = painted("pr-quote-flash").map((r) => r.toString()).join("");
+    assert.equal(lit, "Padding shifts each row by one word.");
+  });
+});

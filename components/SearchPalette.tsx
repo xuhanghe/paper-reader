@@ -1,50 +1,30 @@
 "use client";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { readLines } from "@/lib/ndjson";
-import { goToResult, workspacesForSearch, type Locator, type Surface } from "@/lib/search-nav";
+import { goToResult, KIND_LABEL, placeLabel, workspacesForSearch, type Locator, type Surface } from "@/lib/search-nav";
+import { openFinder } from "@/lib/finder-chat";
+import { FinderChat } from "./FinderChat";
 import styles from "./search-palette.module.css";
 
 // One box, on both surfaces, for finding anything again: a paper, a
-// conversation about one, a note, a workspace chat or file. What is typed is
-// matched by word at once; Enter on the first row asks a one-shot agent to
-// find it from the memory as described (lib/search-agent). Choosing a result
-// goes to the place itself — the page, the turn, the note, the message.
+// conversation about one, a concept, a note, a workspace chat or file. What
+// is typed is matched by word at once — the paper on screen's own
+// conversations and concepts first — and a result goes to the place itself.
+// What words cannot find, an agent can: "Not here?" opens it in a small chat
+// of its own (FinderChat) that can be asked again and again.
 
-type Kind = Locator["kind"];
-type Result = { id: string; kind: Kind; title: string; where: string; snippet?: string; why?: string; locator: Locator };
-type AgentState =
-  | { status: "idle" }
-  | { status: "running"; activity: string[] }
-  | { status: "done"; results: Result[] }
-  | { status: "error"; message: string };
+type Result = { id: string; kind: Locator["kind"]; title: string; where: string; snippet?: string; here?: boolean; locator: Locator };
 
-const KIND_LABEL: Record<Kind, string> = {
-  paper: "Paper",
-  conversation: "Conversation",
-  note: "Note",
-  "workspace-chat": "Workspace chat",
-  "workspace-file": "File",
-};
-
-function placeLabel(loc: Locator): string | null {
-  if (loc.kind === "conversation" && loc.turn) return `turn ${loc.turn}`;
-  if ((loc.kind === "paper" || loc.kind === "note" || loc.kind === "conversation") && loc.page) return `p. ${loc.page}`;
-  return null;
-}
-
-export function SearchPalette({ surface }: { surface: Surface }) {
+// reading: the paper on screen, whose own conversations and concepts come first
+export function SearchPalette({ surface, reading }: { surface: Surface; reading?: { id: string; title: string } }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
-  const [quick, setQuick] = useState<Result[]>([]);
-  const [agent, setAgent] = useState<AgentState>({ status: "idle" });
+  const [results, setResults] = useState<Result[]>([]);
+  const [searched, setSearched] = useState("");
   const [selected, setSelected] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
-  const agentAbort = useRef<AbortController | null>(null);
-  // The query the agent last answered, so its results are not shown under another
-  const [askedFor, setAskedFor] = useState("");
 
   // ⌘K / Ctrl+K anywhere
   useEffect(() => {
@@ -59,18 +39,15 @@ export function SearchPalette({ surface }: { surface: Surface }) {
   }, []);
 
   useEffect(() => {
-    if (!open) {
-      agentAbort.current?.abort();
-      return;
-    }
-    requestAnimationFrame(() => inputRef.current?.select());
+    if (open) requestAnimationFrame(() => inputRef.current?.select());
   }, [open]);
 
   // Matched by word as it is typed, a moment after the last key
   useEffect(() => {
     const q = query.trim();
     if (!open || !q) {
-      setQuick([]);
+      setResults([]);
+      setSearched("");
       return;
     }
     const controller = new AbortController();
@@ -79,85 +56,38 @@ export function SearchPalette({ surface }: { surface: Surface }) {
         const res = await fetch("/api/search", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ q, workspaces: workspacesForSearch() }),
+          body: JSON.stringify({ q, paperId: reading?.id, workspaces: workspacesForSearch() }),
           signal: controller.signal,
         });
         const data = await res.json();
-        if (res.ok) setQuick(data.results ?? []);
+        if (res.ok) {
+          setResults(data.results ?? []);
+          setSearched(q);
+        }
       } catch {
         // a newer query took over, or the server is away
       }
     }, 140);
     return () => { clearTimeout(timer); controller.abort(); };
-  }, [query, open]);
+  }, [query, open, reading?.id]);
 
-  const agentResults = agent.status === "done" && askedFor === query.trim() ? agent.results : [];
-  // The rows, in the order the arrows move through them: asking first, then
-  // what the agent found, then what matched by word
-  const rows = useMemo(() => {
-    const found = new Set(agentResults.map((r) => r.id));
-    return [
-      ...(query.trim() ? [{ type: "ask" as const }] : []),
-      ...agentResults.map((r) => ({ type: "found" as const, result: r })),
-      ...quick.filter((r) => !found.has(r.id)).map((r) => ({ type: "quick" as const, result: r })),
-    ];
-  }, [query, agentResults, quick]);
-
-  // The selection starts on asking, and on the best find once there is one
-  useEffect(() => setSelected(0), [query]);
-  useEffect(() => { if (agentResults.length) setSelected(1); }, [agentResults.length]);
+  // This paper's own conversations and concepts, then the rest of the library
+  const rows = useMemo(() => [...results.filter((r) => r.here), ...results.filter((r) => !r.here)], [results]);
+  useEffect(() => setSelected(0), [rows]);
   useEffect(() => {
     listRef.current?.querySelector<HTMLElement>(`[data-row="${selected}"]`)?.scrollIntoView({ block: "nearest" });
   }, [selected]);
-
-  const ask = useCallback(async () => {
-    const q = query.trim();
-    if (!q) return;
-    agentAbort.current?.abort();
-    const controller = new AbortController();
-    agentAbort.current = controller;
-    setAskedFor(q);
-    setAgent({ status: "running", activity: [] });
-    try {
-      const res = await fetch("/api/search/agent", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ q, workspaces: workspacesForSearch() }),
-        signal: controller.signal,
-      });
-      if (!res.ok || !res.body) throw new Error((await res.text()) || "The search did not start.");
-      let finished = false;
-      await readLines(res.body, (line) => {
-        let event: { type?: string; text?: string; results?: Result[]; message?: string };
-        try { event = JSON.parse(line); } catch { return; }
-        if (event.type === "activity" && event.text) {
-          setAgent((s) => (s.status === "running" ? { status: "running", activity: [...s.activity, event.text!].slice(-4) } : s));
-        } else if (event.type === "results") {
-          finished = true;
-          setAgent({ status: "done", results: event.results ?? [] });
-        } else if (event.type === "error") {
-          finished = true;
-          setAgent({ status: "error", message: event.message || "The search failed." });
-        }
-      });
-      if (!finished) setAgent({ status: "error", message: "The search ended without an answer." });
-    } catch (error) {
-      if (controller.signal.aborted) return;
-      setAgent({ status: "error", message: error instanceof Error ? error.message : "The search failed." });
-    }
-  }, [query]);
 
   const choose = useCallback((result: Result) => {
     setOpen(false);
     goToResult(result.locator, surface, (href) => router.push(href));
   }, [surface, router]);
 
-  const activate = (index: number) => {
-    const row = rows[index];
-    if (!row) return;
-    if (row.type === "ask") void ask();
-    else choose(row.result);
-  };
+  // The agent, in its own window: what was typed is its first message
+  const askAgent = useCallback(() => {
+    setOpen(false);
+    openFinder(query.trim() || undefined, reading);
+  }, [query, reading]);
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.nativeEvent.isComposing) return;
@@ -166,38 +96,17 @@ export function SearchPalette({ surface }: { surface: Surface }) {
     if (e.key === "ArrowUp") { e.preventDefault(); setSelected((i) => Math.max(i - 1, 0)); return; }
     if (e.key === "Enter") {
       e.preventDefault();
-      // ⌘Enter always asks, wherever the selection is
-      if (e.metaKey || e.ctrlKey) void ask();
-      else activate(selected);
+      // ⌘Enter, or Enter with nothing to go to, asks the agent
+      if (e.metaKey || e.ctrlKey || !rows[selected]) askAgent();
+      else choose(rows[selected]);
     }
   };
 
-  const running = agent.status === "running";
-  const resultRow = (result: Result, index: number, found: boolean) => {
-    const place = placeLabel(result.locator);
-    return (
-      <button
-        key={`${found ? "f" : "q"}:${result.id}`}
-        type="button"
-        data-row={index}
-        className={styles.row}
-        aria-selected={index === selected}
-        onMouseEnter={() => setSelected(index)}
-        onClick={() => choose(result)}
-      >
-        <span className={styles.kind} data-kind={result.kind}>{KIND_LABEL[result.kind]}</span>
-        <span className={styles.body}>
-          <strong>{result.title}</strong>
-          {result.why ? <em>{result.why}</em> : result.snippet && result.snippet !== result.title ? <small>{result.snippet}</small> : null}
-          <i>{result.where}{place ? ` · ${place}` : ""}</i>
-        </span>
-      </button>
-    );
-  };
+  const nothing = !!searched && searched === query.trim() && rows.length === 0;
 
   return (
     <>
-      <button type="button" className="pr-capability-button" onClick={() => setOpen(true)} title="Find a paper, conversation or note — from what you remember (⌘K)">
+      <button type="button" className="pr-capability-button" onClick={() => setOpen(true)} title="Find a paper, conversation, concept or note (⌘K)">
         <i aria-hidden>⌕</i><span>Search</span><kbd className={styles.kbd}>⌘K</kbd>
       </button>
       {open && (
@@ -210,45 +119,60 @@ export function SearchPalette({ surface }: { surface: Surface }) {
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
                 onKeyDown={onKeyDown}
-                placeholder="Describe what you remember — a paper, a conversation, a note…"
-                aria-label="What you remember"
+                placeholder={reading ? `Find in “${reading.title}” and everywhere else…` : "Find a paper, a conversation, a concept, a note…"}
+                aria-label="Search"
               />
-              {running && <button type="button" className={styles.stop} onClick={() => { agentAbort.current?.abort(); setAgent({ status: "idle" }); }}>Stop</button>}
+              <button type="button" className={styles.agentButton} onClick={askAgent} title="Describe it to an agent that reads your library, and ask again until it is found (⌘Enter)">
+                <span aria-hidden>✦</span> Not here? Ask the agent <kbd>⌘↵</kbd>
+              </button>
             </div>
             <div ref={listRef} className={styles.list} role="listbox">
-              {rows.map((row, index) => {
-                if (row.type === "ask") {
-                  return (
-                    <button key="ask" type="button" data-row={index} className={`${styles.row} ${styles.ask}`} aria-selected={index === selected} onMouseEnter={() => setSelected(index)} onClick={() => void ask()}>
-                      <span className={styles.spark} aria-hidden>✦</span>
-                      <span className={styles.body}>
-                        <strong>{running ? "Looking through your library…" : "Find it from what you remember"}</strong>
-                        {running ? (
-                          <span className={styles.activity}>{(agent.activity.length ? agent.activity : ["Starting"]).map((line, n, all) => <small key={n} data-latest={n === all.length - 1 || undefined}>{line}</small>)}</span>
-                        ) : agent.status === "done" && askedFor === query.trim() && !agent.results.length ? (
-                          <small>Nothing that fits came up. Try saying it another way, or what else you remember about it.</small>
-                        ) : agent.status === "error" ? (
-                          <small className={styles.error}>{agent.message}</small>
-                        ) : (
-                          <small>An agent reads your papers, conversations, notes and workspaces for it · Enter</small>
-                        )}
-                      </span>
-                    </button>
-                  );
-                }
-                // Each group says what it is where it begins
-                const previous = rows[index - 1];
-                const heading = previous?.type !== row.type ? (row.type === "found" ? "Found from what you remember" : "Matching words") : null;
+              {rows.map((result, index) => {
+                const heading = index === 0 || rows[index - 1].here !== result.here
+                  ? result.here ? `In this paper · ${reading?.title ?? ""}` : reading ? "Elsewhere in your library" : null
+                  : null;
+                const place = placeLabel(result.locator);
                 return [
-                  heading && <p key={`h:${row.type}`} className={styles.heading}>{heading}</p>,
-                  resultRow(row.result, index, row.type === "found"),
+                  heading && <p key={`h:${result.here ? 1 : 0}`} className={styles.heading}>{heading}</p>,
+                  <button
+                    key={result.id}
+                    type="button"
+                    data-row={index}
+                    className={styles.row}
+                    aria-selected={index === selected}
+                    onMouseEnter={() => setSelected(index)}
+                    onClick={() => choose(result)}
+                  >
+                    <span className={styles.kind} data-kind={result.kind}>{KIND_LABEL[result.kind]}</span>
+                    <span className={styles.body}>
+                      <strong>{result.title}</strong>
+                      {result.locator.kind === "conversation" && result.locator.quote ? (
+                        <small className={styles.cite}><b>{result.locator.inAnswer ? "In the answer" : "You asked"}</b> “{result.locator.quote}”</small>
+                      ) : result.snippet && result.snippet !== result.title && <small>{result.snippet}</small>}
+                      <i>{result.here ? "This paper" : result.where}{place ? ` · ${place}` : ""}</i>
+                    </span>
+                  </button>,
                 ];
               })}
-              {!query.trim() && <p className={styles.empty}>Type what you remember of it, in any words or language. ↑↓ to choose · Enter to go there · Esc to close</p>}
+              {nothing && (
+                <button type="button" className={`${styles.row} ${styles.nothing}`} onClick={askAgent}>
+                  <span className={styles.spark} aria-hidden>✦</span>
+                  <span className={styles.body}>
+                    <strong>No word of it matches. Describe it to the agent instead</strong>
+                    <small>It reads your papers, conversations, notes and workspaces, and you can keep asking · Enter</small>
+                  </span>
+                </button>
+              )}
+              {!query.trim() && (
+                <p className={styles.empty}>
+                  {reading ? "This paper's conversations and concepts come first, then the rest of your library. " : ""}↑↓ to choose · Enter to go there · ⌘Enter to ask the agent · Esc to close
+                </p>
+              )}
             </div>
           </div>
         </div>
       )}
+      <FinderChat surface={surface} reading={reading} />
     </>
   );
 }
